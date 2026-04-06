@@ -5,7 +5,7 @@
 # Usage:
 #   ./scripts/sync-all.sh                       # deploy skills + hooks
 #   ./scripts/sync-all.sh --dry-run             # preview
-#   ./scripts/sync-all.sh --profile myproject  # pass profile to hooks
+#   ./scripts/sync-all.sh --profile myproject    # pass profile to hooks
 
 set -euo pipefail
 
@@ -38,7 +38,7 @@ OPTIONS:
 EXAMPLES:
   $(basename "$0")                       # deploy skills + hooks
   $(basename "$0") --dry-run             # preview both
-  $(basename "$0") --profile myproject  # hooks with clickhouse profile
+  $(basename "$0") --profile myproject   # hooks with myproject profile
 EOF
   exit 0
 }

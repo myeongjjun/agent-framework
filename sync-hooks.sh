@@ -8,7 +8,7 @@
 #   ./sync-hooks.sh                          # Show status
 #   ./sync-hooks.sh --status                 # Show diff only
 #   ./sync-hooks.sh --push                   # Push all categories
-#   ./sync-hooks.sh --push --profile myproject  # Push general + clickhouse only
+#   ./sync-hooks.sh --push --profile myproject    # Push general + myproject only
 #   ./sync-hooks.sh --push --dry-run         # Preview changes
 #   ./sync-hooks.sh --list                   # List categories and hooks
 
