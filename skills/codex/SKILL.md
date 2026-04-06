@@ -49,20 +49,64 @@ Verification: logs should show `mcp startup: no servers` for default invocations
 
 ---
 
-## CRITICAL: Always Use `codex exec`
+## Codex Invocation Modes
 
-**MUST USE**: `codex exec` for ALL Codex CLI invocations in Claude Code.
+Detect dispatch mode before invoking Codex:
 
-**NEVER USE**: `codex` (interactive mode) - will fail with "stdout is not a terminal"
-**ALWAYS USE**: `codex exec` (non-interactive mode)
+```bash
+if command -v cmux &>/dev/null && command -v zmx &>/dev/null && cmux ping &>/dev/null; then
+  DISPATCH_MODE="cmux"   # interactive codex via cmux+zmx
+else
+  DISPATCH_MODE="exec"   # codex exec (non-interactive fallback)
+fi
+```
 
-**Examples:**
-- `codex exec -m gpt-5.4 "prompt"` (CORRECT)
-- `codex -m gpt-5.4 "prompt"` (WRONG - will fail)
-- `codex exec resume --last` (CORRECT)
-- `codex resume --last` (WRONG - will fail)
+### Mode A: cmux+zmx dispatch (recommended when available)
 
-**Why?** Claude Code's bash environment is non-terminal/non-interactive. Only `codex exec` works in this environment.
+Run interactive codex in a cmux split pane, controlled via `cmux send`. Session persists via zmx.
+
+**Prerequisites:**
+- cmux with socket control mode set to "자동화 모드"
+- zmx installed and in PATH
+- Verify: `cmux ping` returns PONG
+
+```bash
+# 1. Create cmux split pane
+SURFACE=$(cmux new-split right 2>&1 | awk '{print $2}')
+
+# 2. Start zmx session + codex
+cmux send --surface $SURFACE "zmx attach codex-{task} codex --full-auto -C $(pwd)\n"
+
+# 3. Wait for codex ready
+while ! cmux read-screen --surface $SURFACE --lines 5 2>/dev/null | grep -q "gpt-5"; do sleep 5; done
+
+# 4. Send prompt
+cmux send --surface $SURFACE "prompt text"
+cmux send-key --surface $SURFACE enter
+
+# 5. Cleanup when done
+cmux close-surface --surface $SURFACE
+zmx kill codex-{task}
+```
+
+**Advantages**: Session persistence, real-time observation, context retention across prompts.
+
+### Mode B: codex exec fallback (no cmux/zmx)
+
+**MUST USE** `codex exec` when cmux is unavailable. Claude Code's bash environment is non-terminal.
+
+**Preconditions (verify before dispatch):**
+1. Default model: `grep '^model' ~/.codex/config.toml` — use this model. Do NOT hardcode `-m`.
+2. Trust: `grep '{repo-name}' ~/.codex/config.toml` — must show `trust_level = "trusted"`.
+3. No pipe: do NOT append `| tail`, `| head`, or any pipe to `codex exec`.
+
+```bash
+codex exec -s workspace-write \
+  -c model_reasoning_effort=high \
+  "prompt"
+```
+
+**Never use** bare `codex` (interactive mode) without cmux — will fail with "stdout is not a terminal".
 
 ---
 
@@ -117,10 +161,30 @@ This will:
 
 ### Step 2: Invoke Codex with Full Cycle Prompt
 
-After handoff completes, invoke Codex:
+After handoff completes, invoke Codex using the detected dispatch mode:
 
+**cmux+zmx mode:**
 ```bash
-codex exec -m gpt-5.4 -s workspace-write \
+SURFACE=$(cmux new-split right 2>&1 | awk '{print $2}')
+cmux send --surface $SURFACE "zmx attach codex-fullcycle codex --full-auto -C $(pwd)\n"
+# Wait for codex ready
+while ! cmux read-screen --surface $SURFACE --lines 5 2>/dev/null | grep -q "gpt-5"; do sleep 5; done
+# Send the full cycle prompt
+cmux send --surface $SURFACE "## Context
+Read .agent/LATEST.md for full context from Claude Code.
+## Task
+{USER_REQUEST}
+## Required Actions
+1. Read the handoff entry and understand the objective and decisions
+2. Complete the task
+3. Create handoff entry when done (.agent/entry-{timestamp}-KST.md)
+Report what was done and any issues encountered."
+cmux send-key --surface $SURFACE enter
+```
+
+**exec fallback:**
+```bash
+codex exec -s workspace-write \
   -c model_reasoning_effort=high \
   "## Context
 Read .agent/LATEST.md for full context from Claude Code.
