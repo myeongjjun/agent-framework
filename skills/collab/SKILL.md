@@ -1,6 +1,6 @@
 ---
 name: collab
-version: 1.4.0
+version: 1.5.0
 description: >
   Orchestrate dual-agent collaboration (Claude worker + Codex worker) in dedicated git
   worktrees keyed by task slug, with cross-review and synthesis into a single merged result.
@@ -185,40 +185,76 @@ Work ONLY inside this directory.
 - Produce a short self-review (strengths / risks / assumptions).
 - If permission-blocked: return the intended file content in the response text so the orchestrator can write it.
 
-#### Worker B: Codex dispatch (separate git worktree + codex exec)
+#### Worker B: Codex dispatch
+
+Detect dispatch mode at the start of Phase 2:
+
+```bash
+# cmux+zmx mode: persistent Codex session with context retention across phases
+if command -v cmux &>/dev/null && command -v zmx &>/dev/null && cmux ping &>/dev/null; then
+  DISPATCH_MODE="cmux"
+else
+  DISPATCH_MODE="exec"  # fallback
+fi
+```
+
+##### Mode A: cmux+zmx dispatch (recommended)
+
+**Prerequisites:**
+- cmux with socket control mode set to "자동화 모드" (Settings > 자동화 > 소켓 제어 모드)
+- zmx installed and in PATH
+- Verify: `cmux ping` returns PONG
+
+**Advantages over codex exec:**
+- Codex session persists across Phase 2 → Phase 3 (context retained)
+- No cold start on subsequent prompts
+- Real-time observation via cmux split pane
+- Session survives cmux surface close (zmx persistence)
+
+```bash
+# 1. Create cmux split pane
+SURFACE=$(cmux new-split right 2>&1 | awk '{print $2}')
+
+# 2. Start zmx session + codex in the worktree
+cmux send --surface $SURFACE "zmx attach collab-{task-slug} codex --full-auto -C $(pwd)/.worktrees/{task-slug}-codex\n"
+
+# 3. Wait for codex to be ready
+while ! cmux read-screen --surface $SURFACE --lines 5 2>/dev/null | grep -q "gpt-5"; do
+  sleep 5
+done
+
+# 4. Send task prompt
+cmux send --surface $SURFACE "$PROMPT_WORKER_CODEX"
+cmux send-key --surface $SURFACE enter
+
+# 5. Poll for completion (worktree commit)
+while [ -z "$(git -C .worktrees/{task-slug}-codex log --oneline main..HEAD 2>/dev/null)" ]; do
+  sleep 10
+done
+```
+
+**Store `$SURFACE` for Phase 3** — the same surface will be reused for cross-review dispatch.
+
+**Timeout**: If no commit after 10 minutes, check with `cmux read-screen --surface $SURFACE --lines 20` to diagnose. If Codex is stuck, `cmux send-key --surface $SURFACE ctrl+c` and retry with simplified prompt.
+
+##### Mode B: codex exec fallback (no cmux/zmx)
 
 **Preconditions (verify before dispatch):**
 1. Default model: `grep '^model' ~/.codex/config.toml` — use this model. Do NOT hardcode `-m` with older models.
 2. Trust: `grep '{repo-name}' ~/.codex/config.toml` — must show `trust_level = "trusted"`. If missing, add it.
-3. No pipe: do NOT append `| tail`, `| head`, or any pipe to `codex exec` — causes stdout buffering that makes the process appear stuck and output file empty.
+3. No pipe: do NOT append `| tail`, `| head`, or any pipe to `codex exec`.
 
 ```bash
-# Run Codex inside the pre-created worktree (MCP is disabled by default in ~/.codex/config.toml; see ADR-019)
 cd .worktrees/{task-slug}-codex
 codex exec -s workspace-write \
   -c model_reasoning_effort={reasoning_effort} \
   "$PROMPT_WORKER_CODEX"
 ```
 
-#### Codex exec resilience (timeout, retry, fallback)
-
-**Timeout handling**:
-1. At 5 minutes with no output: check process status (`ps aux | grep codex`) and worktree for file changes. If files are being modified, wait.
-2. At 10 minutes with no output and no file changes: kill the process and proceed to retry.
-
-**Retry logic** (max 2 retries):
-- Retry 1: re-run `codex exec` with a simplified prompt. Remove verbose context, keep only the essential task description and path preamble. Lower reasoning effort by one level (e.g., `high` → `medium`).
-- Retry 2: minimal 3-line prompt — path preamble + single-sentence task + "commit when done". Keep reasoning effort at `low`.
-- After each retry, wait up to 10 minutes before declaring failure.
-
-**Fallback — Claude#1 takes over Worker B**:
-If Codex fails after all retries (2 retries = 3 total attempts), Claude#1 (orchestrator) takes over:
-1. Work directly in the Codex worktree (`.worktrees/{task-slug}-codex`).
-2. Execute the original task prompt.
-3. Commit on `collab/{task-slug}-codex` branch.
-4. Proceed to Phase 3 (cross-review) normally.
-
-This guarantees the collab workflow completes even when Codex is unavailable.
+**Resilience (exec mode only):**
+- Timeout: 5 min → check process; 10 min → kill and retry
+- Retry: max 2 retries with simplified prompt and lower reasoning effort
+- Fallback: Claude#1 takes over Worker B's worktree after 3 total failures
 
 `PROMPT_WORKER_CODEX` must include an explicit path preamble, for example:
 
@@ -301,6 +337,24 @@ Agent(
 ```
 
 Worker B cross-reviews Worker A's output:
+
+**cmux mode** (reuse Phase 2 surface — Codex retains context from its own work):
+```bash
+# Same $SURFACE from Phase 2 — Codex remembers what it built
+cmux send --surface $SURFACE "You are performing a CROSS-REVIEW of Worker A's output.
+Worker A's output to review: {paste Worker A's diff or REVIEW.md content}
+Read target files for current state context.
+Create CROSS-REVIEW.md with per-item verdicts and new findings.
+Then commit."
+cmux send-key --surface $SURFACE enter
+
+# Poll for cross-review commit (2nd commit on branch)
+while [ "$(git -C .worktrees/{task-slug}-codex log --oneline main..HEAD | wc -l)" -lt 2 ]; do
+  sleep 10
+done
+```
+
+**exec fallback** (no context from Phase 2):
 ```bash
 cd .worktrees/{task-slug}-xreview-codex
 codex exec -s workspace-write \
@@ -484,6 +538,7 @@ Phases 2-4 can repeat. Common cycle triggers:
 
 ### 5) 최종 병합
 - main에 반영, worktree 정리, 필요 시 배포
+- cmux 모드: `cmux close-surface --surface $SURFACE` + `zmx kill collab-{task-slug}`
 ```
 
 ### 리뷰 비교 테이블 예시
@@ -542,7 +597,7 @@ Worker B 기반 병합 + Worker A의 README 변경 cherry-pick
 - If workers disagree, prefer objective criteria (tests, lints, reproducibility) over stylistic preference.
 - Clean up worktrees after merge to avoid git worktree clutter. Use `git branch -D` (force) instead of `-d` because worker branches are typically not merged via `git merge` and will appear unmerged.
 - The `{task-slug}` naming convention ensures multiple concurrent collab sessions do not collide.
-- This is v1.4.0. Changes from v1.3.0: added explicit invocation-only rule, Codex exec retry/timeout/fallback resilience, Claude#1 fallback for Worker B failure.
+- This is v1.5.0. Changes from v1.4.0: cmux+zmx dispatch mode for persistent Codex sessions with context retention across Phase 2→3. codex exec retained as fallback. Cross-review in cmux mode reuses the same Codex session for deeper comparison.
 
 ## References
 
