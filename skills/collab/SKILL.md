@@ -70,7 +70,7 @@ Key differences from code production:
 ```text
 Claude#1 (Orchestrator)
 ├── Claude#2 (Worker A, Agent tool, explicit worktree path, background)
-└── Codex    (Worker B, codex exec, separate git worktree)
+└── Codex    (Worker B, cmux+zmx or codex exec, separate git worktree)
 ```
 
 ## Worker Output Conventions
@@ -549,7 +549,7 @@ Phases 2-4 can repeat. Common cycle triggers:
   - `.worktrees/{task-slug}-claude`
   - `.worktrees/{task-slug}-codex`
 - Worker A(Claude#2): 명시적 경로 지시 + 백그라운드 실행
-- Worker B(Codex): 명시적 경로 지시 + codex exec
+- Worker B(Codex): 명시적 경로 지시 + cmux+zmx (또는 codex exec fallback)
 
 ### 3) 교차 리뷰
 - 양쪽 출력 수집 (REVIEW.md 또는 branch diff)

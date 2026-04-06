@@ -2,14 +2,16 @@
 
 ---
 
-## ⚠️ CRITICAL: Always Use `codex exec`
+## Dispatch Mode
 
-**ALL commands in this document use `codex exec` - this is mandatory in Claude Code.**
+Two session continuation models exist depending on dispatch mode:
 
-❌ **NEVER**: `codex resume ...` (will fail with "stdout is not a terminal")
-✅ **ALWAYS**: `codex exec resume ...` (correct non-interactive mode)
+**cmux+zmx (recommended)**: Codex sessions persist via zmx. Reattach with `zmx attach <session-name>` — context is retained natively. No need for `codex exec resume`. See `skills/codex/SKILL.md` Mode A.
 
-Claude Code's bash environment is non-terminal. Plain `codex` commands will NOT work.
+**codex exec (fallback)**: Session continuation uses `codex exec resume --last`. All examples below use this mode.
+
+❌ **NEVER** in exec mode: `codex resume ...` (fails with "stdout is not a terminal")
+✅ **ALWAYS** in exec mode: `codex exec resume ...` (correct non-interactive mode)
 
 ---
 
@@ -20,7 +22,7 @@ Claude Code's bash environment is non-terminal. Plain `codex` commands will NOT 
 
 **Skill Executes**:
 ```bash
-codex exec -m gpt-5.1 -s read-only \
+codex exec -m gpt-5.4 -s read-only \
   -c model_reasoning_effort=high \
   "Help me design a queue data structure in Python"
 ```
@@ -53,7 +55,7 @@ codex exec resume --last
 **User**: "Design a REST API for a blog system"
 
 ```bash
-codex exec -m gpt-5.1 -s read-only \
+codex exec -m gpt-5.4 -s read-only \
   -c model_reasoning_effort=high \
   "Design a REST API for a blog system"
 ```
@@ -248,7 +250,7 @@ This allows Codex to provide increasingly sophisticated, context-aware assistanc
 
 **Fix**: Start a new session first:
 ```bash
-codex exec -m gpt-5.1"Design a queue"
+codex exec -m gpt-5.4"Design a queue"
 ```
 
 Then subsequent "continue" requests will work.

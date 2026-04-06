@@ -49,7 +49,7 @@ User Request -> handoff entry creation -> codex exec with entry content -> resul
 LATEST_ENTRY=$(ls -t .agent/entry-*.md | head -1)
 ENTRY_CONTENT=$(cat "$LATEST_ENTRY")
 
-codex exec -m gpt-5.2 -s workspace-write \
+codex exec -m gpt-5.4 -s workspace-write \
   -c model_reasoning_effort=xhigh \
   "Context from Claude Code:
 
@@ -84,7 +84,7 @@ Detect limit -> create handoff entry -> delegate to codex -> continue work
 # - Next Steps
 
 # Step 2: Delegate remaining work to codex
-codex exec -m gpt-5.2 -s workspace-write \
+codex exec -m gpt-5.4 -s workspace-write \
   -c model_reasoning_effort=xhigh \
   "Read .agent/entry-20251223-150000-KST.md and continue the work.
 Follow Next Steps section. Respect Decisions Made strictly."
@@ -223,7 +223,7 @@ EOF
 
 # Use in codex delegation
 CONTEXT=$(gather_claude_context)
-codex exec -m gpt-5.2 -s workspace-write \
+codex exec -m gpt-5.4 -s workspace-write \
   -c model_reasoning_effort=xhigh \
   "${CONTEXT}
 
@@ -243,7 +243,7 @@ Task: [user's request]"
 # Step 2: Reference entry in codex prompt
 LATEST_ENTRY=$(ls -t .agent/entry-*.md | head -1)
 
-codex exec -m gpt-5.2 -s workspace-write \
+codex exec -m gpt-5.4 -s workspace-write \
   -c model_reasoning_effort=xhigh \
   "Read the handoff entry at ${LATEST_ENTRY} and continue the work.
 
@@ -261,7 +261,7 @@ After completion, summarize what was done and any issues encountered."
 **For shorter contexts, include directly in prompt:**
 
 ```bash
-codex exec -m gpt-5.2 -s workspace-write \
+codex exec -m gpt-5.4 -s workspace-write \
   -c model_reasoning_effort=xhigh \
   "## Context from Claude Code
 
@@ -509,7 +509,7 @@ codex "Read .agent/entry-20251223-143000-KST.md and continue."
 ```bash
 ENTRY_CONTENT=$(cat .agent/entry-20251223-143000-KST.md)
 
-codex exec -m gpt-5.2 -s workspace-write \
+codex exec -m gpt-5.4 -s workspace-write \
   -c model_reasoning_effort=xhigh \
   "${ENTRY_CONTENT}
 
@@ -604,7 +604,7 @@ After completion, provide a summary of:
 
 # 2. Delegate to codex with context
 ENTRY=$(cat $(ls -t .agent/entry-*.md | head -1))
-codex exec -m gpt-5.2 -s workspace-write \
+codex exec -m gpt-5.4 -s workspace-write \
   -c model_reasoning_effort=xhigh \
   "${ENTRY}
 

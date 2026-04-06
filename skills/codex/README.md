@@ -6,7 +6,7 @@ A Claude Code skill for delegating complex coding tasks to Codex CLI (OpenAI's G
 
 This skill enables seamless integration between Claude Code and Codex CLI, allowing you to:
 
-- 🧠 **Leverage high-reasoning models** - Use GPT-5.2 with xhigh reasoning for complex tasks
+- 🧠 **Leverage high-reasoning models** - Use GPT-5.4 with xhigh reasoning for complex tasks
 - 🔄 **Preserve context across agents** - Hand off work between Claude and Codex without losing information
 - ⚡ **Optimize for execution** - Use Codex for mechanical bulk edits, Claude for decision-making
 - 📦 **Session continuity** - Resume Codex sessions and maintain conversation history
@@ -36,9 +36,16 @@ Claude will read the handoff entry and include it in the Codex prompt.
 
 ## Features
 
-### 1. High-Reasoning Models
+### 1. Dispatch Modes
 
-- **GPT-5.2** (default) - Latest model with all reasoning levels
+Two dispatch modes are supported (auto-detected):
+
+- **Mode A: cmux+zmx** (recommended) — Persistent Codex sessions via zmx, controlled through cmux split pane. Context retained across prompts. Requires `cmux` automation mode + `zmx`.
+- **Mode B: codex exec** (fallback) — Non-interactive execution for environments without cmux/zmx.
+
+### 2. High-Reasoning Models
+
+- **GPT-5.4** (default) - Latest model with maximum capability
 - **xhigh reasoning** - Maximum capability for complex tasks
 - **Workspace-write** sandbox - Full file modification access
 

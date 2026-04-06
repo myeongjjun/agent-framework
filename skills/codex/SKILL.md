@@ -84,9 +84,10 @@ while ! cmux read-screen --surface $SURFACE --lines 5 2>/dev/null | grep -q "gpt
 cmux send --surface $SURFACE "prompt text"
 cmux send-key --surface $SURFACE enter
 
-# 5. Cleanup when done
+# 5. Cleanup when done (keep zmx session alive for reuse)
 cmux close-surface --surface $SURFACE
-zmx kill codex-{task}
+# Do NOT zmx kill — session stays alive (clients=0) for future reattach.
+# Use zmx kill only for explicit cleanup (e.g., zc alias).
 ```
 
 **Advantages**: Session persistence, real-time observation, context retention across prompts.
@@ -869,7 +870,7 @@ When a user makes a request that falls into one of the above categories, determi
 
 ### Bash CLI Command Structure
 
-**IMPORTANT**: Always use `codex exec` for non-interactive execution. Claude Code's bash environment is non-terminal, so the interactive `codex` command will fail with "stdout is not a terminal" error.
+**IMPORTANT**: When using exec mode (Mode B), always use `codex exec` for non-interactive execution. When cmux+zmx is available (Mode A), interactive `codex` is driven through the cmux split pane instead.
 
 #### For Code Editing Tasks (Default)
 
@@ -889,10 +890,11 @@ codex exec -m gpt-5.4 -s read-only \
   "<user's prompt>"
 ```
 
-**Why `codex exec`?**
-- Non-interactive mode required for automation and Claude Code integration
+**Why `codex exec` (Mode B)?**
+- Non-interactive mode required when cmux+zmx is unavailable
 - Produces clean output suitable for parsing
 - Works in non-TTY environments (like Claude Code's bash)
+- When cmux+zmx is available, prefer Mode A for session persistence and context retention
 
 ### Model Selection Logic
 
@@ -1046,9 +1048,29 @@ When user indicates they want to continue a previous Codex conversation:
 - Follow-up context referencing previous Codex work
 - Explicit request like "continue where we left off"
 
-### Resuming Sessions
+### Mode A: zmx Session Reattach (recommended)
 
-For continuation requests, use the `codex resume` command:
+When cmux+zmx is available and a zmx session exists, context is retained natively:
+
+```bash
+# Check for existing session
+PROJECT_REL="${PWD#$HOME/}"
+SESSION_NAME="codex-${PROJECT_REL//\//-}"
+EXISTING=$(zmx list 2>/dev/null | grep "name=${SESSION_NAME}[[:space:]]")
+
+if [[ -n "$EXISTING" && "$EXISTING" != *"ended="* ]]; then
+  # Reattach — codex remembers previous work
+  SURFACE=$(cmux new-split right 2>&1 | awk '{print $2}')
+  cmux send --surface $SURFACE "zmx attach $SESSION_NAME\n"
+  # Send follow-up prompt directly — full context is retained
+fi
+```
+
+No `codex exec resume` needed — zmx keeps the codex process alive with all context.
+
+### Mode B: codex exec resume (fallback)
+
+When cmux+zmx is unavailable, use `codex exec resume`:
 
 #### Resume Most Recent Session (Recommended)
 
@@ -1064,29 +1086,22 @@ This automatically continues the most recent Codex session with all previous con
 codex exec resume <session-id>
 ```
 
-Resume a specific session by providing its UUID. Get session IDs from previous Codex output or by running `codex exec resume --last` to see the most recent session.
+Resume a specific session by providing its UUID.
 
 **Note**: The interactive session picker (`codex resume` without arguments) is NOT available in non-interactive/Claude Code environments. Always use `--last` or provide explicit session ID.
 
 ### Decision Logic: New vs. Continue
 
-**Use `codex exec -m ... "<prompt>"`** when:
-- User makes a new, independent request
-- No reference to previous Codex work
-- User explicitly wants a "fresh" or "new" session
+**Mode A (cmux+zmx)**: If a zmx session for this project exists and is alive, always reattach. Context is retained automatically.
 
-**Use `codex exec resume --last`** when:
-- User indicates continuation ("continue", "resume", "add to that")
-- Follow-up question building on previous Codex conversation
-- Iterative development on same task
+**Mode B (exec)**:
+- **Use `codex exec -m ... "<prompt>"`** when: new, independent request
+- **Use `codex exec resume --last`** when: continuation of previous work
 
 ### Session History Management
 
-- Codex CLI automatically saves session history
-- No manual session ID tracking needed
-- Sessions persist across Claude Code restarts
-- Use `codex exec resume --last` to access most recent session
-- Use `codex exec resume <session-id>` for specific sessions
+- **Mode A**: zmx sessions persist independently. Use `zmx list` to see active sessions. Sessions stay alive (clients=0) after surface close.
+- **Mode B**: Codex CLI automatically saves session history. Use `codex exec resume --last` to access most recent session.
 
 ## Error Handling
 
