@@ -6,7 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 LOG_DIR="${HOME}/.claude/logs"
-REPORT_DIR="${LOG_DIR}/reports"
+REPORT_DIR="${REPO_ROOT}/.agent/observe/reports"
 SKILL_DIR="${HOME}/.claude/skills"
 
 RANGE_MODE="all"
@@ -35,7 +35,7 @@ OPTIONS:
   --errors      Show failure-focused output only
   --prompts     Show prompt-focused output only
   --skills      Show skill-focused output only
-  --report      Write a markdown report to ~/.claude/logs/reports/activity-YYYY-MM-DD.md
+  --report      Write a markdown report to .agent/observe/reports/activity-YYYY-MM-DD.md
   -h, --help    Show this help message
 
 DEFAULT:

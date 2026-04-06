@@ -2,7 +2,9 @@
 
 set -euo pipefail
 
-PROPOSAL_DIR="${HOME}/.claude/logs/proposals"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+PROPOSAL_DIR="${REPO_ROOT}/.agent/observe/proposals"
 
 usage() {
   cat <<'EOF'

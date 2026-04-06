@@ -48,12 +48,13 @@
 <!-- ACP:CRITICAL_CONSTRAINTS -->
 ### Critical Constraints (auto-synced)
 
+- **Framework Push Dual Review**: Public agent-framework push requires Claude + Codex review PASS → [`security-framework-push-dual-review.md`](agent-context/constraints/security-framework-push-dual-review.md)
 - **Skill Language Convention**: English for workflow/logic sections, Korean only for output format examples and trigger phrases → [`code-style-skill-language-convention.md`](agent-context/constraints/code-style-skill-language-convention.md)
 <!-- ACP:CRITICAL_CONSTRAINTS_END -->
 
 ## Project Info
 
-**Name**: Agent Workspace
+**Name**: Agent Framework
 **Purpose**: ACP 스킬 개발 및 Agent Context Pack 표준 정의
 **Stack**: Markdown, Bash, YAML
 

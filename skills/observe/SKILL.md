@@ -150,7 +150,7 @@ For each diagnosis finding, generate an Improvement Proposal:
 **Risk**: {what could go wrong}
 ```
 
-Save proposals to `~/.claude/logs/proposals/observe-YYYY-MM-DD.md`.
+Save proposals to `.agent/observe/proposals/observe-YYYY-MM-DD.md`.
 
 ### Phase 6: Report
 
@@ -177,7 +177,7 @@ Present summary to user in Korean:
    → 제안: Stop hook 추가하여 세션 종료 시 자동 요약
 
 ### 개선 제안서
-~/.claude/logs/proposals/observe-2026-03-25.md 에 3건 저장됨
+.agent/observe/proposals/observe-2026-03-25.md 에 3건 저장됨
 
 ### 다음 단계
 - 승인하려면 해당 제안을 /collab으로 구현하세요
@@ -206,7 +206,7 @@ This creates a cloud-backed remote agent that runs `/observe --days 7` every Mon
 ### What happens automatically
 
 1. Remote agent runs `/observe --days 7` on schedule
-2. Proposals are saved to `~/.claude/logs/proposals/observe-YYYY-MM-DD.md`
+2. Proposals are saved to `.agent/observe/proposals/observe-YYYY-MM-DD.md`
 3. On your next session, run `/improve` to review and apply proposals
 
 ### What still requires human approval

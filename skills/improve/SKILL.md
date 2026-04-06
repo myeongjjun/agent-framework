@@ -21,7 +21,7 @@ trigger_phrases:
 
 ## Purpose
 
-Close the loop after `/observe` by taking proposal files from `~/.claude/logs/proposals/`, presenting them for approval, previewing the concrete code changes, applying the approved improvements, releasing them, and recording the measured outcome for the next observation cycle.
+Close the loop after `/observe` by taking proposal files from `.agent/observe/proposals/`, presenting them for approval, previewing the concrete code changes, applying the approved improvements, releasing them, and recording the measured outcome for the next observation cycle.
 
 ## Inputs
 
@@ -31,7 +31,7 @@ Optional:
 - `--status <status>`: Filter to `new`, `approved`, `applied`, or `rejected`
 
 Primary data sources:
-- `~/.claude/logs/proposals/*.md`
+- `.agent/observe/proposals/*.md`
 - `./scripts/apply-proposal.sh`
 - `./scripts/analyze-activity.sh`
 
@@ -51,7 +51,7 @@ PROPOSAL_TAG=agent-v1.2.3 ./scripts/apply-proposal.sh mark observe-2026-03-25.md
 ### Phase 1: Load
 
 1. Run `./scripts/apply-proposal.sh list` to enumerate proposal files and current status.
-2. Read the selected proposal file(s) from `~/.claude/logs/proposals/`.
+2. Read the selected proposal file(s) from `.agent/observe/proposals/`.
 3. Parse every `## Proposal:` or `## Proposal N:` block in each file.
 4. Derive status from the trailing HTML comment:
 
