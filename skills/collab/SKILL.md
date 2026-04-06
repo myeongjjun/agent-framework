@@ -1,6 +1,6 @@
 ---
 name: collab
-version: 1.5.0
+version: 1.6.0
 description: >
   Orchestrate dual-agent collaboration (Claude worker + Codex worker) in dedicated git
   worktrees keyed by task slug, with cross-review and synthesis into a single merged result.
@@ -211,20 +211,43 @@ fi
 - Real-time observation via cmux split pane
 - Session survives cmux surface close (zmx persistence)
 
+**Session naming** — use project-based names (like `cx` alias) for session reuse:
+
+```bash
+# Derive session name from project directory (matches cx/c alias pattern)
+PROJECT_REL="${PWD#$HOME/}"
+SESSION_NAME="codex-${PROJECT_REL//\//-}"
+
+# Check if an existing session can be reused
+EXISTING=$(zmx list 2>/dev/null | grep "name=${SESSION_NAME}[[:space:]]")
+if [[ -n "$EXISTING" && "$EXISTING" != *"ended="* && "$EXISTING" != *"unreachable"* ]]; then
+  REUSE=true   # Reattach to existing session (context preserved)
+else
+  REUSE=false  # Create new session
+fi
+```
+
 ```bash
 # 1. Create cmux split pane
 SURFACE=$(cmux new-split right 2>&1 | awk '{print $2}')
 
-# 2. Start zmx session + codex in the worktree
-cmux send --surface $SURFACE "zmx attach collab-{task-slug} codex --full-auto -C $(pwd)/.worktrees/{task-slug}-codex\n"
+# 2. Start or reattach zmx session
+if [[ "$REUSE" == true ]]; then
+  # Reattach — codex remembers previous work in this project
+  cmux send --surface $SURFACE "zmx attach $SESSION_NAME\n"
+else
+  # New session — start codex in the worktree
+  cmux send --surface $SURFACE "zmx attach $SESSION_NAME codex --full-auto -C $(pwd)/.worktrees/{task-slug}-codex\n"
+fi
 
 # 3. Wait for codex to be ready
 while ! cmux read-screen --surface $SURFACE --lines 5 2>/dev/null | grep -q "gpt-5"; do
   sleep 5
 done
 
-# 4. Send task prompt
-cmux send --surface $SURFACE "$PROMPT_WORKER_CODEX"
+# 4. Send task prompt (include worktree path for context)
+cmux send --surface $SURFACE "Working directory: $(pwd)/.worktrees/{task-slug}-codex
+$PROMPT_WORKER_CODEX"
 cmux send-key --surface $SURFACE enter
 
 # 5. Poll for completion (worktree commit)
@@ -233,7 +256,9 @@ while [ -z "$(git -C .worktrees/{task-slug}-codex log --oneline main..HEAD 2>/de
 done
 ```
 
-**Store `$SURFACE` for Phase 3** — the same surface will be reused for cross-review dispatch.
+**Store `$SURFACE` and `$SESSION_NAME` for Phase 3** — the same surface and session will be reused for cross-review.
+
+**Session lifecycle**: After collab completes, do NOT `zmx kill` the session. Leave it alive (clients=0) for future reattach. Only `cmux close-surface` to clean the split pane. Use `zmx kill` only for explicit cleanup (`zc` alias).
 
 **Timeout**: If no commit after 10 minutes, check with `cmux read-screen --surface $SURFACE --lines 20` to diagnose. If Codex is stuck, `cmux send-key --surface $SURFACE ctrl+c` and retry with simplified prompt.
 
@@ -538,7 +563,7 @@ Phases 2-4 can repeat. Common cycle triggers:
 
 ### 5) 최종 병합
 - main에 반영, worktree 정리, 필요 시 배포
-- cmux 모드: `cmux close-surface --surface $SURFACE` + `zmx kill collab-{task-slug}`
+- cmux 모드: `cmux close-surface --surface $SURFACE` (zmx 세션은 유지 — 재사용 가능)
 ```
 
 ### 리뷰 비교 테이블 예시
@@ -597,7 +622,7 @@ Worker B 기반 병합 + Worker A의 README 변경 cherry-pick
 - If workers disagree, prefer objective criteria (tests, lints, reproducibility) over stylistic preference.
 - Clean up worktrees after merge to avoid git worktree clutter. Use `git branch -D` (force) instead of `-d` because worker branches are typically not merged via `git merge` and will appear unmerged.
 - The `{task-slug}` naming convention ensures multiple concurrent collab sessions do not collide.
-- This is v1.5.0. Changes from v1.4.0: cmux+zmx dispatch mode for persistent Codex sessions with context retention across Phase 2→3. codex exec retained as fallback. Cross-review in cmux mode reuses the same Codex session for deeper comparison.
+- This is v1.6.0. Changes from v1.5.0: project-based zmx session naming for long-term reuse (matches cx/c alias pattern). Existing codex sessions are reattached instead of creating new ones. Sessions kept alive after collab for future reattach.
 
 ## References
 
