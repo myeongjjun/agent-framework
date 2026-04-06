@@ -1,6 +1,6 @@
 ---
 name: collab
-version: 1.3.0
+version: 1.4.0
 description: >
   Orchestrate dual-agent collaboration (Claude worker + Codex worker) in dedicated git
   worktrees keyed by task slug, with cross-review and synthesis into a single merged result.
@@ -40,6 +40,8 @@ Use `/collab` when:
 Avoid `/collab` when:
 - The task is tiny (a few-line change) where orchestration overhead dominates.
 - The task requires shared mutable state (the pattern assumes dedicated worktrees).
+
+**Invocation rule**: `/collab` must only activate on an explicit user command (`/collab` or a trigger phrase). The agent must NEVER auto-initiate the collab workflow based on its own assessment of task suitability. If the user did not explicitly invoke collab, do not enter this workflow.
 
 ## Task Type Variants
 
@@ -198,7 +200,25 @@ codex exec -s workspace-write \
   "$PROMPT_WORKER_CODEX"
 ```
 
-**Timeout guideline**: If codex exec has not produced output within 10 minutes, investigate (`ps aux | grep codex` and check worktree for file changes). Verify the process is truly stuck before killing.
+#### Codex exec resilience (timeout, retry, fallback)
+
+**Timeout handling**:
+1. At 5 minutes with no output: check process status (`ps aux | grep codex`) and worktree for file changes. If files are being modified, wait.
+2. At 10 minutes with no output and no file changes: kill the process and proceed to retry.
+
+**Retry logic** (max 2 retries):
+- Retry 1: re-run `codex exec` with a simplified prompt. Remove verbose context, keep only the essential task description and path preamble. Lower reasoning effort by one level (e.g., `high` → `medium`).
+- Retry 2: minimal 3-line prompt — path preamble + single-sentence task + "commit when done". Keep reasoning effort at `low`.
+- After each retry, wait up to 10 minutes before declaring failure.
+
+**Fallback — Claude#1 takes over Worker B**:
+If Codex fails after all retries (2 retries = 3 total attempts), Claude#1 (orchestrator) takes over:
+1. Work directly in the Codex worktree (`.worktrees/{task-slug}-codex`).
+2. Execute the original task prompt.
+3. Commit on `collab/{task-slug}-codex` branch.
+4. Proceed to Phase 3 (cross-review) normally.
+
+This guarantees the collab workflow completes even when Codex is unavailable.
 
 `PROMPT_WORKER_CODEX` must include an explicit path preamble, for example:
 
@@ -522,7 +542,7 @@ Worker B 기반 병합 + Worker A의 README 변경 cherry-pick
 - If workers disagree, prefer objective criteria (tests, lints, reproducibility) over stylistic preference.
 - Clean up worktrees after merge to avoid git worktree clutter. Use `git branch -D` (force) instead of `-d` because worker branches are typically not merged via `git merge` and will appear unmerged.
 - The `{task-slug}` naming convention ensures multiple concurrent collab sessions do not collide.
-- This is v1.3.0. Changes from v1.2.0: added task type variants, cross-review dispatch, worker output conventions, permission fallback, worktree preconditions.
+- This is v1.4.0. Changes from v1.3.0: added explicit invocation-only rule, Codex exec retry/timeout/fallback resilience, Claude#1 fallback for Worker B failure.
 
 ## References
 

@@ -94,4 +94,19 @@ if [[ "$has_alert" == true ]]; then
   echo "[session-review] Run: ./scripts/analyze-activity.sh --source claude --days 1 --errors" >&2
 fi
 
+# Check for recent handoff entry — suggest /takeover if found
+LATEST_MD="${PWD}/.agent/LATEST.md"
+if [ -f "$LATEST_MD" ]; then
+  if [[ "$(uname)" == "Darwin" ]]; then
+    latest_mtime=$(stat -f '%m' "$LATEST_MD")
+  else
+    latest_mtime=$(stat -c '%Y' "$LATEST_MD")
+  fi
+  now=$(date +%s)
+  age_hours=$(( (now - latest_mtime) / 3600 ))
+  if [ "$age_hours" -lt 24 ]; then
+    echo "[session-review] Recent handoff found: .agent/LATEST.md (${age_hours}h ago) -- consider running /takeover" >&2
+  fi
+fi
+
 exit 0

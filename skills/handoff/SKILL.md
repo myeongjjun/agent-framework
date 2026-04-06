@@ -1,6 +1,6 @@
 ---
 name: handoff
-version: 1.1.0
+version: 1.2.0
 description: >
   Create a session-focused handoff entry under .agent/entry-*.md when handing work
   to another agent or when context is near limit. Captures conversation context,
@@ -66,6 +66,9 @@ Create a concise, **conversation-focused** handoff entry so another agent can co
 | Long session | > 2 hours elapsed, execution-heavy remaining work |
 | Usage hard-limit | `/usage` shows 100% or "You've hit your limit" |
 | Usage early-warning | `/usage` shows >= 80% used |
+| Long prompt count | Session exceeds 50 prompts — agent should proactively suggest /handoff |
+
+**Proactive suggestion rule**: When the session reaches 50+ prompts, the agent should proactively suggest running `/handoff` to the user. This is a suggestion, not automatic execution. At 80+ prompts, the suggestion should become more prominent. The agent should mention the current prompt count and the potential for context degradation.
 
 ## Actions (Mandatory Sequence)
 

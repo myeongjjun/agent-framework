@@ -338,10 +338,10 @@ Good:
 
 **Always redact sensitive information:**
 ```markdown
-Bad: API_KEY=sk_live_abc123xyz789
+Bad: API_KEY=your-secret-key-here
 Good: API_KEY=<REDACTED>
 
-Bad: DATABASE_URL=postgres://user:pass@host/db
+Bad: DATABASE_URL=postgres://user:password@host/db
 Good: DATABASE_URL=<REDACTED>
 ```
 
