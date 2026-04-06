@@ -8,7 +8,7 @@
 #   ./sync-hooks.sh                          # Show status
 #   ./sync-hooks.sh --status                 # Show diff only
 #   ./sync-hooks.sh --push                   # Push all categories
-#   ./sync-hooks.sh --push --profile clickhouse  # Push general + clickhouse only
+#   ./sync-hooks.sh --push --profile myproject  # Push general + clickhouse only
 #   ./sync-hooks.sh --push --dry-run         # Preview changes
 #   ./sync-hooks.sh --list                   # List categories and hooks
 
@@ -53,7 +53,7 @@ OPTIONS:
   --dry-run                Preview changes without applying
   -h, --help               Show this help
 
-Categories are subdirectories under hooks/ (e.g., clickhouse, general).
+Categories are subdirectories under hooks/ (e.g., general, observability).
 The 'general' category is always included.
 
 Source:   ${SOURCE_DIR}/

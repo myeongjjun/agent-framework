@@ -1,6 +1,6 @@
 # Architecture Decision Records (ADR)
 
-This directory contains Architecture Decision Records for the AI Workspace project.
+This directory contains Architecture Decision Records for the Agent Framework project.
 
 ## What is an ADR?
 
