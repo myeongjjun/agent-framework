@@ -1,6 +1,6 @@
 # Plugins
 
-Plugin directory for extending agent-workspace functionality.
+Plugin directory for extending agent-framework functionality.
 
 ## Structure
 

@@ -1,6 +1,6 @@
 # Scripts
 
-Helper scripts and utilities for agent-workspace management.
+Helper scripts and utilities for agent-framework management.
 
 ## Purpose
 

@@ -1,6 +1,6 @@
 #!/bin/bash
 # sync-skills.sh
-# Detect drift between source skills (agent-workspace/skills/) and deployed skills,
+# Detect drift between source skills (agent-framework/skills/) and deployed skills,
 # and selectively synchronize in either direction.
 # Supports Claude (~/.claude/skills) and Codex (~/.codex/skills) targets.
 #

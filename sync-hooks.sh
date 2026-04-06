@@ -1,6 +1,6 @@
 #!/bin/bash
 # sync-hooks.sh
-# Sync hook scripts from source (agent-workspace/hooks/<category>/) to deployed (~/.claude/hooks/).
+# Sync hook scripts from source (agent-framework/hooks/<category>/) to deployed (~/.claude/hooks/).
 # Reads HOOKS.md manifest to auto-update ~/.claude/settings.json hooks section.
 # Supports category-based profiles: --profile <name> activates general + <name> hooks.
 #

@@ -54,4 +54,4 @@ Manual review checklist:
 
 ## References
 
-- [ADR-017: Skill Authoring Conventions and AGENTS.md Auto-Loading](../decisions/2026-02-26-skill-authoring-conventions-and-auto-loading.md)
+- ADR-017: Skill Authoring Conventions and AGENTS.md Auto-Loading

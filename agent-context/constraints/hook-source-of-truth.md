@@ -3,7 +3,7 @@
 - **Severity**: High
 - **Category**: Architecture
 - **Scope**: `hooks/`, `~/.claude/hooks/`, `~/.claude/settings.json`
-- **Related**: [ADR-021](../decisions/2026-03-25-hook-category-management.md), [mcp-config-source-of-truth](mcp-config-source-of-truth.md)
+- **Related**: ADR-021 (Hook Category Management)
 
 ## Rule
 

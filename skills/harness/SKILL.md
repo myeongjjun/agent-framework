@@ -231,7 +231,7 @@ After generating or modifying harness skills, deploy via `sync-skills.sh`:
 ./sync-skills.sh --target both --push  # Deploy to both Claude and Codex
 ```
 
-## Integration with agent-workspace
+## Integration with agent-framework
 
 - **`/collab`**: Use for designing the harness itself collaboratively (dual-agent worktree pattern).
 - **`/acp-decision`**: Record significant architectural decisions made during harness design.
