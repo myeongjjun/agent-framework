@@ -60,24 +60,34 @@
 
 ## Build & Deploy
 
+**Canonical entry point**: `./scripts/sync-all.sh` — deploys both skills
+and hooks in one call. Prefer this for day-to-day use. See ADR-016
+(amended by ADR-025).
+
 ```bash
-# 스킬 동기화 상태 확인 (Claude, 기본)
-./sync-skills.sh --status
+# Canonical: deploy skills + hooks together
+./scripts/sync-all.sh
 
-# 소스 → Claude 배포
-./sync-skills.sh --push
+# Dry-run preview
+./scripts/sync-all.sh --dry-run
+```
 
-# 소스 → Codex 배포
-./sync-skills.sh --codex --push
+Lower-level tools (used by `sync-all.sh` or when you need fine-grained
+control):
 
-# 소스 → 양쪽 배포
-./sync-skills.sh --target both --push
+```bash
+# Skill sync (see ADR-016)
+./sync-skills.sh --status                 # status only
+./sync-skills.sh --push                   # Claude only
+./sync-skills.sh --codex --push           # Codex only
+./sync-skills.sh --target both --push     # both
+./sync-skills.sh --push --dry-run         # preview
+./sync-skills.sh --list                   # list skills
 
-# 미리보기 (dry-run)
-./sync-skills.sh --push --dry-run
-
-# 스킬 목록
-./sync-skills.sh --list
+# Hook sync (see ADR-021)
+./sync-hooks.sh --status
+./sync-hooks.sh --push                    # all categories
+./sync-hooks.sh --push --profile <name>   # general + observability + <name>
 ```
 
 ---

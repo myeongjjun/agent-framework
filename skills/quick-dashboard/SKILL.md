@@ -1,5 +1,6 @@
 ---
 name: quick-dashboard
+version: 1.0.0
 description: 데이터 소스만 말하면 즉시 실행 가능한 Streamlit 대시보드 생성. 대시보드, 분석, 시각화, 모니터링 요청 시 사용.
 ---
 

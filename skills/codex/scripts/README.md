@@ -293,9 +293,9 @@ Usage: codex-with-context.sh [OPTIONS] "task description"
 OPTIONS:
   -h, --help              Show help
   -e, --entry FILE        Use specific entry (default: latest)
-  -m, --model MODEL       Model (default: gpt-5.2)
+  -m, --model MODEL       Model (default: gpt-5.4)
   -s, --sandbox MODE      Sandbox (default: workspace-write)
-  -r, --reasoning LEVEL   Reasoning (default: xhigh)
+  -r, --reasoning LEVEL   Reasoning (default: high)
   --read-only             Read-only sandbox
   --inline                Include entry inline (default)
   --reference             Reference entry by path
@@ -312,9 +312,9 @@ OPTIONS:
   -o, --objective TEXT        Primary objective
   -c, --constraints TEXT      Constraints (comma-separated)
   --completed TEXT            Work completed (comma-separated)
-  -m, --model MODEL           Model (default: gpt-5.2)
+  -m, --model MODEL           Model (default: gpt-5.4)
   -s, --sandbox MODE          Sandbox (default: workspace-write)
-  -r, --reasoning LEVEL       Reasoning (default: xhigh)
+  -r, --reasoning LEVEL       Reasoning (default: high)
   --read-only                 Read-only sandbox
   --skip-entry                Skip entry creation
   --dry-run                   Preview entry without executing

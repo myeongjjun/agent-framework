@@ -27,9 +27,9 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Configuration
-DEFAULT_MODEL="gpt-5.2"
+DEFAULT_MODEL="gpt-5.4"
 DEFAULT_SANDBOX="workspace-write"
-DEFAULT_REASONING="xhigh"
+DEFAULT_REASONING="high"
 
 # Help message
 show_help() {
@@ -41,7 +41,7 @@ Delegate task to Codex CLI with context from latest handoff entry (v1.0.0 format
 OPTIONS:
   -h, --help              Show this help message
   -e, --entry FILE        Use specific handoff entry file (default: latest)
-  -m, --model MODEL       Codex model to use (default: gpt-5.2)
+  -m, --model MODEL       Codex model to use (default: gpt-5.4)
   -s, --sandbox MODE      Sandbox mode (default: workspace-write)
   -r, --reasoning LEVEL   Reasoning effort (default: xhigh)
   --read-only             Use read-only sandbox (alias for -s read-only)

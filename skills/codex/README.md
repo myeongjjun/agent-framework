@@ -178,13 +178,13 @@ The skill activates on:
 
 ```bash
 # Model
--m gpt-5.2
+-m gpt-5.4
 
 # Sandbox (allows file modifications)
 -s workspace-write
 
-# Reasoning effort (maximum capability)
--c model_reasoning_effort=xhigh
+# Reasoning effort (balanced)
+-c model_reasoning_effort=high
 
 # Web search (enabled for research)
 --enable web_search_request

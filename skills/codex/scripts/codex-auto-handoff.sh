@@ -24,9 +24,9 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 # Configuration
-DEFAULT_MODEL="gpt-5.2"
+DEFAULT_MODEL="gpt-5.4"
 DEFAULT_SANDBOX="workspace-write"
-DEFAULT_REASONING="xhigh"
+DEFAULT_REASONING="high"
 
 show_help() {
   cat <<EOF
@@ -39,7 +39,7 @@ OPTIONS:
   -o, --objective TEXT        Primary objective (default: inferred from task)
   -c, --constraints TEXT      Constraints/decisions (comma-separated or quoted list)
   --completed TEXT            Work already completed (comma-separated)
-  -m, --model MODEL           Codex model (default: gpt-5.2)
+  -m, --model MODEL           Codex model (default: gpt-5.4)
   -s, --sandbox MODE          Sandbox mode (default: workspace-write)
   -r, --reasoning LEVEL       Reasoning effort (default: xhigh)
   --read-only                 Use read-only sandbox

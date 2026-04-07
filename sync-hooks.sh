@@ -2,13 +2,13 @@
 # sync-hooks.sh
 # Sync hook scripts from source (agent-framework/hooks/<category>/) to deployed (~/.claude/hooks/).
 # Reads HOOKS.md manifest to auto-update ~/.claude/settings.json hooks section.
-# Supports category-based profiles: --profile <name> activates general + <name> hooks.
+# Supports category-based profiles: --profile <name> activates general + observability + <name> hooks.
 #
 # Usage:
 #   ./sync-hooks.sh                          # Show status
 #   ./sync-hooks.sh --status                 # Show diff only
 #   ./sync-hooks.sh --push                   # Push all categories
-#   ./sync-hooks.sh --push --profile myproject    # Push general + myproject only
+#   ./sync-hooks.sh --push --profile myproject    # Push general + observability + myproject
 #   ./sync-hooks.sh --push --dry-run         # Preview changes
 #   ./sync-hooks.sh --list                   # List categories and hooks
 
@@ -49,12 +49,12 @@ MODES:
   --list                   List categories and hooks
 
 OPTIONS:
-  --profile <category>     Activate general + specified category only
+  --profile <category>     Activate general + observability + specified category
   --dry-run                Preview changes without applying
   -h, --help               Show this help
 
 Categories are subdirectories under hooks/ (e.g., general, observability).
-The 'general' category is always included.
+The 'general' and 'observability' categories are always included.
 
 Source:   ${SOURCE_DIR}/
 Deploy:   ${DEPLOY_DIR}/
