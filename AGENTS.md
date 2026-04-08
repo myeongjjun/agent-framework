@@ -60,12 +60,12 @@
 
 ## Build & Deploy
 
-**Canonical entry point**: `./scripts/sync-all.sh` — deploys both skills
-and hooks in one call. Prefer this for day-to-day use. See ADR-016
-(amended by ADR-025).
+**Canonical entry point**: `./scripts/sync-all.sh` — deploys skills,
+hooks, **and agents** in one call. Prefer this for day-to-day use.
+See ADR-016 (amended by ADR-025) and ADR-027 (agents).
 
 ```bash
-# Canonical: deploy skills + hooks together
+# Canonical: deploy skills + hooks + agents together
 ./scripts/sync-all.sh
 
 # Dry-run preview
@@ -88,7 +88,19 @@ control):
 ./sync-hooks.sh --status
 ./sync-hooks.sh --push                    # all categories
 ./sync-hooks.sh --push --profile <name>   # general + observability + <name>
+
+# Agent sync (see ADR-027)
+./sync-agents.sh --status                 # status only
+./sync-agents.sh --push                   # source → ~/.claude/agents/
+./sync-agents.sh --list                   # show name + model + tools
+./sync-agents.sh --push --dry-run         # preview
 ```
+
+**Source layout**:
+- `skills/<name>/SKILL.md` — user-facing slash commands
+- `hooks/<category>/<name>.sh` — lifecycle hooks
+- `agents/<name>.md` — internal worker agent definitions (NOT slash
+  commands; spawned via `claude --agent <name>`)
 
 ---
 

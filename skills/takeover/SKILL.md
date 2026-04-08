@@ -1,9 +1,11 @@
 ---
 name: takeover
-version: 1.1.0
+version: 1.2.0
 description: >
   Read the latest handoff entry and recover session context for continuation.
   Supports cross-referencing with session files for additional context.
+  v1.2.0: adds mandatory context load verification step (referenced files,
+  git hash, ACP references, next-step prereqs) before declaring completion.
 trigger_phrases:
   - "takeover"
   - "작업 인수인계"
@@ -121,6 +123,38 @@ if [ -n "$SESSION_ID" ]; then
 fi
 ```
 
+### 4.5) Verify context load completeness (MANDATORY)
+
+Before declaring takeover complete, run these deterministic checks and
+include results in the response. If ANY check fails, the response MUST
+open with **"⚠️ Takeover Incomplete"** and enumerate gaps BEFORE
+suggesting next actions. Do not proceed to work until the user
+acknowledges the gaps.
+
+**Checks:**
+
+1. **Key files exist** — for each file mentioned in `## Current State → Key files`,
+   run `test -f` and confirm presence. Missing files = ❌.
+2. **Git hash alignment** — extract the git hash from the `## Session` table
+   (`| Git |` row) and compare with `git rev-parse HEAD`. Divergence is
+   allowed (new commits since handoff) but MUST be reported with the
+   delta (`git log <entry-hash>..HEAD --oneline`).
+3. **ACP references valid** — grep `agent-context/decisions/` and
+   `agent-context/constraints/` for each ADR/constraint name referenced
+   in the entry. Missing reference = ❌.
+4. **Next-step prereqs loaded** — if any Next Step says "read X first"
+   or "re-read X before choosing", actually Read that file (first 50
+   lines minimum) BEFORE claiming takeover complete. Unread prereq = ❌.
+5. **Deployed artifacts present** — if the entry mentions a newly
+   deployed hook/script (e.g. `hooks/general/foo.sh`), verify it exists
+   at the expected path.
+
+**Rationale**: Handoff entries are lossy summaries-of-summaries. Without
+verification, the receiving agent risks shallow context — it can
+paraphrase the entry without actually loading the documents the entry
+depends on. This check is deterministic (file existence, grep, git
+diff), not LLM-as-judge, so it adds minimal overhead.
+
 ### 5) Respond with takeover summary
 
 ## Takeover Response Format
@@ -140,6 +174,18 @@ fi
 | Remaining | {N} tasks |
 | ACP | {initialized | not found} |
 | Constraints | {N} |
+
+### Context Load Verification
+
+| Check | Result |
+|---|---|
+| Key files present | ✅ / ❌ (list missing) |
+| Git hash alignment | ✅ matches / ⚠️ diverged (entry: {X}, HEAD: {Y}, N new commits) |
+| ACP references valid | ✅ / ❌ (list missing) |
+| Next-step prereqs loaded | ✅ read / ❌ pending ({filenames}) |
+| Deployed artifacts present | ✅ / ❌ |
+
+**Overall**: ✅ Ready to continue  **OR**  ⚠️ Takeover Incomplete — gaps: {list}
 
 ### Conversation Summary
 

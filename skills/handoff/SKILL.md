@@ -1,10 +1,13 @@
 ---
 name: handoff
-version: 1.2.0
+version: 1.3.0
 description: >
   Create a session-focused handoff entry under .agent/entry-*.md when handing work
   to another agent or when context is near limit. Captures conversation context,
   not just project state.
+  v1.3.0: surfaces optional session rotation (compress current session's RAM by
+  spawning a fresh claude that takes over via /takeover) — see ## Rotation and
+  ~/.claude/scripts/handoff-rotate.sh.
 trigger_phrases:
   - "handoff"
   - "인계"
@@ -216,6 +219,17 @@ claude "Read .agent/{ENTRY_FILE} and continue. Follow Next Steps section."
 # For Codex
 codex "Read .agent/{ENTRY_FILE} and continue. Follow Next Steps section."
 ```
+
+## Next Action Options
+
+After this entry is written, you have two ways forward:
+
+| Option | When | Command |
+|---|---|---|
+| **A. Defer** | Just close session, or keep working in current context | (nothing — exit naturally, next agent runs `/takeover`) |
+| **B. Rotate** | Compress this session's RAM by spawning fresh Y in same zmx | `~/.claude/scripts/handoff-rotate.sh` |
+
+See `## Rotation` in SKILL.md for the empirical workflow and caveats.
 ```
 
 ## Section Guidelines
@@ -248,8 +262,67 @@ codex "Read .agent/{ENTRY_FILE} and continue. Follow Next Steps section."
 ### Takeover
 - Ready-to-run commands for both Claude and Codex
 
+## Rotation (Optional follow-up to /handoff)
+
+After writing the entry, the user has **two ways forward**:
+
+1. **Defer**: just keep working in this session, or close it. Next agent
+   runs `/takeover` whenever they want.
+2. **Rotate** (RAM compression): kill the current heavy claude and spawn
+   a fresh one in the same zmx that immediately runs `/takeover`. Use
+   when this session's context is bloated and the remaining work doesn't
+   need the full history.
+
+### Why rotation exists
+
+Handoff entries are designed to be **lossy summaries** (~2000 tokens).
+A heavy session may carry 200k+ tokens of internal state. After
+`/handoff`, all the load-bearing context is in the entry file. The
+rest is dead weight slowing down future turns.
+
+Rotation lets you keep the **canonical zmx name** (`claude-<project>`)
+without rename gymnastics, while archiving the heavy session as a
+lossless `.jsonl` file you can `claude --resume <uuid>` later.
+
+### Rotation flow (Option 2 — semi-auto, validated 2026-04-07)
+
+```
+t=0  /handoff writes .agent/entry-*.md   ← you are here
+t=1  ~/.claude/scripts/handoff-rotate.sh           ← orchestrator launches
+t=2  orchestrator: kill -QUIT <orig_pid> ← original claude exits
+t=3  orchestrator: cmux send "zmx attach <name> claude" ← fresh Y starts
+t=4  orchestrator: cmux send "/takeover" ← Y loads handoff entry
+t=5  user verifies Y, then: zmx kill <tmp-name>
+```
+
+**Critical empirical findings (do NOT regress):**
+- ❌ `cmux send-key 'ctrl+\'` does NOT trigger SIGQUIT (key injection
+  bypasses tty driver). Use `kill -QUIT <pid>` directly.
+- ✅ `claude --continue` brief co-ownership of a session file (~30s) is
+  safe — no jsonl corruption observed.
+- ✅ The original zmx session ends when its root command (`claude`)
+  exits — but the same zmx name can be reattached immediately:
+  `zmx attach <same-name> claude`.
+
+### When to use rotation
+- Long sessions (>50 messages) where remaining work is small
+- Just before tackling a fresh subtask that needs minimal prior context
+- Token usage approaching 80% but you're not done with the work
+
+### When NOT to use rotation
+- Session is short (<20 messages) — overhead not worth it
+- You need to reference recent dialog turns the entry doesn't capture
+- You're about to `/exit` anyway
+
+### References
+- Proposal + empirical results: `.collab/handoff-rotate-proposal.md`
+- Script: `~/.claude/scripts/handoff-rotate.sh`
+- Related: ADR-026 (handoff rotation orchestrator pattern)
+
 ## Notes
 
 - **Early warning**: At 80% usage, start drafting but don't write until triggered
 - **No secrets**: Always redact API keys, tokens, passwords
 - **Compact**: Prefer tables and bullet points over prose
+- **Rotation is optional**: Never auto-rotate. Always surface it as a
+  choice in the response. The user must decide.
