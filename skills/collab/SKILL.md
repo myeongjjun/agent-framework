@@ -1,9 +1,11 @@
 ---
 name: collab
-version: 1.6.0
+version: 2.0.0
 description: >
-  Orchestrate dual-agent collaboration (Claude worker + Codex worker) in dedicated git
-  worktrees keyed by task slug, with cross-review and synthesis into a single merged result.
+  Orchestrate dual-agent collaboration (Claude worker + Codex worker) by
+  sending a single collab request to the Global Session Orchestrator, which
+  launches both workers in dedicated git worktrees via conductor.sh. The skill
+  drives cross-review, synthesis, and merge in the caller's session.
 trigger_phrases:
   - "/collab"
   - "collab"
@@ -13,22 +15,30 @@ trigger_phrases:
   - "병렬 실행"
   - "cross review"
   - "동시 작업"
+output_dir: "~/.claude/orchestrator"
 ---
 
-# Collab — Dual-Agent Worktree Orchestration
+# Collab — Orchestrator-mediated Dual-Agent Collaboration
 
 ## ACP Integration
 
+> 이 스킬은 AGENTS.md의 ACP 규칙을 준수합니다.
+
 - Follows **ADR-013 Pattern 1: Dual-Agent Worktree Review** (`../../agent-context/decisions/2026-01-15-a2a-parallel-distributed-model.md`).
-- Follows **ADR-017 Rule 2** language convention: English for workflow/notes, Korean only for trigger phrases and output format examples (`../../agent-context/decisions/2026-02-26-skill-authoring-conventions-and-auto-loading.md`).
+- Follows **ADR-017 Rule 2** language convention: English for workflow/notes, Korean only for trigger phrases and output format examples.
+- Follows **ADR-028 Stage 0.2 Phase C**: all multi-agent launches go through the Global Session Orchestrator.
 - When new constraints or architecture decisions are discovered during orchestration, record them via `/acp-constraint` or `/acp-decision` (do not edit `agent-context/` directly).
 
 ## Purpose
 
-Run two independent workers concurrently (Claude#2 and Codex) on the **same task** inside **dedicated git worktrees** keyed by a task slug, then use **cross-review** + **synthesis** to merge the best result to the main branch with clear provenance.
+Run two independent workers concurrently (Claude and Codex) on the **same task**
+inside **dedicated git worktrees**, then use **cross-review** and **synthesis**
+to merge the best result to the main branch with clear provenance.
 
-This skill is an orchestration playbook for the five required components in ADR-013:
-**Work Distribution**, **State Consistency**, **Checkpointing**, **Result Aggregation**, **Observability**.
+This is a thin client for the orchestrator's `type: collab` request.
+The orchestrator handles worktree creation, sibling spawn, and state tracking
+for both workers. The skill handles planning, polling, cross-review dispatch,
+synthesis, and merge — the LLM-heavy and context-dependent phases.
 
 ## When to Use
 
@@ -41,494 +51,328 @@ Avoid `/collab` when:
 - The task is tiny (a few-line change) where orchestration overhead dominates.
 - The task requires shared mutable state (the pattern assumes dedicated worktrees).
 
-**Invocation rule**: `/collab` must only activate on an explicit user command (`/collab` or a trigger phrase). The agent must NEVER auto-initiate the collab workflow based on its own assessment of task suitability. If the user did not explicitly invoke collab, do not enter this workflow.
+**Invocation rule**: `/collab` must only activate on an explicit user command
+(`/collab` or a trigger phrase). The agent must NEVER auto-initiate the collab
+workflow based on its own assessment of task suitability.
 
 ## Task Type Variants
 
-This skill supports two task patterns. Identify the type in Phase 1 and follow the corresponding flow.
+Identify the type in Phase 1 and follow the matching flow:
 
-### Code Production (default)
+- **Code production (default)**: workers edit & commit → cross-review via diff → merge best result.
+- **Review / analysis**: workers produce `REVIEW.md` → cross-review evaluates findings → synthesis applies fixes to main (no branch merge).
 
-Workers produce code changes → cross-review via diff → merge best result.
+## Non-negotiable Requirements
 
-Phase flow: Plan → Dispatch (workers edit & commit) → Cross-review (diff branches) → Synthesis → Merge
+- Base slug must be lowercase kebab-case, **max 25 chars** (the orchestrator
+  appends `-claude` / `-codex` suffixes and conductor.sh caps slugs at 32).
+- The orchestrator agent MUST be running before the skill sends a request. If
+  not, the skill reports this and suggests
+  `bash scripts/orchestrator/start-agent.sh --execute`.
+- Every first call is a **dry-run preview**. The skill submits with
+  `dry_run: true`, shows both planned dispatches to the user, and only
+  re-submits with `dry_run: false` after explicit approval.
+- Do not override the orchestrator's worktree default; set `no_worktree: true`
+  only for review-only or documentation-only tasks and surface the reason.
+- Keep the base slot untouched. The orchestrator refuses any dispatch that
+  targets `claude-orchestrator-global` or a project base slot.
 
-### Review / Analysis
+## Workflow
 
-Workers produce analysis documents → cross-review evaluates each other's findings → synthesis applies fixes.
+### Phase 1 — Task Plan (caller session)
 
-Phase flow: Plan → Dispatch (workers produce REVIEW.md) → Cross-review (evaluate findings) → Synthesis → Apply fixes to main (no branch merge)
-
-Key differences from code production:
-- Workers create `REVIEW.md` (analysis), not code changes
-- Cross-review evaluates the _quality of findings_, not code diffs
-- Phase 5 applies fixes to original files on main, not branch merge/cherry-pick
-- Branch-level diff is not useful; review content comparison is the mechanism
-
-## Role Structure
-
-```text
-Claude#1 (Orchestrator)
-├── Claude#2 (Worker A, Agent tool, explicit worktree path, background)
-└── Codex    (Worker B, cmux+zmx or codex exec, separate git worktree)
-```
-
-## Worker Output Conventions
-
-Workers must create well-known files in their worktree root so the orchestrator can reliably collect results.
-
-| Phase | File | Contents |
-|-------|------|----------|
-| Phase 2 (code) | committed changes on branch | Code edits + self-review in commit message |
-| Phase 2 (review) | `REVIEW.md` | Strengths, Issues, Suggestions, Risk notes |
-| Phase 3 | `CROSS-REVIEW.md` | Per-item verdict on other worker's output, new findings |
-
-The orchestrator reads these files after each phase via `Read` tool on the worktree path:
-```
-/repo/.worktrees/{task-slug}-claude/REVIEW.md
-/repo/.worktrees/{task-slug}-codex/REVIEW.md
-```
-
-## Full Workflow (5 Phases, Cyclic)
-
-### Phase 1 — Task Plan (Claude#1)
-
-**Goal**: Define scope and create one identical task prompt for both workers.
-
-**Inputs**:
-- Task statement (what to do)
-- Target files / directories
-- Constraints (language, style, safety, deadlines)
-- Acceptance criteria (what "done" means)
+**Goal**: Define scope and produce one identical task brief for both workers.
 
 **Actions**:
-1. Choose a short, descriptive `{task-slug}` (e.g., `rename-skill`, `add-tests`, `fix-auth`) for observability and deterministic naming.
-2. **Identify the task type**: code production or review/analysis (see Task Type Variants above).
-3. Write a 5-10 line task plan (scope, constraints, expected outputs).
-4. Select reasoning effort for Worker B (Codex) based on task complexity:
 
-   | Effort | Task Type | Examples |
-   |--------|-----------|----------|
-   | `low` | Trivial text edits, formatting | Typo fix, comment change, whitespace |
-   | `medium` | Routine code changes | File rename, simple function edit, config update |
-   | `high` | Complex implementation (default) | New feature, refactoring, multi-file changes |
-   | `high` | Code review, ADR review | Review with cross-referencing, analysis |
-   | `xhigh` | Architecture-level work | Design decisions, complex algorithms, system design |
-   | `xhigh` | Deep audit, security review | Cross-codebase audit, architectural analysis |
+1. Choose a short, descriptive `base_slug` (e.g., `rename-skill`, `add-tests`,
+   `fix-auth`). Must be ≤25 chars.
+2. Identify task type: code production or review/analysis.
+3. Write a 5–10 line task plan (scope, constraints, expected outputs).
+4. Select reasoning effort for Codex based on task complexity:
 
-   Default to `high` when unsure. Use `xhigh` for deep reasoning or review tasks requiring extensive cross-referencing.
+   | Effort | Task Type |
+   |--------|-----------|
+   | `low` | Trivial text edits, formatting |
+   | `medium` | Routine code changes |
+   | `high` (default) | Complex implementation, review |
+   | `xhigh` | Architecture-level work, deep audit |
 
 5. Produce one **identical base prompt** for both workers, including:
    - Required outputs (patch, commands run, files changed)
-   - What to do if blocked (ask questions vs make assumptions)
-   - A "definition of done" checklist
-6. Decide worktree names and branch names up front:
-   - Worktrees: `.worktrees/{task-slug}-claude`, `.worktrees/{task-slug}-codex`
-   - Branches: `collab/{task-slug}-claude`, `collab/{task-slug}-codex`
-7. Build worker-specific prompt wrappers that prepend explicit path instructions while keeping the task content identical.
+   - What to do if blocked (ask vs assume)
+   - Definition-of-done checklist
+6. **Precondition**: all target files must be committed to HEAD before
+   dispatch — worktrees branch from HEAD, and uncommitted changes on main
+   will NOT be visible to workers. Commit first if needed:
 
-**Outputs**:
-- `PROMPT_WORKER_BASE` (identical task content)
-- `PROMPT_WORKER_CLAUDE`, `PROMPT_WORKER_CODEX` (path-prepended wrappers)
-- Worktree/branch naming plan
-- Task type (code production / review)
-- Reasoning effort level for Worker B
+   ```bash
+   git add <target-files> && git commit -m "WIP: stage files for collab"
+   ```
 
----
+**Outputs**: `base_slug`, task description (identical for both workers),
+task type, reasoning effort level.
 
-### Phase 2 — Task Dispatch (Claude#1 → Claude#2, Codex)
+### Phase 2 — Orchestrator collab dispatch (thin client)
 
-**Goal**: Start both workers concurrently in dedicated worktrees.
+**Goal**: Launch both workers via a single orchestrator request.
 
-#### Precondition: Target files must be committed
-
-**All files that workers need to read or modify must be committed to HEAD before creating worktrees.** Worktrees branch from the current HEAD — uncommitted or staged changes on main will NOT be present in the worktree.
-
-If the task involves reviewing recently created files, commit them first:
-```bash
-git add <target-files> && git commit -m "WIP: stage files for collab review"
-```
-
-#### Step 0: Manual worktree setup (required before any dispatch)
+**Step 2a — Verify orchestrator is alive**:
 
 ```bash
-# From repo root (main worktree)
-mkdir -p .worktrees
-git worktree add -b collab/{task-slug}-claude .worktrees/{task-slug}-claude
-git worktree add -b collab/{task-slug}-codex .worktrees/{task-slug}-codex
+bash scripts/orchestrator/health.sh
 ```
 
-#### Worker A: Claude#2 dispatch (Agent tool; explicit path; background)
+If the exit code is non-zero, stop and tell the user to start the orchestrator
+with `bash scripts/orchestrator/start-agent.sh --execute`. Do not auto-start.
 
-```text
-Agent(
-  subagent_type: "general-purpose",
-  run_in_background: true,
-  prompt: PROMPT_WORKER_CLAUDE
-)
-```
-
-> **Permission note**: Sub-agents inherit the user's permission settings. If Write/Bash permissions are not pre-approved, Worker A will be blocked from editing files and running git commands. In that case, the **orchestrator must handle file writes and commits on Worker A's behalf** after the agent returns its analysis.
-
-`PROMPT_WORKER_CLAUDE` must include an explicit path preamble, for example:
-
-```text
-You are Worker A (Claude#2) in a dual-agent collaboration pattern.
-Your working directory: /repo/.worktrees/{task-slug}-claude
-Work ONLY inside this directory.
-```
-
-**Expectations for Claude#2**:
-- Work only inside `.worktrees/{task-slug}-claude`.
-- Code production: create a clean commit (or a short commit series) on `collab/{task-slug}-claude`.
-- Review/analysis: produce `REVIEW.md` at the worktree root; optionally commit for provenance.
-- Produce a short self-review (strengths / risks / assumptions).
-- If permission-blocked: return the intended file content in the response text so the orchestrator can write it.
-
-#### Worker B: Codex dispatch
-
-Detect dispatch mode at the start of Phase 2:
+**Step 2b — Dry-run preview**:
 
 ```bash
-# cmux+zmx mode: persistent Codex session with context retention across phases
-if command -v cmux &>/dev/null && command -v zmx &>/dev/null && cmux ping &>/dev/null; then
-  DISPATCH_MODE="cmux"
-else
-  DISPATCH_MODE="exec"  # fallback
-fi
+bash -c '
+  . scripts/orchestrator/protocol.sh
+  orchestrator_request --type collab --slug "<base_slug>" --timeout 120 --payload "## Payload
+- slug: <base_slug>
+- description: <task description>
+- reasoning_effort: <low|medium|high|xhigh>
+- dry_run: true
+- no_worktree: false
+"
+'
 ```
 
-##### Mode A: cmux+zmx dispatch (recommended)
+Display the response `## Result` section to the user. It contains the planned
+Claude and Codex dispatches (slot names, worktree paths, work_item paths).
+Ask explicitly:
 
-**Prerequisites:**
-- cmux with socket control mode set to "자동화 모드" (Settings > 자동화 > 소켓 제어 모드)
-- zmx installed and in PATH
-- Verify: `cmux ping` returns PONG
+```
+Orchestrator returned the paired dispatch plan above.
+Proceed with --execute? (y/n)
+```
 
-**Advantages over codex exec:**
-- Codex session persists across Phase 2 → Phase 3 (context retained)
-- No cold start on subsequent prompts
-- Real-time observation via cmux split pane
-- Session survives cmux surface close (zmx persistence)
+**Step 2c — Execute on approval**:
 
-**Session naming** — use project-based names (like `cx` alias) for session reuse:
+Re-submit with `dry_run: false` and a longer timeout (both dispatches run
+sequentially, each with a ~10s post-spawn wait):
 
 ```bash
-# Derive session name from project directory (matches cx/c alias pattern)
-PROJECT_REL="${PWD#$HOME/}"
-SESSION_NAME="codex-${PROJECT_REL//\//-}"
-
-# Check if an existing session can be reused
-EXISTING=$(zmx list 2>/dev/null | grep "name=${SESSION_NAME}[[:space:]]")
-if [[ -n "$EXISTING" && "$EXISTING" != *"ended="* && "$EXISTING" != *"unreachable"* ]]; then
-  REUSE=true   # Reattach to existing session (context preserved)
-else
-  REUSE=false  # Create new session
-fi
+bash -c '
+  . scripts/orchestrator/protocol.sh
+  orchestrator_request --type collab --slug "<base_slug>" --timeout 300 --payload "## Payload
+- slug: <base_slug>
+- description: <task description>
+- reasoning_effort: <level>
+- dry_run: false
+- no_worktree: false
+"
+'
 ```
 
-```bash
-# 1. Create cmux split pane
-SURFACE=$(cmux new-split right 2>&1 | awk '{print $2}')
+Exit codes from `orchestrator_request`:
+- `0` = ok, both workers launched
+- `1` = orchestrator not running
+- `2` = timeout
+- `3` = orchestrator returned `status: error` or `status: partial`
+- `4` = protocol error
 
-# 2. Start or reattach zmx session
-if [[ "$REUSE" == true ]]; then
-  # Reattach — codex remembers previous work in this project
-  cmux send --surface $SURFACE "zmx attach $SESSION_NAME\n"
-else
-  # New session — start codex in the worktree
-  cmux send --surface $SURFACE "zmx attach $SESSION_NAME codex --full-auto -C $(pwd)/.worktrees/{task-slug}-codex\n"
-fi
+On `status: partial` (Claude launched but Codex failed), the Claude worker is
+still alive; decide whether to `/dispatch-done {base_slug}-claude` and retry
+or continue with a single-worker fallback.
 
-# 3. Wait for codex to be ready
-while ! cmux read-screen --surface $SURFACE --lines 5 2>/dev/null | grep -q "gpt-5"; do
-  sleep 5
-done
+**Step 2d — Capture worker handles**:
 
-# 4. Send task prompt (include worktree path for context)
-cmux send --surface $SURFACE "Working directory: $(pwd)/.worktrees/{task-slug}-codex
-$PROMPT_WORKER_CODEX"
-cmux send-key --surface $SURFACE enter
+From the response Result section, extract for each worker:
+- `slot` (e.g., `claude-agent-framework-<slug>-claude-1`)
+- `worktree_path` (e.g., `.worktrees/<slug>-claude`)
+- `work_item_path`
+- `done_report_path`
 
-# 5. Poll for completion (worktree commit)
-while [ -z "$(git -C .worktrees/{task-slug}-codex log --oneline main..HEAD 2>/dev/null)" ]; do
-  sleep 10
-done
-```
+Store these for Phases 3–5. The two branches are
+`agent/claude-<slug>-claude` and `agent/codex-<slug>-codex` (or whatever
+conductor.sh produced; read the worktree branch from the JSON).
 
-**Store `$SURFACE` and `$SESSION_NAME` for Phase 3** — the same surface and session will be reused for cross-review.
-
-**Session lifecycle**: After collab completes, do NOT `zmx kill` the session. Leave it alive (clients=0) for future reattach. Only `cmux close-surface` to clean the split pane. Use `zmx kill` only for explicit cleanup (`zc` alias).
-
-**Timeout**: If no commit after 10 minutes, check with `cmux read-screen --surface $SURFACE --lines 20` to diagnose. If Codex is stuck, `cmux send-key --surface $SURFACE ctrl+c` and retry with simplified prompt.
-
-##### Mode B: codex exec fallback (no cmux/zmx)
-
-**Preconditions (verify before dispatch):**
-1. Default model: `grep '^model' ~/.codex/config.toml` — use this model. Do NOT hardcode `-m` with older models.
-2. Trust: `grep '{repo-name}' ~/.codex/config.toml` — must show `trust_level = "trusted"`. If missing, add it.
-3. No pipe: do NOT append `| tail`, `| head`, or any pipe to `codex exec`.
-
-```bash
-cd .worktrees/{task-slug}-codex
-codex exec -s workspace-write \
-  -c model_reasoning_effort={reasoning_effort} \
-  "$PROMPT_WORKER_CODEX"
-```
-
-**Resilience (exec mode only):**
-- Timeout: 5 min → check process; 10 min → kill and retry
-- Retry: max 2 retries with simplified prompt and lower reasoning effort
-- Fallback: Claude#1 takes over Worker B's worktree after 3 total failures
-
-`PROMPT_WORKER_CODEX` must include an explicit path preamble, for example:
-
-```text
-You are Worker B (Codex) in a dual-agent collaboration pattern.
-Your working directory: /repo/.worktrees/{task-slug}-codex
-Work ONLY inside this directory.
-```
-
-**Expectations for Codex**:
-- Work only inside `.worktrees/{task-slug}-codex`.
-- Code production: create a clean commit (or a short commit series) on `collab/{task-slug}-codex`.
-- Review/analysis: produce `REVIEW.md` at the worktree root; optionally commit for provenance.
-- Produce a short self-review (strengths / risks / assumptions).
-
-**Checkpointing (lightweight)**:
-- Code production: each worker must commit before cross-review. Treat "commit exists" as the checkpoint.
-- Review/analysis: treat "`REVIEW.md` exists" as the checkpoint (committing is optional but recommended).
-
----
-
-### Phase 3 — Cross Review (Claude#2 ↔ Codex)
+### Phase 3 — Cross Review
 
 **Goal**: Each worker reviews the other's output and produces actionable findings.
 
-**Precondition**: Both workers have committed work on their branches (or produced REVIEW.md for review tasks).
-
-#### Cross-review dispatch
-
-The orchestrator dispatches cross-review as a **new round of concurrent workers**, passing each worker the other's output.
-
-**Step 1**: Collect outputs from Phase 2.
-
-> **Important**: Paste the collected diff/review content directly into the cross-review prompt. Do NOT instruct Codex to read files from another worktree path — this causes excessive reasoning overhead and long delays. Inline the content; do not pass file path references.
-
-For code production tasks:
-```bash
-git diff --unified=5 main..collab/{task-slug}-claude   # Worker A's changes
-git diff --unified=5 main..collab/{task-slug}-codex     # Worker B's changes
-```
-
-For review tasks:
-```bash
-cat .worktrees/{task-slug}-claude/REVIEW.md   # Worker A's review
-cat .worktrees/{task-slug}-codex/REVIEW.md    # Worker B's review
-```
-
-**Step 2**: Create cross-review worktrees (or reuse existing ones).
+**Precondition**: Both workers have committed their work (code production) or
+produced `REVIEW.md` at the worktree root (review task). Poll until both
+conditions hold:
 
 ```bash
-# Option A: Reuse existing worktrees (simpler)
-# Workers write CROSS-REVIEW.md in their existing worktree
+# Code production: wait for commit on each worker branch
+while [ -z "$(git -C <claude_worktree_path> log --oneline main..HEAD 2>/dev/null)" ]; do sleep 10; done
+while [ -z "$(git -C <codex_worktree_path> log --oneline main..HEAD 2>/dev/null)" ]; do sleep 10; done
 
-# Option B: Create dedicated cross-review worktrees (cleaner separation)
-git worktree add -b collab/{task-slug}-xreview-claude .worktrees/{task-slug}-xreview-claude
-git worktree add -b collab/{task-slug}-xreview-codex .worktrees/{task-slug}-xreview-codex
+# Review task: wait for REVIEW.md file
+while [ ! -f "<claude_worktree_path>/REVIEW.md" ]; do sleep 10; done
+while [ ! -f "<codex_worktree_path>/REVIEW.md" ]; do sleep 10; done
 ```
 
-**Step 3**: Dispatch both cross-reviews concurrently.
+Timeout: 10 minutes per worker. If no progress, inspect the sibling slot via
+the backend (`cmux read-screen`, etc.) to diagnose.
 
-Worker A cross-reviews Worker B's output:
-```text
-Agent(
-  subagent_type: "general-purpose",
-  run_in_background: true,
-  prompt: "You are Worker A performing a CROSS-REVIEW.
-    Your working directory: /repo/.worktrees/{task-slug}-xreview-claude
+**Step 3a — Collect outputs**:
 
-    ## Worker B's output to review:
-    {paste Worker B's diff or REVIEW.md content here}
-
-    ## Current state for context:
-    Read {target files} to check what has already been applied.
-
-    ## Output:
-    Create CROSS-REVIEW.md with per-item verdicts (Agree/Disagree/Partially),
-    new findings the other worker missed, and overall verdict.
-    Then commit."
-)
-```
-
-Worker B cross-reviews Worker A's output:
-
-**cmux mode** (reuse Phase 2 surface — Codex retains context from its own work):
 ```bash
-# Same $SURFACE from Phase 2 — Codex remembers what it built
-cmux send --surface $SURFACE "You are performing a CROSS-REVIEW of Worker A's output.
-Worker A's output to review: {paste Worker A's diff or REVIEW.md content}
-Read target files for current state context.
-Create CROSS-REVIEW.md with per-item verdicts and new findings.
-Then commit."
-cmux send-key --surface $SURFACE enter
+# Code production
+git -C <claude_worktree_path> diff --unified=5 main..HEAD > /tmp/<slug>-claude.diff
+git -C <codex_worktree_path>  diff --unified=5 main..HEAD > /tmp/<slug>-codex.diff
 
-# Poll for cross-review commit (2nd commit on branch)
-while [ "$(git -C .worktrees/{task-slug}-codex log --oneline main..HEAD | wc -l)" -lt 2 ]; do
-  sleep 10
-done
+# Review task
+cp <claude_worktree_path>/REVIEW.md /tmp/<slug>-claude.review.md
+cp <codex_worktree_path>/REVIEW.md  /tmp/<slug>-codex.review.md
 ```
 
-**exec fallback** (no context from Phase 2):
+> **Important**: Paste the collected diff/review content directly into the
+> cross-review prompts. Do NOT instruct workers to read files from another
+> worktree path — it causes excessive reasoning overhead.
+
+**Step 3b — Dispatch cross-review**:
+
+Option A (simplest, recommended): mark Phase 2 workers done first, then send a
+second `/collab` request with different base slug (`<slug>-xr`) and descriptions
+that embed the other worker's diff. This reuses the full orchestrator flow.
+
 ```bash
-cd .worktrees/{task-slug}-xreview-codex
-codex exec -s workspace-write \
-  -c model_reasoning_effort={reasoning_effort} \
-  "You are Worker B performing a CROSS-REVIEW.
-   Worker A's output to review: {paste Worker A's diff or REVIEW.md content}
-   Read target files for current state context.
-   Create CROSS-REVIEW.md with per-item verdicts and new findings.
-   Then commit."
+bash scripts/conductor.sh done <base_slug>-claude --execute
+bash scripts/conductor.sh done <base_slug>-codex  --execute
 ```
 
-#### Cross-review output format
+Then the caller composes the cross-review descriptions:
 
-Each worker produces `CROSS-REVIEW.md`:
-- **Per-item verdict**: For each issue/suggestion from the other worker: Agree / Disagree / Partially + rationale + whether already addressed
-- **New findings**: Issues the other worker missed
-- **Overall verdict**: Summary assessment
-
-**Observability**:
-- Capture: branch names, commit SHAs, and the exact diff command used.
-
----
-
-### Phase 4 — Synthesis (Claude#1)
-
-**Goal**: Aggregate outputs + cross-review findings into one best plan, then decide: merge vs re-dispatch.
-
-**Data collection**: The orchestrator reads outputs from well-known file locations:
 ```
-.worktrees/{task-slug}-claude/REVIEW.md          # or branch diff for code tasks
-.worktrees/{task-slug}-codex/REVIEW.md            # or branch diff for code tasks
-.worktrees/{task-slug}-xreview-claude/CROSS-REVIEW.md
-.worktrees/{task-slug}-xreview-codex/CROSS-REVIEW.md
+CLAUDE_XR_DESC="You are performing a CROSS-REVIEW. Worker B (Codex) produced
+the following diff:
+
+<paste /tmp/<slug>-codex.diff>
+
+Create CROSS-REVIEW.md at the worktree root with per-item verdicts
+(Agree/Disagree/Partially), new findings, and overall verdict. Then commit."
+
+CODEX_XR_DESC="You are performing a CROSS-REVIEW. Worker A (Claude) produced
+the following diff:
+
+<paste /tmp/<slug>-claude.diff>
+
+Create CROSS-REVIEW.md at the worktree root with per-item verdicts
+(Agree/Disagree/Partially), new findings, and overall verdict. Then commit."
 ```
 
-If Worker A was permission-blocked, extract content from the agent's response text or output log instead.
+The cross-review descriptions differ per worker, so the collab handler (which
+sends the same description to both) is not a perfect fit. Use two direct
+`/dispatch` calls instead — each with `--agent claude` or `--agent codex` — to
+spawn the cross-review round:
+
+```bash
+bash -c '
+  . scripts/orchestrator/protocol.sh
+  orchestrator_request --type dispatch --slug "<base_slug>-xr-claude" --timeout 180 --payload "## Payload
+- slug: <base_slug>-xr-claude
+- description: $CLAUDE_XR_DESC
+- worker_family: claude
+- dry_run: false
+- no_worktree: false
+"
+'
+
+bash -c '
+  . scripts/orchestrator/protocol.sh
+  orchestrator_request --type dispatch --slug "<base_slug>-xr-codex" --timeout 180 --payload "## Payload
+- slug: <base_slug>-xr-codex
+- description: $CODEX_XR_DESC
+- worker_family: codex
+- dry_run: false
+- no_worktree: false
+"
+'
+```
+
+Poll for cross-review commits the same way, then read the resulting
+`CROSS-REVIEW.md` files from the xreview worktrees.
+
+### Phase 4 — Synthesis (caller)
+
+**Goal**: Aggregate both worker outputs + both cross-reviews into one best
+plan, then decide: merge vs re-dispatch.
 
 **Actions**:
-1. Collect:
-   - Worker A output + self-review
-   - Worker B output + self-review
-   - Cross-review findings from both sides (CROSS-REVIEW.md files)
-2. Build a comparison table (1 row per key decision area):
 
-```markdown
-| Item | Worker A | Worker B | Winner | Decision / Rationale | Merge Action |
-|------|----------|----------|--------|----------------------|--------------|
-| ... | ... | ... | A/B | ... | cherry-pick / rework |
-```
+1. Read:
+   - Worker A output (diff or REVIEW.md) + self-review
+   - Worker B output (diff or REVIEW.md) + self-review
+   - Cross-review findings from both sides (CROSS-REVIEW.md x2)
+2. Build a comparison table:
+
+   ```markdown
+   | Item | Worker A | Worker B | Winner | Rationale | Merge Action |
+   |------|----------|----------|--------|-----------|--------------|
+   | ... | ... | ... | A/B | ... | cherry-pick / rework |
+   ```
 
 3. Decide:
-   - **Merge now** (go to Phase 5) if one solution is clearly superior or the merge is trivial.
-   - **Re-dispatch** (go back to Phase 2) if both are incomplete or reviews reveal serious gaps.
+   - **Merge now** (Phase 5) if one solution is clearly superior or merge is trivial.
+   - **Re-dispatch** (back to Phase 2) with the same base slug plus a feedback
+     appendix if both outputs are incomplete.
 
----
+### Phase 5 — Final Merge + Cleanup
 
-### Phase 5 — Final Merge (Claude#1)
+**Checklist** (all required before Phase 5 completes):
+- [ ] Best result merged to main
+- [ ] All four task slugs marked done via `conductor.sh done --execute`
+- [ ] Worktrees cleaned up by conductor (or manually `git worktree remove`)
+- [ ] Archive saved under `.collab/<base_slug>.md`
+- [ ] Final commit SHA recorded
 
-**Goal**: Merge the best combined result into main, preserve provenance, and clean up worktrees.
-
-**Checklist** (all items required before Phase 5 is complete):
-- [ ] Merge: best result merged to main
-- [ ] Cleanup: worktrees removed, worker branches deleted
-- [ ] Archive: `.collab/{task-slug}.md` created with comparison table, cross-review, decision
-- [ ] Observability: final commit SHA and included commits recorded
-
-#### For code production tasks:
+**Code production merge**:
 
 ```bash
-# Option A: merge one winner branch, then cherry-pick best from the other
 git checkout main
-git merge --no-ff collab/{task-slug}-claude
-git cherry-pick <commit-from-collab/{task-slug}-codex>
-
-# Option B: create integration branch and merge both
-git checkout -b collab/{task-slug}-integration
-git merge --no-ff collab/{task-slug}-claude
-git merge --no-ff collab/{task-slug}-codex
+git merge --no-ff <claude_worker_branch>
+# Optionally layer cherry-picks from the other worker
+git cherry-pick <commit-from-codex_worker_branch>
 ```
 
-#### For review tasks:
+**Review task merge**: apply synthesized fixes directly to main files, then
+commit with collab provenance.
 
-The orchestrator applies synthesized fixes directly on main — there are no branches to merge.
+**Mark all four tasks done** (Phase 2 pair + Phase 3 xreview pair):
 
 ```bash
-# Orchestrator edits target files on main based on synthesis results
-# Then commits with collab provenance
-git add <modified-files>
-git commit -m "Apply collab review findings from {task-slug}"
+bash scripts/conductor.sh done <base_slug>-claude     --execute
+bash scripts/conductor.sh done <base_slug>-codex      --execute
+bash scripts/conductor.sh done <base_slug>-xr-claude  --execute
+bash scripts/conductor.sh done <base_slug>-xr-codex   --execute
 ```
 
-**Cleanup**:
-
-```bash
-# Remove worktree directories (only after merge is complete)
-git worktree remove .worktrees/{task-slug}-claude
-git worktree remove .worktrees/{task-slug}-codex
-
-# Remove cross-review worktrees if created separately
-git worktree remove .worktrees/{task-slug}-xreview-claude 2>/dev/null || true
-git worktree remove .worktrees/{task-slug}-xreview-codex 2>/dev/null || true
-
-# Delete worker branches
-git branch -D collab/{task-slug}-claude collab/{task-slug}-codex 2>/dev/null || true
-git branch -D collab/{task-slug}-xreview-claude collab/{task-slug}-xreview-codex 2>/dev/null || true
-```
+`conductor.sh done --execute` removes the per-task worktree by default.
 
 **Archive**:
 
-After merge, save the collaboration record for future reference:
-
 ```bash
 mkdir -p .collab
-cat > .collab/{task-slug}.md << 'ARCHIVE'
-# Collab: {task-slug}
+cat > .collab/<base_slug>.md << 'ARCHIVE'
+# Collab: <base_slug>
 
 ## Meta
-- Date: {date}
-- Branches: collab/{task-slug}-claude, collab/{task-slug}-codex
-- Final commit: {sha}
+- Date: <date>
+- Worker branches: <claude_branch>, <codex_branch>
+- Final commit: <sha>
 
 ## Task
-{original task description}
+<original task description>
 
 ## Comparison
-{comparison table from Phase 4}
+<comparison table from Phase 4>
 
 ## Cross Review Summary
-- Worker A findings: {summary}
-- Worker B findings: {summary}
+- Worker A findings: <summary>
+- Worker B findings: <summary>
 
 ## Decision
-{merge strategy and rationale}
+<merge strategy and rationale>
 ARCHIVE
 ```
-
-**Observability**:
-- Record final merged commit SHA and which worker commits were included.
-- If deployment is required, run the project's standard deploy workflow after merge.
-
-## Cycle Support
-
-Phases 2-4 can repeat. Common cycle triggers:
-
-- Both outputs miss a constraint or convention
-- Cross-review reveals a fundamental design disagreement
-- User requests a different approach after seeing Phase 4 synthesis
-
-**Re-dispatch rule**: Keep the original prompt, but append "Feedback to address" with the comparison findings. Each cycle should narrow scope.
 
 ## Output Format Examples
 
@@ -541,91 +385,74 @@ Phases 2-4 can repeat. Common cycle triggers:
 - 목표: {한 줄 목표}
 - 범위: {대상 파일/디렉터리}
 - 완료 조건: {체크리스트}
-- task-slug: {task-slug}
+- base_slug: {base_slug}
 - 작업 유형: 코드 생산 / 리뷰
+- reasoning_effort: {level}
 
-### 2) 워커 디스패치
-- 사전 준비: 대상 파일 커밋 확인 → Claude#1이 두 worktree 생성
-  - `.worktrees/{task-slug}-claude`
-  - `.worktrees/{task-slug}-codex`
-- Worker A(Claude#2): 명시적 경로 지시 + 백그라운드 실행
-- Worker B(Codex): 명시적 경로 지시 + cmux+zmx (또는 codex exec fallback)
+### 2) 오케스트레이터 dispatch
+- 사전 확인: `health.sh` PASS, 대상 파일 커밋됨
+- dry-run preview → 사용자 승인 → execute
+- 결과: 두 워커 (Claude#A, Codex#B) 각자 worktree에서 작업 시작
 
 ### 3) 교차 리뷰
-- 양쪽 출력 수집 (REVIEW.md 또는 branch diff)
-- 교차 리뷰 worktree 생성 (또는 기존 재사용)
-- A → B 출력 리뷰: CROSS-REVIEW.md 생성
-- B → A 출력 리뷰: CROSS-REVIEW.md 생성
+- 양쪽 출력 수집 (diff 또는 REVIEW.md)
+- 두 개의 /dispatch 요청으로 cross-review worker 생성
+- CROSS-REVIEW.md 완료 대기
 
 ### 4) 합성(Synthesis)
-- CROSS-REVIEW.md 수집
 - 비교표 작성 후 "병합" 또는 "재디스패치" 결정
 
-### 5) 최종 병합
-- main에 반영, worktree 정리, 필요 시 배포
-- cmux 모드: `cmux close-surface --surface $SURFACE` (zmx 세션은 유지 — 재사용 가능)
+### 5) 최종 병합 + 정리
+- main에 반영
+- 4개 task 모두 conductor.sh done --execute
+- .collab/{base_slug}.md 아카이브
 ```
 
-### 리뷰 비교 테이블 예시
+### 비교 테이블 예시
 
 ```markdown
-| 항목 | Worker A | Worker B | 판정 | 근거 |
-|------|----------|----------|------|------|
-| ADR-017 준수 | 한국어 혼용 | 영어 준수 | B | 컨벤션 위반 |
+| 항목 | Worker A (Claude) | Worker B (Codex) | 판정 | 근거 |
+|------|-------------------|------------------|------|------|
+| ADR 준수 | 한국어 혼용 | 영어 준수 | B | 컨벤션 위반 |
 | Idempotency | 없음 | 명시적 | B | 반복 실행 안전 |
 | No-op 정책 | 명시적 | 없음 | A | 불필요한 수정 방지 |
 ```
 
-### 아카이브 예시
+## Relationship to other skills
 
-```markdown
-.collab/
-└── rename-skill.md    # 협업 기록: 작업 요약, 비교표, 리뷰, 결정 근거
-
-# 예시: .collab/rename-skill.md
-
-# Collab: rename-skill
-
-## Meta
-- Date: 2026-03-06
-- Branches: collab/rename-skill-claude, collab/rename-skill-codex
-- Final commit: abc1234
-
-## Task
-스킬 파일명을 snake_case에서 kebab-case로 변경
-
-## Comparison
-| 항목 | Worker A | Worker B | 판정 | 근거 |
-|------|----------|----------|------|------|
-| 파일명 변환 | 수동 mv | 스크립트 | B | 반복 가능 |
-| import 업데이트 | 누락 | 완료 | B | 깨진 참조 방지 |
-
-## Cross Review Summary
-- Worker A findings: Worker B의 스크립트 방식이 재현 가능하고 안전
-- Worker B findings: Worker A가 README 업데이트를 포함한 점이 우수
-
-## Decision
-Worker B 기반 병합 + Worker A의 README 변경 cherry-pick
-```
+- **`/dispatch`**: sibling sub-dispatch for single-worker side quests; also a
+  thin orchestrator client. `/collab` reuses it for Phase 3 cross-review.
+- **`/dispatch-done`**: sibling calls this to self-report completion. Collab's
+  Phase 5 calls `conductor.sh done` directly on all four paired slugs.
+- **`/handoff` / `/takeover`**: per-session lifecycle; do not route through
+  the orchestrator.
 
 ## Notes
 
-- Claude#1 must create both worker worktrees before dispatching either worker.
-- **All target files must be committed to HEAD** before worktree creation — uncommitted changes are not visible in worktrees.
-- Do not use Agent `isolation: "worktree"` in this pattern; pass explicit working-directory instructions to Claude#2.
-- Cross-review is the key differentiator; skipping it removes most of the pattern's value.
-- **Cross-review must be dispatched explicitly** as a new round of concurrent workers with the other's output embedded in the prompt.
-- Prefer `run_in_background: true` for Claude#2 so both workers run truly concurrently.
-- **Worker A permission fallback**: If Claude#2 is blocked on Write/Bash permissions, the orchestrator must write files and run git commands on its behalf using the agent's response content.
-- This pattern maximizes state consistency by avoiding shared mutable state: each worker edits only its own worktree.
-- Keep task content identical across workers; only path preambles should differ.
-- If workers disagree, prefer objective criteria (tests, lints, reproducibility) over stylistic preference.
-- Clean up worktrees after merge to avoid git worktree clutter. Use `git branch -D` (force) instead of `-d` because worker branches are typically not merged via `git merge` and will appear unmerged.
-- The `{task-slug}` naming convention ensures multiple concurrent collab sessions do not collide.
-- This is v1.6.0. Changes from v1.5.0: project-based zmx session naming for long-term reuse (matches cx/c alias pattern). Existing codex sessions are reattached instead of creating new ones. Sessions kept alive after collab for future reattach.
+- This is v2.0.0. Changes from v1.6.0:
+  - Orchestrator-mediated Phase 2 dispatch (no direct cmux/zmx bash).
+  - Worktree + spawn logic deleted from the skill file; delegated to
+    `conductor.sh` via the orchestrator's `collab` handler.
+  - Phase 3 cross-review uses two `/dispatch` thin-client calls instead of
+    re-using the Phase 2 cmux surface (the orchestrator has no
+    "inject-into-running-sibling" primitive yet; a future stage may add one).
+  - Skill shrank from ~630 lines to ~300 lines.
+- The orchestrator agent must be started before `/collab` is invoked. The
+  skill does not auto-start it — starting a long-lived session is a
+  user-visible event.
+- **Worker A permission fallback no longer applies**: Phase 2 workers run in
+  full sibling sessions with their own permission contexts, not as Agent tool
+  sub-agents.
+- Cross-review is the key differentiator of this pattern; skipping it removes
+  most of the value.
+- Keep task content identical across Phase 2 workers. Phase 3 prompts
+  intentionally differ because each worker reviews the other's output.
+- Clean up worktrees after merge to avoid git worktree clutter. `conductor.sh
+  done --execute` handles this by default.
 
 ## References
 
 - [ADR-013: A2A Parallel and Distributed Execution Model](../../agent-context/decisions/2026-01-15-a2a-parallel-distributed-model.md)
 - [ADR-017: Skill Authoring Conventions](../../agent-context/decisions/2026-02-26-skill-authoring-conventions-and-auto-loading.md)
 - [ADR-020: Harness Engineering Adoption](../../agent-context/decisions/2026-03-10-harness-engineering-adoption.md)
+- [ADR-028: Global Session Orchestrator](../../agent-context/decisions/2026-04-08-global-session-orchestrator.md)

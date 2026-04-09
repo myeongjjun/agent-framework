@@ -120,7 +120,7 @@ echo ""
 echo -e "${BOLD}=== [4/4] Syncing Global Scripts ===${NC}"
 echo ""
 
-GLOBAL_SCRIPTS=(handoff-rotate.sh)
+GLOBAL_SCRIPTS=(handoff-rotate.sh handoff-rotate-iterm.sh)
 GLOBAL_DEST="$HOME/.claude/scripts"
 scripts_ok=true
 

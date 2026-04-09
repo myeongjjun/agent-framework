@@ -41,6 +41,22 @@ err()  { printf '\033[1;31m✗\033[0m %s\n' "$*" >&2; exit 1; }
 ok()   { printf '\033[1;32m✓\033[0m %s\n' "$*"; }
 info() { printf '\033[1;34mℹ\033[0m %s\n' "$*"; }
 
+# --- 0. Multi-environment dispatch -------------------------------------------
+#
+# If we're inside an iTerm2 pane with no cmux surface, delegate to the
+# iTerm2 variant. This keeps the stable entrypoint path
+# (~/.claude/scripts/handoff-rotate.sh) while routing to the correct
+# implementation per ADR-026 "Multi-Environment Dispatch".
+
+if [[ -z "${CMUX_SURFACE_ID:-}" && "${TERM_PROGRAM:-}" == "iTerm.app" && -n "${ITERM_SESSION_ID:-}" ]]; then
+  ITERM_SCRIPT="$(dirname "$0")/handoff-rotate-iterm.sh"
+  if [[ ! -x "$ITERM_SCRIPT" ]]; then
+    err "iTerm2 environment detected but $ITERM_SCRIPT not found or not executable"
+  fi
+  info "iTerm2 environment detected → delegating to handoff-rotate-iterm.sh"
+  exec "$ITERM_SCRIPT" "$@"
+fi
+
 # --- 1. Preflight: env vars ---------------------------------------------------
 
 [[ -n "${ZMX_SESSION:-}"        ]] || err "ZMX_SESSION not set — run from inside a zmx session"

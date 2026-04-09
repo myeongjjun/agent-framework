@@ -157,6 +157,15 @@ diff), not LLM-as-judge, so it adds minimal overhead.
 
 ### 5) Respond with takeover summary
 
+**Response language**: Match the user's conversation language. If the
+user communicates in Korean (default for this workspace), write the
+takeover response in Korean — including section headings and narrative
+text. The template below is in English for readability of this skill
+file, but the agent MUST translate section titles (e.g., "Takeover
+Complete" → "인수인계 완료", "Context Recovered" → "복구된 컨텍스트",
+"Continue From" → "이어서 진행") when responding. Keep file paths, git
+hashes, commit subjects, and identifiers verbatim.
+
 ## Takeover Response Format
 
 ```markdown

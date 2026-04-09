@@ -57,6 +57,19 @@ def parse_args() -> argparse.Namespace:
         "--project",
         help="Only include events whose cwd is inside this path.",
     )
+    parser.add_argument(
+        "--session",
+        help="Only include events whose sid matches this session id.",
+    )
+    parser.add_argument(
+        "--include-assistant-text",
+        action="store_true",
+        help=(
+            "Emit evt:assistant_text events containing assistant response "
+            "bodies. Requires --session (session-scoped opt-in to prevent "
+            "volume explosion). See ADR-022 amendment 2026-04-08."
+        ),
+    )
     args = parser.parse_args()
 
     if args.days is not None and args.days < 1:
@@ -67,6 +80,9 @@ def parse_args() -> argparse.Namespace:
             datetime.strptime(args.exact_date, "%Y-%m-%d")
         except ValueError as exc:
             parser.error(f"--date must be YYYY-MM-DD: {exc}")
+
+    if args.include_assistant_text and not args.session:
+        parser.error("--include-assistant-text requires --session <id>")
 
     return args
 
@@ -160,6 +176,37 @@ def extract_text_content(content: Any) -> str:
                 if text:
                     parts.append(text)
         return "\n".join(parts).strip()
+
+    return ""
+
+
+def extract_assistant_text_full(content: Any, limit: int = 8000) -> str:
+    """Extract full assistant text blocks, joined — larger cap than extract_text_content.
+
+    Used only when --include-assistant-text is set (session-scoped), so the
+    500-char-per-item truncation of extract_text_content would lose proposal
+    bodies. Joins all text items with a blank line and truncates the joined
+    result at `limit` characters.
+    """
+
+    if isinstance(content, str):
+        return content.strip()[:limit]
+
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") != "text":
+                continue
+            text = (item.get("text") or "").strip()
+            if text:
+                parts.append(text)
+        joined = "\n\n".join(parts).strip()
+        return joined[:limit]
+
+    if isinstance(content, dict) and content.get("type") == "text":
+        return (content.get("text") or "").strip()[:limit]
 
     return ""
 
@@ -310,7 +357,12 @@ def emit_prompt_event(
         )
 
 
-def collect_claude_events(dates: set[str], project: str | None) -> list[dict[str, Any]]:
+def collect_claude_events(
+    dates: set[str],
+    project: str | None,
+    *,
+    include_assistant_text: bool = False,
+) -> list[dict[str, Any]]:
     """Collect unified events from Claude session transcripts."""
 
     events: list[dict[str, Any]] = []
@@ -345,6 +397,19 @@ def collect_claude_events(dates: set[str], project: str | None) -> list[dict[str
                 content = message.get("content") if isinstance(message, dict) else None
 
                 if record_type == "assistant":
+                    if include_assistant_text and should_emit(ts, cwd, dates, project):
+                        assistant_text = extract_assistant_text_full(content)
+                        if assistant_text:
+                            events.append(
+                                {
+                                    "ts": ts,
+                                    "sid": sid,
+                                    "agent": "claude",
+                                    "evt": "assistant_text",
+                                    "text": assistant_text,
+                                    "cwd": cwd,
+                                }
+                            )
                     for tool_use in iter_claude_tool_uses(content):
                         tool_id = str(tool_use.get("id") or "")
                         if not tool_id:
@@ -684,10 +749,19 @@ def main() -> int:
     events: list[dict[str, Any]] = []
 
     if args.agent in {"claude", "all"}:
-        events.extend(collect_claude_events(dates, project))
+        events.extend(
+            collect_claude_events(
+                dates,
+                project,
+                include_assistant_text=args.include_assistant_text,
+            )
+        )
 
     if args.agent in {"codex", "all"}:
         events.extend(collect_codex_events(dates, project))
+
+    if args.session:
+        events = [e for e in events if e.get("sid") == args.session]
 
     events.sort(
         key=lambda event: (

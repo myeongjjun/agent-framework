@@ -99,6 +99,7 @@ When `--deep` is enabled, only feed bounded, high-signal trace segments to the L
 
 - Sessions with more than 3 consecutive failures
 - Sessions with correction rate above 20%
+- **Sessions explicitly named via `--session <id>`** — bypass the above heuristics; the user has already pre-selected the session
 
 For each selected segment, include:
 
@@ -106,6 +107,21 @@ For each selected segment, include:
 - All `evt:tool` and `evt:skill` entries until the next prompt
 - The failure streak, correction prompt, and any recovery attempt
 - Relevant ADR references from `agent-context/decisions/` when diagnosing intent vs implementation
+
+**Session-scoped deep mode (`--session <id>` path):**
+
+When the user points at a single session explicitly, run:
+
+```bash
+./scripts/extract-traces.sh --agent all --days N \
+  --session <id> --include-assistant-text
+```
+
+This emits an additional event type `evt:"assistant_text"` containing the agent's response bodies (truncated at 8000 chars per turn). Feed the full turn-by-turn stream (prompt + tool + skill + assistant_text) to the LLM diagnostician.
+
+Why this path exists: discussion-heavy sessions (design proposals, RCA, cross-project suggestions) often store their load-bearing content in **assistant text**, not in tool calls or prompts. The default broad-scan path cannot see this content (volume protection). When the user has pre-selected a session, volume is bounded, so the content cap is safe to lift.
+
+See ADR-022 Stage 3 Amendment (2026-04-08).
 
 Prompt template for LLM diagnosis:
 
