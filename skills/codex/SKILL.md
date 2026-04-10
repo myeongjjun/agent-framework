@@ -54,47 +54,42 @@ Verification: logs should show `mcp startup: no servers` for default invocations
 Detect dispatch mode before invoking Codex:
 
 ```bash
-if command -v cmux &>/dev/null && command -v zmx &>/dev/null && cmux ping &>/dev/null; then
-  DISPATCH_MODE="cmux"   # interactive codex via cmux+zmx
+if bash -c '. scripts/orchestrator/protocol.sh && orchestrator_alive' 2>/dev/null; then
+  DISPATCH_MODE="orchestrator"   # dispatch codex worker via orchestrator
 else
-  DISPATCH_MODE="exec"   # codex exec (non-interactive fallback)
+  DISPATCH_MODE="exec"            # codex exec (non-interactive fallback)
 fi
 ```
 
-### Mode A: cmux+zmx dispatch (recommended when available)
+### Mode A: Orchestrator dispatch (recommended when available)
 
-Run interactive codex in a cmux split pane, controlled via `cmux send`. Session persists via zmx.
+Dispatch a codex worker through the Global Session Orchestrator using
+`orchestrator_request --type dispatch`. The orchestrator handles surface
+creation, worktree setup, and worker lifecycle.
 
 **Prerequisites:**
-- cmux with socket control mode set to "자동화 모드"
-- zmx installed and in PATH
-- Verify: `cmux ping` returns PONG
+- Orchestrator agent running (`bash scripts/orchestrator/health.sh`)
+- `scripts/orchestrator/protocol.sh` available
 
 ```bash
-# 1. Create cmux split pane
-SURFACE=$(cmux new-split right 2>&1 | awk '{print $2}')
-
-# 2. Start zmx session + codex
-cmux send --surface $SURFACE "zmx attach codex-{task} codex --full-auto -C $(pwd)\n"
-
-# 3. Wait for codex ready
-while ! cmux read-screen --surface $SURFACE --lines 5 2>/dev/null | grep -q "gpt-5"; do sleep 5; done
-
-# 4. Send prompt
-cmux send --surface $SURFACE "prompt text"
-cmux send-key --surface $SURFACE enter
-
-# 5. Cleanup when done (keep zmx session alive for reuse)
-cmux close-surface --surface $SURFACE
-# Do NOT zmx kill — session stays alive (clients=0) for future reattach.
-# Use zmx kill only for explicit cleanup (e.g., zc alias).
+# Dispatch codex worker via orchestrator
+bash -c '
+  . scripts/orchestrator/protocol.sh
+  orchestrator_request --type dispatch --slug "codex-{task}" --timeout 180 --payload "## Payload
+- slug: codex-{task}
+- description: {task description}
+- worker_family: codex
+- dry_run: false
+- no_worktree: false
+"
+'
 ```
 
-**Advantages**: Session persistence, real-time observation, context retention across prompts.
+**Advantages**: Centralized session management, automatic worktree isolation, cross-session visibility via orchestrator state.
 
-### Mode B: codex exec fallback (no cmux/zmx)
+### Mode B: codex exec fallback (no orchestrator)
 
-**MUST USE** `codex exec` when cmux is unavailable. Claude Code's bash environment is non-terminal.
+**MUST USE** `codex exec` when the orchestrator is unavailable. Claude Code's bash environment is non-terminal.
 
 **Preconditions (verify before dispatch):**
 1. Default model: `grep '^model' ~/.codex/config.toml` — use this model. Do NOT hardcode `-m`.
@@ -107,7 +102,7 @@ codex exec -s workspace-write \
   "prompt"
 ```
 
-**Never use** bare `codex` (interactive mode) without cmux — will fail with "stdout is not a terminal".
+**Never use** bare `codex` (interactive mode) without a terminal — will fail with "stdout is not a terminal". Use Mode A (orchestrator dispatch) or Mode B (`codex exec`) instead.
 
 ---
 
@@ -164,14 +159,10 @@ This will:
 
 After handoff completes, invoke Codex using the detected dispatch mode:
 
-**cmux+zmx mode:**
+**Orchestrator dispatch mode:**
 ```bash
-SURFACE=$(cmux new-split right 2>&1 | awk '{print $2}')
-cmux send --surface $SURFACE "zmx attach codex-fullcycle codex --full-auto -C $(pwd)\n"
-# Wait for codex ready
-while ! cmux read-screen --surface $SURFACE --lines 5 2>/dev/null | grep -q "gpt-5"; do sleep 5; done
-# Send the full cycle prompt
-cmux send --surface $SURFACE "## Context
+# Write the full-cycle prompt to a temp file for the work item
+PROMPT="## Context
 Read .agent/LATEST.md for full context from Claude Code.
 ## Task
 {USER_REQUEST}
@@ -180,7 +171,17 @@ Read .agent/LATEST.md for full context from Claude Code.
 2. Complete the task
 3. Create handoff entry when done (.agent/entry-{timestamp}-KST.md)
 Report what was done and any issues encountered."
-cmux send-key --surface $SURFACE enter
+
+bash -c '
+  . scripts/orchestrator/protocol.sh
+  orchestrator_request --type dispatch --slug "codex-fullcycle" --timeout 180 --payload "## Payload
+- slug: codex-fullcycle
+- description: Full cycle codex task with handoff context
+- worker_family: codex
+- dry_run: false
+- no_worktree: false
+"
+'
 ```
 
 **exec fallback:**
@@ -870,7 +871,7 @@ When a user makes a request that falls into one of the above categories, determi
 
 ### Bash CLI Command Structure
 
-**IMPORTANT**: When using exec mode (Mode B), always use `codex exec` for non-interactive execution. When cmux+zmx is available (Mode A), interactive `codex` is driven through the cmux split pane instead.
+**IMPORTANT**: When using exec mode (Mode B), always use `codex exec` for non-interactive execution. When the orchestrator is available (Mode A), dispatch codex workers through `orchestrator_request --type dispatch` instead.
 
 #### For Code Editing Tasks (Default)
 
@@ -891,10 +892,10 @@ codex exec -m gpt-5.4 -s read-only \
 ```
 
 **Why `codex exec` (Mode B)?**
-- Non-interactive mode required when cmux+zmx is unavailable
+- Non-interactive mode required when orchestrator is unavailable
 - Produces clean output suitable for parsing
 - Works in non-TTY environments (like Claude Code's bash)
-- When cmux+zmx is available, prefer Mode A for session persistence and context retention
+- When the orchestrator is available, prefer Mode A for centralized session management and worktree isolation
 
 ### Model Selection Logic
 
@@ -1048,29 +1049,26 @@ When user indicates they want to continue a previous Codex conversation:
 - Follow-up context referencing previous Codex work
 - Explicit request like "continue where we left off"
 
-### Mode A: zmx Session Reattach (recommended)
+### Mode A: Orchestrator-managed session (recommended)
 
-When cmux+zmx is available and a zmx session exists, context is retained natively:
+When the orchestrator is running, check for existing dispatched codex workers
+via the orchestrator status protocol:
 
 ```bash
-# Check for existing session
-PROJECT_REL="${PWD#$HOME/}"
-SESSION_NAME="codex-${PROJECT_REL//\//-}"
-EXISTING=$(zmx list 2>/dev/null | grep "name=${SESSION_NAME}[[:space:]]")
-
-if [[ -n "$EXISTING" && "$EXISTING" != *"ended="* ]]; then
-  # Reattach — codex remembers previous work
-  SURFACE=$(cmux new-split right 2>&1 | awk '{print $2}')
-  cmux send --surface $SURFACE "zmx attach $SESSION_NAME\n"
-  # Send follow-up prompt directly — full context is retained
-fi
+bash -c '
+  . scripts/orchestrator/protocol.sh
+  orchestrator_request --type status --slug "codex-{task}" --timeout 30 --payload "## Payload
+- slug: codex-{task}
+"
+'
 ```
 
-No `codex exec resume` needed — zmx keeps the codex process alive with all context.
+If a worker is still active, send follow-up work as a new dispatch with the
+same slug. The orchestrator handles session reuse and context continuity.
 
 ### Mode B: codex exec resume (fallback)
 
-When cmux+zmx is unavailable, use `codex exec resume`:
+When the orchestrator is unavailable, use `codex exec resume`:
 
 #### Resume Most Recent Session (Recommended)
 
@@ -1092,7 +1090,7 @@ Resume a specific session by providing its UUID.
 
 ### Decision Logic: New vs. Continue
 
-**Mode A (cmux+zmx)**: If a zmx session for this project exists and is alive, always reattach. Context is retained automatically.
+**Mode A (orchestrator)**: Check orchestrator status for existing codex workers. If a worker for this task is still active, send follow-up work as a new dispatch.
 
 **Mode B (exec)**:
 - **Use `codex exec -m ... "<prompt>"`** when: new, independent request
@@ -1100,7 +1098,7 @@ Resume a specific session by providing its UUID.
 
 ### Session History Management
 
-- **Mode A**: zmx sessions persist independently. Use `zmx list` to see active sessions. Sessions stay alive (clients=0) after surface close.
+- **Mode A**: Worker sessions are managed by the orchestrator. Use `orchestrator_request --type status` to check active workers.
 - **Mode B**: Codex CLI automatically saves session history. Use `codex exec resume --last` to access most recent session.
 
 ## Error Handling

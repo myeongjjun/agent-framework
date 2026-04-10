@@ -176,8 +176,9 @@ Exit codes from `orchestrator_request`:
 - `4` = protocol error
 
 On `status: partial` (Claude launched but Codex failed), the Claude worker is
-still alive; decide whether to `/dispatch-done {base_slug}-claude` and retry
-or continue with a single-worker fallback.
+still alive; decide whether to clean it up via
+`bash scripts/conductor.sh done {base_slug}-claude --cleanup --execute`
+and retry, or continue with a single-worker fallback.
 
 **Step 2d — Capture worker handles**:
 
@@ -422,8 +423,8 @@ ARCHIVE
 
 - **`/dispatch`**: sibling sub-dispatch for single-worker side quests; also a
   thin orchestrator client. `/collab` reuses it for Phase 3 cross-review.
-- **`/dispatch-done`**: sibling calls this to self-report completion. Collab's
-  Phase 5 calls `conductor.sh done` directly on all four paired slugs.
+- **`conductor.sh done/cleanup`**: Phase 5 calls `conductor.sh done <slug> --cleanup --execute`
+  on all four paired slugs. No separate skill needed.
 - **`/handoff` / `/takeover`**: per-session lifecycle; do not route through
   the orchestrator.
 

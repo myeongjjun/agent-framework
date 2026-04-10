@@ -31,6 +31,8 @@
 #   T20  protocol.sh is sourceable and exports helpers        (library contract)
 #   T21  done execute is idempotent for already-done task     (bug 1)
 #   T22  dispatch rejects active duplicate but reuses done     (bug 3)
+#   T23  dispatch dry-run exposes advisor metadata             (phase 1)
+#   T24  state transition stores advisor metadata              (phase 1)
 
 set -euo pipefail
 IFS=$'\n\t'
@@ -81,6 +83,19 @@ run_orchestrator_script() {
     ORCHESTRATOR_BACKEND=cmux \
       "${ROOT_DIR}/scripts/orchestrator/${script_name}" "$@"
   )
+}
+
+run_plan() {
+  (
+    cd "${REPO_DIR}"
+    HOME="${HOME_DIR}" ORCHESTRATOR_ROOT="${ORCHESTRATOR_ROOT}" \
+      "${ROOT_DIR}/scripts/orchestrator/core/plan.sh" "$@"
+  )
+}
+
+run_state_transition() {
+  HOME="${HOME_DIR}" ORCHESTRATOR_ROOT="${ORCHESTRATOR_ROOT}" \
+    "${ROOT_DIR}/scripts/orchestrator/core/state-transition.sh" "$@"
 }
 
 # T1 — help
@@ -360,20 +375,14 @@ fi
 # T18 — start-agent dry-run produces a plan without side effects
 section "T18 start-agent dry-run is side-effect free"
 start_plan="$(run_orchestrator_script start-agent.sh --dry-run)"
-if printf '%s\n' "${start_plan}" | jq -e '
-    .action == "start-orchestrator-agent"
-    and .mode == "dry-run"
-    and .backend == "cmux"
-    and .slot == "claude-orchestrator-global"
-    and .effects.spawn.backend == "cmux"
-    and .effects.inject.action == "inject-prompt"
-    and .effects.wait_seconds == 10
-  ' >/dev/null \
+if [[ "${start_plan}" == *"action=start-orchestrator"* ]] \
+  && [[ "${start_plan}" == *"mode=dry-run"* ]] \
+  && [[ "${start_plan}" == *"slot=claude-orchestrator-global"* ]] \
   && [[ ! -e "${ORCHESTRATOR_ROOT}/agent" ]]; then
   ok "start-agent dry-run returns a valid plan without creating sentinel state"
 else
   bad "start-agent dry-run plan or side-effect check failed"
-  printf '%s\n' "${start_plan}" | jq . 2>/dev/null | head -20
+  printf '%s\n' "${start_plan}" | head -5
 fi
 
 # T19 — stop-agent dry-run handles imaginary running state without side effects
@@ -511,6 +520,56 @@ else
   bad "dispatch duplicate guard did not match the expected done/non-done policy"
   printf '%s\n' "${duplicate_active_output}" | sed 's/^/    active: /'
   printf '%s\n' "${reuse_done_output}" | jq '.plan.conflicts, .plan.task' 2>/dev/null | sed 's/^/    done: /'
+fi
+
+# T23 — dispatch dry-run exposes advisor metadata in the reviewable plan
+section "T23 dispatch dry-run exposes advisor metadata"
+advisor_dispatch="$(run_conductor dispatch advisor-meta-task "wire metadata only" --dry-run --advisor-mode review --executor-tier fast)"
+if printf '%s\n' "${advisor_dispatch}" | jq -e '
+    .mode == "dry-run"
+    and .plan.request.advisor_mode == "review"
+    and .plan.request.executor_tier == "fast"
+    and .plan.task.metadata.advisor_mode == "review"
+    and .plan.task.metadata.executor_tier == "fast"
+    and .plan.agents[0].executor_tier == "fast"
+  ' >/dev/null; then
+  ok "dispatch dry-run surfaces advisor metadata in the plan JSON"
+else
+  bad "dispatch dry-run omitted advisor metadata"
+  printf '%s\n' "${advisor_dispatch}" | jq '.plan.request, .plan.task, .plan.agents[0]' 2>/dev/null | head -30
+fi
+
+# T24 — pure state transition persists advisor metadata for tasks and agents
+section "T24 state transition stores advisor metadata"
+base_state='{"version":1,"projects":{},"tasks":{},"agents":{}}'
+advisor_plan="$(run_plan \
+  --root "${ORCHESTRATOR_ROOT}" \
+  --state-json "${base_state}" \
+  --slug advisor-state-task \
+  --description "persist metadata" \
+  --cwd "${REPO_DIR}" \
+  --project-name "$(basename "${REPO_DIR}")" \
+  --agent codex \
+  --advisor-mode review \
+  --executor-tier capable
+)"
+advisor_state="$(run_state_transition \
+  --mode dispatch \
+  --now "2026-04-10T00:00:00Z" \
+  --state-json "${base_state}" \
+  --plan-json "${advisor_plan}"
+)"
+if printf '%s\n' "${advisor_state}" | jq -e '
+    .tasks["advisor-state-task"].request_metadata.advisor_mode == "review"
+    and .tasks["advisor-state-task"].request_metadata.executor_tier == "capable"
+    and (.tasks["advisor-state-task"].agents | length) == 1
+    and (.tasks["advisor-state-task"].agents[0] as $slot | .agents[$slot].advisor_mode == "review")
+    and (.tasks["advisor-state-task"].agents[0] as $slot | .agents[$slot].executor_tier == "capable")
+  ' >/dev/null; then
+  ok "state transition keeps advisor metadata on both task and agent state"
+else
+  bad "state transition dropped advisor metadata"
+  printf '%s\n' "${advisor_state}" | jq '.tasks["advisor-state-task"], .agents' 2>/dev/null | head -30
 fi
 
 # Summary

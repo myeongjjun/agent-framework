@@ -78,9 +78,10 @@ skills_ok=false
 hooks_ok=false
 agents_ok=false
 scripts_ok=false
+orch_ok=false
 
 # --- Step 1: Skills ---
-echo -e "${BOLD}=== [1/4] Syncing Skills ===${NC}"
+echo -e "${BOLD}=== [1/5] Syncing Skills ===${NC}"
 echo ""
 if "$REPO_ROOT/sync-skills.sh" "${SKILLS_ARGS[@]}"; then
   skills_ok=true
@@ -91,7 +92,7 @@ fi
 echo ""
 
 # --- Step 2: Hooks ---
-echo -e "${BOLD}=== [2/4] Syncing Hooks ===${NC}"
+echo -e "${BOLD}=== [2/5] Syncing Hooks ===${NC}"
 echo ""
 if "$REPO_ROOT/sync-hooks.sh" "${HOOKS_ARGS[@]}"; then
   hooks_ok=true
@@ -102,7 +103,7 @@ fi
 echo ""
 
 # --- Step 3: Agents ---
-echo -e "${BOLD}=== [3/4] Syncing Agents ===${NC}"
+echo -e "${BOLD}=== [3/5] Syncing Agents ===${NC}"
 echo ""
 if "$REPO_ROOT/sync-agents.sh" "${AGENTS_ARGS[@]}"; then
   agents_ok=true
@@ -117,7 +118,7 @@ echo ""
 # claude session (e.g., handoff-rotate.sh referenced by skills/handoff
 # via absolute path ~/.claude/scripts/<name>). Mirrors sync-hooks.sh's
 # flat-file deploy pattern.
-echo -e "${BOLD}=== [4/4] Syncing Global Scripts ===${NC}"
+echo -e "${BOLD}=== [4/5] Syncing Global Scripts ===${NC}"
 echo ""
 
 GLOBAL_SCRIPTS=(handoff-rotate.sh handoff-rotate-iterm.sh)
@@ -152,6 +153,42 @@ else
   done
 fi
 
+# --- Step 5: Orchestrator scripts ---
+# Deploy conductor.sh + orchestrator/ tree to ~/.orchestrator/scripts/
+# so the orchestrator (running in ~/.orchestrator) can call conductor.sh
+# without depending on a specific project path.
+echo -e "${BOLD}=== [5/5] Syncing Orchestrator Scripts ===${NC}"
+echo ""
+
+ORCH_DEST="$HOME/.orchestrator/scripts"
+ORCH_SRC_CONDUCTOR="$REPO_ROOT/scripts/conductor.sh"
+ORCH_SRC_DIR="$REPO_ROOT/scripts/orchestrator"
+orch_ok=true
+
+if $DRY_RUN; then
+  echo -e "  ${YELLOW}[dry-run]${NC} would install $ORCH_SRC_CONDUCTOR -> $ORCH_DEST/conductor.sh"
+  echo -e "  ${YELLOW}[dry-run]${NC} would rsync $ORCH_SRC_DIR/ -> $ORCH_DEST/orchestrator/"
+else
+  mkdir -p "$ORCH_DEST/orchestrator"
+  if install -m 755 "$ORCH_SRC_CONDUCTOR" "$ORCH_DEST/conductor.sh"; then
+    echo -e "  ${GREEN}✓${NC} conductor.sh -> $ORCH_DEST/conductor.sh"
+  else
+    echo -e "  ${RED}FAILED:${NC} conductor.sh"
+    orch_ok=false
+  fi
+  # rsync the orchestrator subtree, preserving structure
+  if rsync -a --exclude='*.md' "$ORCH_SRC_DIR/" "$ORCH_DEST/orchestrator/"; then
+    # Ensure .sh files are executable
+    find "$ORCH_DEST/orchestrator" -name '*.sh' -exec chmod 755 {} +
+    echo -e "  ${GREEN}✓${NC} orchestrator/ -> $ORCH_DEST/orchestrator/ ($(find "$ORCH_DEST/orchestrator" -name '*.sh' | wc -l | tr -d ' ') scripts)"
+  else
+    echo -e "  ${RED}FAILED:${NC} orchestrator/ rsync"
+    orch_ok=false
+  fi
+fi
+
+echo ""
+
 # --- Summary ---
 echo ""
 echo -e "${BOLD}=== Deploy Summary ===${NC}"
@@ -180,11 +217,17 @@ else
   echo -e "  Scripts: ${RED}FAILED${NC}"
 fi
 
+if $orch_ok; then
+  echo -e "  Orch:    ${GREEN}OK${NC}"
+else
+  echo -e "  Orch:    ${RED}FAILED${NC}"
+fi
+
 if $DRY_RUN; then
   echo -e "  ${DIM}(dry-run — no changes applied)${NC}"
 fi
 
-if $skills_ok && $hooks_ok && $agents_ok && $scripts_ok; then
+if $skills_ok && $hooks_ok && $agents_ok && $scripts_ok && $orch_ok; then
   echo -e "\n${GREEN}All synced.${NC}"
   exit 0
 else
