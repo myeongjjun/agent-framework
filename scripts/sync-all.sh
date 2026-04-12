@@ -177,7 +177,7 @@ else
     orch_ok=false
   fi
   # rsync the orchestrator subtree, preserving structure
-  if rsync -a --exclude='*.md' "$ORCH_SRC_DIR/" "$ORCH_DEST/orchestrator/"; then
+  if rsync -a --include='bootstrap.md' --exclude='*.md' "$ORCH_SRC_DIR/" "$ORCH_DEST/orchestrator/"; then
     # Ensure .sh files are executable
     find "$ORCH_DEST/orchestrator" -name '*.sh' -exec chmod 755 {} +
     echo -e "  ${GREEN}✓${NC} orchestrator/ -> $ORCH_DEST/orchestrator/ ($(find "$ORCH_DEST/orchestrator" -name '*.sh' | wc -l | tr -d ' ') scripts)"

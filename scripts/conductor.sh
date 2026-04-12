@@ -178,12 +178,23 @@ ${description}
 EOF
 }
 
+STATE_LOCK="${ORCHESTRATOR_ROOT}/locks/state.lock"
+
+with_state_lock() {
+  mkdir -p "$(dirname "${STATE_LOCK}")"
+  if command -v flock &>/dev/null; then
+    flock -w 10 "${STATE_LOCK}" "$@"
+  else
+    "$@"
+  fi
+}
+
 state_json() {
-  "${STATE_READ}" --root "${ORCHESTRATOR_ROOT}"
+  with_state_lock "${STATE_READ}" --root "${ORCHESTRATOR_ROOT}"
 }
 
 write_state_json() {
-  atomic_write "${ORCHESTRATOR_ROOT}/state.json" "$1"
+  with_state_lock atomic_write "${ORCHESTRATOR_ROOT}/state.json" "$1"
 }
 
 task_exists_in_state() {
@@ -339,22 +350,28 @@ dispatch_command() {
   fi
   spawn_output="$("${SPAWN_EFFECT}" --execute "${slot}" "${agent_cwd}")"
   surface_id="$(jq -r '.surface_id // empty' <<<"${spawn_output}")"
+  target_workspace="$(jq -r '.target_workspace // empty' <<<"${spawn_output}")"
   [[ -n "${surface_id}" ]] || die "spawn did not return a surface_id"
 
   # Wait for the spawned agent to boot before injecting the work item prompt.
-  # Poll zmx for the session to register with a pid instead of a fixed sleep.
-  # Once the agent process is detected, a short buffer allows CLI init to
-  # complete. Override max wait via ORCHESTRATOR_SPAWN_WAIT (seconds, default 30).
+  # Poll zmx first (fast path); fall back to ps if zmx is unreachable.
+  # Override max wait via ORCHESTRATOR_SPAWN_WAIT (seconds, default 30).
   _spawn_wait_max="${ORCHESTRATOR_SPAWN_WAIT:-30}"
   _spawn_waited=0
+  _spawn_detected=0
   while (( _spawn_waited < _spawn_wait_max )); do
     if zmx list 2>/dev/null | grep "name=${slot}" | grep -qE 'pid=[0-9]+'; then
-      sleep 3  # buffer for CLI prompt initialization
-      break
+      _spawn_detected=1; sleep 3; break
+    fi
+    if pgrep -f "zmx attach ${slot}" >/dev/null 2>&1; then
+      _spawn_detected=1; sleep 3; break
     fi
     sleep 1
     (( _spawn_waited++ )) || true
   done
+  if (( _spawn_detected == 0 )); then
+    die "spawn_wait timeout: session '${slot}' did not boot within ${_spawn_wait_max}s"
+  fi
 
   inject_output="$("${INJECT_EFFECT}" --execute --family "${agent_family}" "${surface_id}" "${work_item_path}")"
   running_state="$(
@@ -363,12 +380,14 @@ dispatch_command() {
       --arg slot "${slot}" \
       --arg slug "${slug}" \
       --arg surface_id "${surface_id}" \
+      --arg workspace_id "${target_workspace}" \
       '
       .updated_at = $now
       | .tasks[$slug].status = "in_progress"
       | .tasks[$slug].updated_at = $now
       | .agents[$slot].status = "running"
       | .agents[$slot].surface_id = $surface_id
+      | .agents[$slot].workspace_id = (if $workspace_id == "" then null else $workspace_id end)
       | .agents[$slot].updated_at = $now
       ' <<<"${planned_state}"
   )"
