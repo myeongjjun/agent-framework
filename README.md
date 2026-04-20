@@ -13,8 +13,6 @@ agent-framework is deliberately opinionated. It bundles the specific primitives 
 
 If you want pure skill/hook infrastructure without the orchestrator stack, the `skills/` and `hooks/` subtrees work standalone — the orchestrator scripts only activate when you deploy and start them.
 
-See ADR: `agent-context/decisions/2026-04-20-agent-framework-opinionated-kit.md` for the scope decision.
-
 ## Quick Start
 
 ```bash
