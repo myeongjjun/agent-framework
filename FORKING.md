@@ -11,8 +11,10 @@ Fork `agent-framework` to create your own agent workspace with domain-specific s
 | `bash` | 4.0+ | Required by the sync/release scripts. macOS ships 3.x by default, so install a newer bash first. |
 | `jq` | 1.6+ | Required by `analyze-activity.sh` and several hook/report workflows. |
 | `python3` | 3.8+ | Required for `scripts/extract-traces.py`; Python 3.11+ is a good default for new forks. |
+| `rsync` | current | Required by `sync-all.sh` Step 5 to deploy the `scripts/orchestrator/` subtree to `~/.orchestrator/`. |
 | Claude Code CLI | current | Required if Claude is one of your deployment targets. |
 | Codex CLI | current | Optional, but required for `codex`, `collab`, and dual-target workflows. |
+| [`cmux`](https://github.com/myeongjjun/cmux) + [`zmx`](https://github.com/myeongjjun/zmx) | current | Required for the orchestrator daemon, conductor, and `handoff-rotate`. Without these the repo still works in a standalone skill/hook mode — the orchestrator scripts just stay dormant until started. |
 
 ## Choose Your Path (A/B/C routing)
 
@@ -102,6 +104,8 @@ If you are not ready to add domain assets yet, leave those directories empty and
 
 ### A.4 Deploy the framework baseline
 
+`./scripts/sync-all.sh` runs five steps: skills, hooks, agents, top-level global scripts, and the `scripts/orchestrator/` subtree to `~/.orchestrator/`. Verify each surface landed.
+
 ```bash
 cd "$FORK_ROOT"
 ./scripts/sync-all.sh
@@ -112,12 +116,15 @@ Verify:
 ```bash
 ./sync-skills.sh --status
 ./sync-hooks.sh --status
+./sync-agents.sh --status
 ls -1 "$HOME/.claude/skills" 2>/dev/null | sort
 ls -1 "$HOME/.codex/skills" 2>/dev/null | sort
+ls -1 "$HOME/.claude/agents" 2>/dev/null | sort
 jq '.hooks // {}' "$HOME/.claude/settings.json" 2>/dev/null || echo '{}'
+ls -1 "$HOME/.orchestrator/scripts/orchestrator" 2>/dev/null | head -10 || echo 'orchestrator not deployed (skip if you are not using cmux+zmx)'
 ```
 
-If deploy fails, fix that before adding more domain content. Otherwise continue to A.5.
+If deploy fails, fix that before adding more domain content. The orchestrator subtree is only needed if you plan to use `collab`, dispatch, or rotation — the standalone skill/hook path works without it. Otherwise continue to A.5.
 
 ### A.5 Initialize ACP in the first project that will use the fork
 
@@ -329,6 +336,8 @@ The framework repo ships no example domain pack. No removal needed. Continue to 
 
 ### B.6: Deploy and verify
 
+`./scripts/sync-all.sh` runs five steps: skills, hooks, agents, top-level global scripts, and the `scripts/orchestrator/` subtree to `~/.orchestrator/`. Verify each surface landed.
+
 ```bash
 cd "$FORK_ROOT"
 ./scripts/sync-all.sh
@@ -339,12 +348,15 @@ Verify:
 ```bash
 ./sync-skills.sh --status
 ./sync-hooks.sh --status
+./sync-agents.sh --status
 ls -1 "$CLAUDE_SKILLS" 2>/dev/null | sort
 ls -1 "$CODEX_SKILLS" 2>/dev/null | sort
+ls -1 "$HOME/.claude/agents" 2>/dev/null | sort
 jq '.hooks // {}' "$CLAUDE_SETTINGS" 2>/dev/null || echo '{}'
+ls -1 "$HOME/.orchestrator/scripts/orchestrator" 2>/dev/null | head -10 || echo 'orchestrator not deployed (skip if you are not using cmux+zmx)'
 ```
 
-If `sync-skills.sh --status` still shows `deployed only` skills that you do not want, remove those directories from `~/.claude/skills/` and `~/.codex/skills/`, then rerun B.6. Otherwise continue to B.7.
+If `sync-skills.sh --status` still shows `deployed only` skills that you do not want, remove those directories from `~/.claude/skills/` and `~/.codex/skills/`, then rerun B.6. Same pattern applies to `sync-agents.sh --status` for stale agent definitions under `~/.claude/agents/`. Otherwise continue to B.7.
 
 ### B.7: Initialize ACP
 
@@ -547,7 +559,7 @@ If collaboration adds too much process, stop at Phase 4. Otherwise keep the full
 
 ```text
 agent-framework/
-├── skills/
+├── skills/                   # framework skills + your flat domain skills
 │   ├── acp-constraint/
 │   ├── acp-decision/
 │   ├── acp-init/
@@ -562,18 +574,31 @@ agent-framework/
 │   ├── <domain>-triage/
 │   └── <domain>-release/
 ├── hooks/
-│   ├── general/
-│   ├── observability/
-│   ├── <domain>/
-│   └── HOOKS.md
+│   ├── general/              # framework guards (always deployed)
+│   ├── observability/        # framework session-review
+│   ├── <domain>/             # your domain hooks
+│   └── HOOKS.md              # source of truth for sync-hooks.sh
+├── agents/                   # flat Claude Code agent definitions
+│   └── approver.md           # framework-provided auto-approver
 ├── scripts/
-├── agent-context/
-│   ├── constraints/
-│   └── decisions/
+│   ├── sync-all.sh           # canonical deploy entry point
+│   ├── conductor.sh          # sibling-session dispatch lifecycle
+│   ├── orchestrator/         # long-lived daemon subtree (deployed to ~/.orchestrator/)
+│   ├── agent-release.sh      # capability versioning / rollback
+│   ├── analyze-activity.sh   # trace-report generator
+│   ├── extract-traces.py     # unified Claude + Codex transcript extractor
+│   └── handoff-rotate.sh     # RAM-compression rotation via orchestrator
+├── agent-context/            # ACP: decisions + constraints
+│   ├── decisions/
+│   └── constraints/
+├── configs/                  # optional scaffolding slot (empty in framework)
+├── plugins/                  # optional scaffolding slot (empty in framework)
+├── templates/                # optional scaffolding slot (empty in framework)
+├── sync-skills.sh            # skill sync (Claude / Codex / both)
+├── sync-hooks.sh             # hook sync (category + profile)
+├── sync-agents.sh            # agent definition sync
 ├── README.md
-├── FORKING.md
-├── skills/README.md
-├── sync-hooks.sh
-├── sync-skills.sh
-└── AGENTS.md
+├── FORKING.md                # this file
+├── AGENTS.md                 # ACP guide for agents running in this repo
+└── LICENSE
 ```
