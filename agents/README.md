@@ -40,13 +40,12 @@ Files must be flat at the top of `agents/` — no subdirectories.
 
 ## Current agents
 
-_None._ The previous `handoff-runner` agent was removed in Round 6 of
-the handoff-rotation work (see ADR-026 / ADR-027). The rotation flow is
-now orchestrated entirely by `scripts/handoff-rotate.sh` with no
-helper-agent layer.
+| Agent | Model | Trigger | Purpose |
+|---|---|---|---|
+| `approver.md` | (see frontmatter) | Monitored by the orchestrator for stuck workers | Watches cmux surfaces for permission prompts, auto-approves the safe subset backed by a policy file and audit log, and performs root-cause analysis on why approval was needed |
 
-This directory and its sync tooling remain in place as infrastructure
-for future agent definitions.
+The handoff-rotation flow is orchestrated entirely by
+`scripts/handoff-rotate.sh` with no helper-agent layer.
 
 ## Sync workflow
 
