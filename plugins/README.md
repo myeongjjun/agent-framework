@@ -1,14 +1,7 @@
-# Plugins
+# plugins/
 
-Plugin directory for extending agent-framework functionality.
+Scaffolding slot for MCP servers, Claude plugins, or other extensions you want to keep next to the framework source.
 
-## Structure
+The framework ships nothing here; the directory is intentionally empty. `sync-all.sh` does not deploy anything from `plugins/` — wire installation into your own setup script if you add content. Keep vendored MCP servers in self-contained subdirectories so they can be symlinked or npm-installed independently.
 
-- **mcp-servers/**: Model Context Protocol servers for Claude integration
-- **claude-plugins/**: Custom Claude plugins and extensions
-
-## Usage
-
-Place MCP servers and Claude plugins in their respective subdirectories.
-
-TODO: Add detailed plugin development and installation guide.
+See [FORKING.md](../FORKING.md) for the broader fork/customization workflow.

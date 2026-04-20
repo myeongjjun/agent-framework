@@ -1,15 +1,7 @@
-# Configs
+# configs/
 
-Shared configuration files for various AI tools and environments.
+Scaffolding slot for shared configuration files you want versioned alongside the framework — e.g., Claude Code / Codex settings fragments, Cursor rules, editor configs that teammates reuse.
 
-## Structure
+The framework ships nothing here; the directory is intentionally empty. Populate it in your fork if you want a single source of truth for cross-tool config. `sync-all.sh` does not deploy anything from `configs/` — wiring into deploy is your responsibility.
 
-- **claude/**: Claude Code and Claude API configurations
-- **codex/**: Codex-specific settings and preferences
-- **cursorrules/**: Cursor IDE rules and configurations
-
-## Usage
-
-Store shared configuration files that can be referenced across different projects and environments.
-
-TODO: Add configuration management guide.
+See [FORKING.md](../FORKING.md) for the broader fork/customization workflow.
