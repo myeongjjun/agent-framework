@@ -279,7 +279,7 @@ If the verification is empty, you had no custom deployed skills to migrate; skip
 cd "$FORK_ROOT"
 mkdir -p "hooks/${DOMAIN}"
 
-FRAMEWORK_HOOKS="guard-prod-kubectl.sh session-start-review.sh"
+FRAMEWORK_HOOKS="guard-prod-kubectl.sh guard-acp-direct-edit.sh guard-deployed-artifact-edit.sh guard-direct-session-control.sh session-start-review.sh"
 TEMPLATE_DOMAIN_HOOKS=""  # no example domain hooks in framework repo
 
 jq -r '
