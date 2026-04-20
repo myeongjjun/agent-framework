@@ -3,7 +3,6 @@
 - **Severity**: High
 - **Category**: Architecture
 - **Scope**: `hooks/`, `~/.claude/hooks/`, `~/.claude/settings.json`
-- **Related**: ADR-021 (Hook Category Management)
 
 ## Rule
 

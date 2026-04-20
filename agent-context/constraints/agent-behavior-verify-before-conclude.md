@@ -16,11 +16,7 @@ When performing analysis, comparison, or decision-making tasks, the agent must p
 
 ## Rationale
 
-`/observe` analysis on 2026-04-02 found a 10.5% correction rate, with the primary pattern being "premature conclusion without evidence." Users had to request re-analysis with proper quantitative/qualitative backing. This constraint codifies the expectation that analysis tasks require supporting evidence before conclusions.
-
-Evidence from traces:
-- "아니 좀더 정량적, 정성적 2개 기반으로 자세히 해야지 너무 빠른 의사결정이야"
-- "다시 정량적, 정성적인 분석해보자"
+`/observe` trace analysis found a recurring pattern of "premature conclusion without evidence": the agent would state a verdict before presenting the quantitative and qualitative basis, forcing the user to ask for re-analysis. This constraint codifies the expectation that analysis tasks show their work before the conclusion.
 
 ## Verification
 
@@ -38,4 +34,4 @@ Before presenting a conclusion in analysis tasks, check:
 
 ## References
 
-- [/observe report 2026-04-02](~/.claude/logs/proposals/observe-2026-04-02.md) — Proposal #3
+- `skills/observe/SKILL.md` — proposal #3 from a `/observe` trace-analysis run prompted this constraint

@@ -16,7 +16,7 @@ Skill instructions must follow the language convention: English for workflow/log
 
 ## Rationale
 
-ADR-017 Rule 2 established this convention after repeated incidents where Korean instructions in workflow sections broke consistency. Without an explicit constraint, agents default to Korean when the project language is Korean, causing style drift across skills.
+This convention exists to prevent style drift: without it, agents default to Korean when the project language is Korean, which breaks consistency in workflow sections across skills. Keep workflow logic English so skills are portable across projects and reviewers; keep user-facing output Korean so end-users see their expected language.
 
 ## Verification
 
@@ -54,4 +54,4 @@ Manual review checklist:
 
 ## References
 
-- ADR-017: Skill Authoring Conventions and AGENTS.md Auto-Loading
+- `skills/*/SKILL.md` — enforce on every skill at review time

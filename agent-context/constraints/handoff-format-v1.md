@@ -141,5 +141,4 @@ codex "Read .agent/{ENTRY_FILE} and continue. Follow Next Steps section."
 
 - skills/handoff/SKILL.md (v1.0.0)
 - skills/takeover/SKILL.md (v1.0.0)
-- agent-context/decisions/2026-01-14-hybrid-context-extraction.md (ADR-006)
 - agent-context/constraints/skill-interdependency.md
