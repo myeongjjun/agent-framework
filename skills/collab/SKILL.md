@@ -68,7 +68,7 @@ Identify the type in Phase 1 and follow the matching flow:
   appends `-claude` / `-codex` suffixes and conductor.sh caps slugs at 32).
 - The orchestrator agent MUST be running before the skill sends a request. If
   not, the skill reports this and suggests
-  `bash scripts/orchestrator/start-agent.sh --execute`.
+  `bash ~/.orchestrator/scripts/orchestrator/start-agent.sh --execute`.
 - Every first call is a **dry-run preview**. The skill submits with
   `dry_run: true`, shows both planned dispatches to the user, and only
   re-submits with `dry_run: false` after explicit approval.
@@ -120,21 +120,20 @@ task type, reasoning effort level.
 **Step 2a — Verify orchestrator is alive**:
 
 ```bash
-bash scripts/orchestrator/health.sh
+bash ~/.orchestrator/scripts/orchestrator/health.sh
 ```
 
 If the exit code is non-zero, stop and tell the user to start the orchestrator
-with `bash scripts/orchestrator/start-agent.sh --execute`. Do not auto-start.
+with `bash ~/.orchestrator/scripts/orchestrator/start-agent.sh --execute`. Do not auto-start.
 
 **Step 2b — Dry-run preview**:
 
 ```bash
 bash -c '
-  . scripts/orchestrator/protocol.sh
+  . ~/.orchestrator/scripts/orchestrator/protocol.sh
   orchestrator_request --type collab --slug "<base_slug>" --timeout 120 --payload "## Payload
 - slug: <base_slug>
 - description: <task description>
-- reasoning_effort: <low|medium|high|xhigh>
 - dry_run: true
 - no_worktree: false
 "
@@ -157,11 +156,10 @@ sequentially, each with a ~10s post-spawn wait):
 
 ```bash
 bash -c '
-  . scripts/orchestrator/protocol.sh
+  . ~/.orchestrator/scripts/orchestrator/protocol.sh
   orchestrator_request --type collab --slug "<base_slug>" --timeout 300 --payload "## Payload
 - slug: <base_slug>
 - description: <task description>
-- reasoning_effort: <level>
 - dry_run: false
 - no_worktree: false
 "
@@ -177,7 +175,7 @@ Exit codes from `orchestrator_request`:
 
 On `status: partial` (Claude launched but Codex failed), the Claude worker is
 still alive; decide whether to clean it up via
-`bash scripts/conductor.sh done {base_slug}-claude --cleanup --execute`
+`bash ~/.orchestrator/scripts/conductor.sh done {base_slug}-claude --cleanup --execute`
 and retry, or continue with a single-worker fallback.
 
 **Step 2d — Capture worker handles**:
@@ -229,68 +227,64 @@ cp <codex_worktree_path>/REVIEW.md  /tmp/<slug>-codex.review.md
 > cross-review prompts. Do NOT instruct workers to read files from another
 > worktree path — it causes excessive reasoning overhead.
 
-**Step 3b — Dispatch cross-review**:
-
-Option A (simplest, recommended): mark Phase 2 workers done first, then send a
-second `/collab` request with different base slug (`<slug>-xr`) and descriptions
-that embed the other worker's diff. This reuses the full orchestrator flow.
-
-```bash
-bash scripts/conductor.sh done <base_slug>-claude --execute
-bash scripts/conductor.sh done <base_slug>-codex  --execute
-```
-
-Then the caller composes the cross-review descriptions:
+**Step 3b — Inject cross-review into existing workers** (was: dispatch new
+ones). Phase 2 workers are still alive (keep_alive=true) with their full
+task context, worktree, and uncommitted state. We reuse them by injecting
+a cross-review prompt via `orchestrator_request --type inject`:
 
 ```
-CLAUDE_XR_DESC="You are performing a CROSS-REVIEW. Worker B (Codex) produced
-the following diff:
+CLAUDE_XR_PROMPT="CROSS-REVIEW round. Worker B (Codex) produced this diff
+(commit this round's output as CROSS-REVIEW.md in your worktree then commit):
 
 <paste /tmp/<slug>-codex.diff>
 
-Create CROSS-REVIEW.md at the worktree root with per-item verdicts
-(Agree/Disagree/Partially), new findings, and overall verdict. Then commit."
+Produce CROSS-REVIEW.md with per-item verdicts (Agree/Disagree/Partially),
+new findings, and overall verdict. Then: git add CROSS-REVIEW.md &&
+git commit -m 'cross-review: <slug>'."
 
-CODEX_XR_DESC="You are performing a CROSS-REVIEW. Worker A (Claude) produced
-the following diff:
+CODEX_XR_PROMPT="CROSS-REVIEW round. Worker A (Claude) produced this diff
+(commit this round's output as CROSS-REVIEW.md in your worktree then commit):
 
 <paste /tmp/<slug>-claude.diff>
 
-Create CROSS-REVIEW.md at the worktree root with per-item verdicts
-(Agree/Disagree/Partially), new findings, and overall verdict. Then commit."
+Produce CROSS-REVIEW.md with per-item verdicts (Agree/Disagree/Partially),
+new findings, and overall verdict. Then: git add CROSS-REVIEW.md &&
+git commit -m 'cross-review: <slug>'."
 ```
 
-The cross-review descriptions differ per worker, so the collab handler (which
-sends the same description to both) is not a perfect fit. Use two direct
-`/dispatch` calls instead — each with `--agent claude` or `--agent codex` — to
-spawn the cross-review round:
+Inject into each existing worker:
 
 ```bash
 bash -c '
-  . scripts/orchestrator/protocol.sh
-  orchestrator_request --type dispatch --slug "<base_slug>-xr-claude" --timeout 180 --payload "## Payload
-- slug: <base_slug>-xr-claude
-- description: $CLAUDE_XR_DESC
-- worker_family: claude
-- dry_run: false
-- no_worktree: false
+  . ~/.orchestrator/scripts/orchestrator/protocol.sh
+  orchestrator_request --type inject --timeout 30 --payload "## Payload
+- slug: <base_slug>-claude
+- prompt: '"${CLAUDE_XR_PROMPT}"'
 "
 '
 
 bash -c '
-  . scripts/orchestrator/protocol.sh
-  orchestrator_request --type dispatch --slug "<base_slug>-xr-codex" --timeout 180 --payload "## Payload
-- slug: <base_slug>-xr-codex
-- description: $CODEX_XR_DESC
-- worker_family: codex
-- dry_run: false
-- no_worktree: false
+  . ~/.orchestrator/scripts/orchestrator/protocol.sh
+  orchestrator_request --type inject --timeout 30 --payload "## Payload
+- slug: <base_slug>-codex
+- prompt: '"${CODEX_XR_PROMPT}"'
 "
 '
 ```
 
-Poll for cross-review commits the same way, then read the resulting
-`CROSS-REVIEW.md` files from the xreview worktrees.
+Only 2 workers total for the whole collab (not 4). Each worker already
+has the task brief + worktree + Phase 2 output — injecting the cross-
+review prompt continues the same session with new instructions.
+
+Poll for the CROSS-REVIEW.md commit on each worker's branch (or file
+existence in the worktree):
+
+```bash
+while [ ! -f "<claude_worktree_path>/CROSS-REVIEW.md" ]; do sleep 10; done
+while [ ! -f "<codex_worktree_path>/CROSS-REVIEW.md" ]; do sleep 10; done
+```
+
+Then read both `CROSS-REVIEW.md` files from the original Phase 2 worktrees.
 
 ### Phase 4 — Synthesis (caller)
 
@@ -320,8 +314,9 @@ plan, then decide: merge vs re-dispatch.
 
 **Checklist** (all required before Phase 5 completes):
 - [ ] Best result merged to main
-- [ ] All four task slugs marked done via `conductor.sh done --execute`
-- [ ] Worktrees cleaned up by conductor (or manually `git worktree remove`)
+- [ ] Both worker sessions ended (they exit naturally once Phase 3 completes,
+      or caller injects `/exit` once outputs are collected)
+- [ ] Worktrees cleaned up via `orchestrator_request --type tidy`
 - [ ] Archive saved under `.collab/<base_slug>.md`
 - [ ] Final commit SHA recorded
 
@@ -337,16 +332,29 @@ git cherry-pick <commit-from-codex_worker_branch>
 **Review task merge**: apply synthesized fixes directly to main files, then
 commit with collab provenance.
 
-**Mark all four tasks done** (Phase 2 pair + Phase 3 xreview pair):
+**Clean up both worker worktrees** (only 2 workers — Phase 3 reused them):
+
+Once the workers exit (injecting `/exit` after collecting CROSS-REVIEW.md
+and diff output is sufficient), their cmux panes auto-close and zmx
+sessions die. The daemon's periodic tidy loop (every 30s) removes the
+worktrees + branches automatically.
+
+For immediate cleanup, call tidy via orchestrator_request:
 
 ```bash
-bash scripts/conductor.sh done <base_slug>-claude     --execute
-bash scripts/conductor.sh done <base_slug>-codex      --execute
-bash scripts/conductor.sh done <base_slug>-xr-claude  --execute
-bash scripts/conductor.sh done <base_slug>-xr-codex   --execute
+bash -c '
+  . ~/.orchestrator/scripts/orchestrator/protocol.sh
+  orchestrator_request --type tidy --payload "$(build_tidy_payload)" --timeout 30
+'
 ```
 
-`conductor.sh done --execute` removes the per-task worktree by default.
+`tidy` is resource-based — it detects which workers have finished
+(zmx gone) and removes only those worktrees/branches. Live workers
+are protected. Optionally scope to specific slugs:
+
+```bash
+build_tidy_payload --slug <base_slug>-claude --slug <base_slug>-codex
+```
 
 **Archive**:
 
@@ -388,7 +396,6 @@ ARCHIVE
 - 완료 조건: {체크리스트}
 - base_slug: {base_slug}
 - 작업 유형: 코드 생산 / 리뷰
-- reasoning_effort: {level}
 
 ### 2) 오케스트레이터 dispatch
 - 사전 확인: `health.sh` PASS, 대상 파일 커밋됨
@@ -422,21 +429,28 @@ ARCHIVE
 ## Relationship to other skills
 
 - **`/dispatch`**: sibling sub-dispatch for single-worker side quests; also a
-  thin orchestrator client. `/collab` reuses it for Phase 3 cross-review.
-- **`conductor.sh done/cleanup`**: Phase 5 calls `conductor.sh done <slug> --cleanup --execute`
-  on all four paired slugs. No separate skill needed.
+  thin orchestrator client.
+- **`orchestrator_request --type inject`**: Phase 3 reuses Phase 2 workers
+  via inject (same session, new prompt) — no new worker spawned.
+- **`orchestrator_request --type tidy`**: Phase 5 resource cleanup. Also
+  runs automatically every ~30s via the daemon's periodic tidy loop.
 - **`/handoff` / `/takeover`**: per-session lifecycle; do not route through
   the orchestrator.
 
 ## Notes
 
-- This is v2.0.0. Changes from v1.6.0:
+- This is v2.1.0. Changes from v2.0.0:
+  - Phase 3 now uses `orchestrator_request --type inject` to send the
+    cross-review prompt to the existing Phase 2 workers (was: dispatch 2
+    new workers). Total worker count: 2 (not 4). Each worker keeps its
+    task context, worktree, and Phase 2 output.
+  - Phase 5 cleanup uses `orchestrator_request --type tidy` (daemon
+    routes to conductor.sh). Direct conductor.sh calls are now blocked
+    by the role-based guard hook.
+- Changes from v1.6.0 to v2.0.0:
   - Orchestrator-mediated Phase 2 dispatch (no direct cmux/zmx bash).
-  - Worktree + spawn logic deleted from the skill file; delegated to
-    `conductor.sh` via the orchestrator's `collab` handler.
-  - Phase 3 cross-review uses two `/dispatch` thin-client calls instead of
-    re-using the Phase 2 cmux surface (the orchestrator has no
-    "inject-into-running-sibling" primitive yet; a future stage may add one).
+  - Worktree + spawn logic delegated to conductor.sh via the
+    orchestrator's `collab` handler.
   - Skill shrank from ~630 lines to ~300 lines.
 - The orchestrator agent must be started before `/collab` is invoked. The
   skill does not auto-start it — starting a long-lived session is a

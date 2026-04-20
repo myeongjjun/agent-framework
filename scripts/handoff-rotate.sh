@@ -87,7 +87,42 @@ ok "handoff entry: $LATEST_ENTRY"
 
 # shellcheck source=/dev/null
 . "$PROTOCOL_SH"
+# Enable selected-workspace fallback for cases where CMUX_WORKSPACE_ID
+# is a stale UUID (e.g., after cmux restart). The currently selected
+# workspace is a reasonable target for rotate since the user is looking
+# at it right now.
+export ORCHESTRATOR_ALLOW_SELECTED_WS_FALLBACK=1
 orchestrator_alive || err "orchestrator not running — start it with: bash ~/.orchestrator/scripts/orchestrator/start-agent.sh --execute"
+
+# --- 3a. Surface UUID validation + tty fallback -------------------------------
+# If CMUX_SURFACE_ID is a stale UUID (cmux restarted since session start),
+# daemon's cmux send to that UUID silently fails and fresh claude never
+# boots in the original surface. Validate and re-derive if needed.
+_resolved_surf="$(_cmux_resolve_surface_ref "${ORIG_SURF}" 2>/dev/null || true)"
+if [[ -z "${_resolved_surf}" ]]; then
+  # Stale UUID — find surface by the base claude's tty.
+  # ZMX_SESSION is reliable (zmx slot names don't change with cmux restart).
+  _claude_pid="$(zmx list 2>/dev/null \
+    | awk -v n="${ORIG_ZMX}" '$0 ~ "name=" n "\t" {
+        for (i=1; i<=NF; i++) if ($i ~ /^pid=/) { sub(/^pid=/, "", $i); print $i; exit }
+      }' || true)"
+  _claude_tty=""
+  if [[ -n "${_claude_pid}" ]]; then
+    _claude_tty="$(ps -o tty= -p "${_claude_pid}" 2>/dev/null | tr -d ' ' || true)"
+  fi
+  if [[ -n "${_claude_tty}" && "${_claude_tty}" != "?" ]]; then
+    _resolved_surf="$(cmux tree --all 2>/dev/null \
+      | awk -v tty="tty=${_claude_tty}" '
+          index($0, tty) {
+            match($0, /surface:[0-9]+/)
+            if (RSTART > 0) { print substr($0, RSTART, RLENGTH); exit }
+          }' || true)"
+  fi
+  [[ -n "${_resolved_surf}" ]] \
+    || err "CMUX_SURFACE_ID stale and tty fallback failed (claude_pid=${_claude_pid:-?} tty=${_claude_tty:-?})"
+  info "resolved stale CMUX_SURFACE_ID via tty → ${_resolved_surf}"
+  ORIG_SURF="${_resolved_surf}"
+fi
 
 ENTRY_PATH="$PROJECT_DIR/$LATEST_ENTRY"
 PAYLOAD=$(cat <<EOF

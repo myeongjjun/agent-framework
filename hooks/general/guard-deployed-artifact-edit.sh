@@ -1,5 +1,8 @@
 #!/bin/bash
 # guard-deployed-artifact-edit.sh
+# @hook event: PreToolUse
+# @hook matcher: Edit,Write
+# @hook timeout: 3
 #
 # Warn when Edit/Write targets a deployed artifact path instead of the
 # source in agent-framework/.
@@ -10,6 +13,8 @@
 #   ~/.claude/hooks/   (deployed hooks)
 #   ~/.claude/agents/  (deployed agents)
 #   ~/.codex/skills/   (deployed codex skills)
+#   ~/.codex/hooks/    (deployed codex hooks)
+#   ~/.codex/hooks.json / ~/.codex/config.toml (codex hook config)
 #
 # The correct workflow is: edit source in agent-framework/, then deploy
 # via sync-all.sh. This hook prevents accidental direct edits to the
@@ -50,6 +55,9 @@ case "$expanded" in
   ${HOME}/.claude/hooks/*)                is_deployed=1 ;;
   ${HOME}/.claude/agents/*)               is_deployed=1 ;;
   ${HOME}/.codex/skills/*)                is_deployed=1 ;;
+  ${HOME}/.codex/hooks/*)                 is_deployed=1 ;;
+  ${HOME}/.codex/hooks.json)              is_deployed=1 ;;
+  ${HOME}/.codex/config.toml)             is_deployed=1 ;;
 esac
 
 [[ "$is_deployed" -eq 0 ]] && exit 0

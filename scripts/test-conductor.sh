@@ -26,13 +26,32 @@
 #   T15  backend dispatchers support cmux and iTerm2          (routing)
 #   T16  detect.sh backend priority                           (selection)
 #   T17  orchestrator health dead when no sentinel            (agent health)
+#   T17c approver health rejects stale scan metadata          (agent health)
 #   T18  start-agent dry-run plan without side effects        (bootstrap plan)
+#   T18b approver start-agent defaults to Codex family        (family inference)
+#   T18c approver start-agent uses runtime dir as launch cwd
 #   T19  stop-agent dry-run plan on fake state                (shutdown plan)
+#   T19b approver stop-agent reconstructs Codex slot          (family fallback)
 #   T20  protocol.sh is sourceable and exports helpers        (library contract)
 #   T21  done execute is idempotent for already-done task     (bug 1)
 #   T22  dispatch rejects active duplicate but reuses done     (bug 3)
 #   T23  dispatch dry-run exposes advisor metadata             (phase 1)
 #   T24  state transition stores advisor metadata              (phase 1)
+#   T25  advisor review approve allows done                    (phase 2)
+#   T26  advisor review revise blocks done                     (phase 2)
+#   T27  advisor parse failure falls through                   (phase 2)
+#   T28  daemon dispatch request dry-run                        (daemon)
+#   T29  collab --request dry-run                               (daemon)
+#   T30  registry schema v2 backward compatibility              (daemon)
+#   T30b stale inbox lock is cleared before writing request     (daemon)
+#   T34  guard hook allows installed orchestrator lifecycle wrapper
+#   T35  guard hook blocks repo-local lifecycle wrapper
+#   T36  guard hook allows deployed approver send-key wrapper
+#   T37  approver send-key wrapper only allows enter
+#   T38  stop-agent execute clears pending approver restart state
+#   T39  start-agent disables force-restart
+#   T40  approver start path builds scanner loop attach command
+#   T41  approver start path overrides zmx attach command for scanner loop
 
 set -euo pipefail
 IFS=$'\n\t'
@@ -41,6 +60,7 @@ ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 SANDBOX_DIR="/tmp/conductor-sandbox-$$"
 REPO_DIR="${SANDBOX_DIR}/repo"
 ORCHESTRATOR_ROOT="${SANDBOX_DIR}/orchestrator"
+APPROVER_ROOT="${SANDBOX_DIR}/approver"
 HOME_DIR="${SANDBOX_DIR}/home"
 
 PASS=0
@@ -56,6 +76,26 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "${REPO_DIR}" "${ORCHESTRATOR_ROOT}" "${HOME_DIR}"
+mkdir -p "${HOME_DIR}/bin"
+cat > "${HOME_DIR}/bin/claude" <<'BASH'
+#!/usr/bin/env bash
+case "${ADVISOR_STUB_VERDICT:-approve}" in
+  approve)
+    printf '%s\n' '{"result":"{\"verdict\":\"approve\",\"notes\":\"looks good\",\"score\":0.95}"}'
+    ;;
+  revise)
+    printf '%s\n' '{"result":"{\"verdict\":\"revise\",\"notes\":\"fix requested\",\"score\":0.4}"}'
+    ;;
+  malformed)
+    printf '%s\n' '{"result":"not-json"}'
+    ;;
+  *)
+    printf 'unknown advisor stub verdict\n' >&2
+    exit 2
+    ;;
+esac
+BASH
+chmod +x "${HOME_DIR}/bin/claude"
 
 (
   cd "${REPO_DIR}"
@@ -69,7 +109,7 @@ mkdir -p "${REPO_DIR}" "${ORCHESTRATOR_ROOT}" "${HOME_DIR}"
 
 run_conductor() {
   cd "${REPO_DIR}"
-  HOME="${HOME_DIR}" ORCHESTRATOR_ROOT="${ORCHESTRATOR_ROOT}" ZMX_SESSION="" \
+  PATH="${HOME_DIR}/bin:${PATH}" HOME="${HOME_DIR}" ORCHESTRATOR_ROOT="${ORCHESTRATOR_ROOT}" APPROVER_ROOT="${APPROVER_ROOT}" ZMX_SESSION="" \
     "${ROOT_DIR}/scripts/conductor.sh" "$@"
 }
 
@@ -80,6 +120,7 @@ run_orchestrator_script() {
     cd "${REPO_DIR}"
     HOME="${HOME_DIR}" \
     ORCHESTRATOR_ROOT="${ORCHESTRATOR_ROOT}" \
+    APPROVER_ROOT="${APPROVER_ROOT}" \
     ORCHESTRATOR_BACKEND=cmux \
       "${ROOT_DIR}/scripts/orchestrator/${script_name}" "$@"
   )
@@ -88,14 +129,26 @@ run_orchestrator_script() {
 run_plan() {
   (
     cd "${REPO_DIR}"
-    HOME="${HOME_DIR}" ORCHESTRATOR_ROOT="${ORCHESTRATOR_ROOT}" \
+    HOME="${HOME_DIR}" ORCHESTRATOR_ROOT="${ORCHESTRATOR_ROOT}" APPROVER_ROOT="${APPROVER_ROOT}" \
       "${ROOT_DIR}/scripts/orchestrator/core/plan.sh" "$@"
   )
 }
 
 run_state_transition() {
-  HOME="${HOME_DIR}" ORCHESTRATOR_ROOT="${ORCHESTRATOR_ROOT}" \
+  HOME="${HOME_DIR}" ORCHESTRATOR_ROOT="${ORCHESTRATOR_ROOT}" APPROVER_ROOT="${APPROVER_ROOT}" \
     "${ROOT_DIR}/scripts/orchestrator/core/state-transition.sh" "$@"
+}
+
+run_guard_hook() {
+  local command="$1"
+  local payload
+  payload="$(jq -nc --arg cmd "${command}" '{tool_name:"Bash",tool_input:{command:$cmd}}')"
+  printf '%s\n' "${payload}" | "${ROOT_DIR}/hooks/general/guard-direct-session-control.sh"
+}
+
+run_approver_send_key() {
+  HOME="${HOME_DIR}" ORCHESTRATOR_ROOT="${ORCHESTRATOR_ROOT}" APPROVER_ROOT="${APPROVER_ROOT}" \
+    "${ROOT_DIR}/scripts/orchestrator/effects/approver-send-key.sh" "$@"
 }
 
 # T1 — help
@@ -372,41 +425,118 @@ else
   printf '%s\n' "${health_output}" | sed 's/^/    /'
 fi
 
+# T17c — approver health should reject stale RUNNING/scan metadata
+section "T17c approver health rejects stale scan metadata"
+mkdir -p "${APPROVER_ROOT}"
+printf 'started_at=2026-04-15T00:00:00Z\n' > "${APPROVER_ROOT}/RUNNING"
+printf '999999\n' > "${APPROVER_ROOT}/scan.pid"
+printf 'codex-approver-global\n' > "${APPROVER_ROOT}/slot"
+set +e
+approver_health_output="$(
+  cd "${REPO_DIR}" && \
+    HOME="${HOME_DIR}" \
+    ORCHESTRATOR_ROOT="${ORCHESTRATOR_ROOT}" \
+    APPROVER_ROOT="${APPROVER_ROOT}" \
+    ORCHESTRATOR_BACKEND=cmux \
+    "${ROOT_DIR}/scripts/orchestrator/health.sh" --agent-name approver 2>&1
+)"
+approver_health_status=$?
+set -e
+if [[ "${approver_health_status}" -eq 1 ]] \
+  && printf '%s\n' "${approver_health_output}" | grep -F 'status=dead' >/dev/null; then
+  ok "approver health reports dead when only stale RUNNING/scan metadata remains"
+else
+  bad "approver health accepted stale approver metadata as alive"
+  printf '%s\n' "${approver_health_output}" | sed 's/^/    /'
+fi
+rm -f "${APPROVER_ROOT}/RUNNING" "${APPROVER_ROOT}/scan.pid" "${APPROVER_ROOT}/slot"
+rmdir "${APPROVER_ROOT}" 2>/dev/null || true
+
 # T18 — start-agent dry-run produces a plan without side effects
 section "T18 start-agent dry-run is side-effect free"
 start_plan="$(run_orchestrator_script start-agent.sh --dry-run)"
-if [[ "${start_plan}" == *"action=start-orchestrator"* ]] \
+if [[ "${start_plan}" == *"action=start-agent"* ]] \
   && [[ "${start_plan}" == *"mode=dry-run"* ]] \
-  && [[ "${start_plan}" == *"slot=claude-orchestrator-global"* ]] \
-  && [[ ! -e "${ORCHESTRATOR_ROOT}/agent" ]]; then
+  && [[ "${start_plan}" == *"type=daemon"* ]] \
+  && [[ "${start_plan}" == *"daemon="* ]] \
+  && [[ ! -e "${ORCHESTRATOR_ROOT}/agents/orchestrator" ]]; then
   ok "start-agent dry-run returns a valid plan without creating sentinel state"
 else
   bad "start-agent dry-run plan or side-effect check failed"
   printf '%s\n' "${start_plan}" | head -5
 fi
 
+# T18b — approver start-agent infers codex family from agent definition
+section "T18b approver start-agent defaults to Codex"
+approver_start_plan="$(run_orchestrator_script start-agent.sh --agent-name approver --dry-run)"
+if [[ "${approver_start_plan}" == *"action=start-agent"* ]] \
+  && [[ "${approver_start_plan}" == *"agent=approver"* ]] \
+  && [[ "${approver_start_plan}" == *"family=codex"* ]] \
+  && [[ "${approver_start_plan}" == *"slot=codex-approver-global"* ]] \
+  && [[ "${approver_start_plan}" == *"bootstrap-approver.md"* ]] \
+  && [[ ! -e "${APPROVER_ROOT}" ]]; then
+  ok "approver dry-run resolves codex family and slot without side effects"
+else
+  bad "approver dry-run did not resolve codex family correctly"
+  printf '%s\n' "${approver_start_plan}" | head -5
+fi
+
+# T18c — approver start-agent uses its runtime dir as launch cwd
+section "T18c approver start-agent uses runtime dir as launch cwd"
+if [[ "${approver_start_plan}" == *"cwd=${APPROVER_ROOT}"* ]]; then
+  ok "approver dry-run uses the approver runtime dir as launch cwd"
+else
+  bad "approver dry-run did not use the approver runtime dir as cwd"
+  printf '%s\n' "${approver_start_plan}" | head -5
+fi
+
 # T19 — stop-agent dry-run handles imaginary running state without side effects
 section "T19 stop-agent dry-run plans cleanup for stale sentinel state"
-mkdir -p "${ORCHESTRATOR_ROOT}/agent"
-printf 'started_at=2026-04-09T00:00:00Z\n' > "${ORCHESTRATOR_ROOT}/agent/RUNNING"
-printf '999999\n' > "${ORCHESTRATOR_ROOT}/agent/pid"
-printf 'claude-orchestrator-global\n' > "${ORCHESTRATOR_ROOT}/agent/slot"
-printf 'cmux\n' > "${ORCHESTRATOR_ROOT}/agent/backend"
-printf 'surface:999\n' > "${ORCHESTRATOR_ROOT}/agent/surface_id"
+mkdir -p "${ORCHESTRATOR_ROOT}/agents/orchestrator"
+printf 'started_at=2026-04-09T00:00:00Z\n' > "${ORCHESTRATOR_ROOT}/agents/orchestrator/RUNNING"
+printf '999999\n' > "${ORCHESTRATOR_ROOT}/agents/orchestrator/pid"
+printf 'claude-orchestrator-global\n' > "${ORCHESTRATOR_ROOT}/agents/orchestrator/slot"
+printf 'cmux\n' > "${ORCHESTRATOR_ROOT}/agents/orchestrator/backend"
+printf 'surface:999\n' > "${ORCHESTRATOR_ROOT}/agents/orchestrator/surface_id"
 stop_plan="$(run_orchestrator_script stop-agent.sh --dry-run)"
 if printf '%s\n' "${stop_plan}" | jq -e '
-    .action == "stop-orchestrator-agent"
+    .action == "stop-agent"
     and .mode == "dry-run"
     and .strategy == "stale-cleanup"
     and .target.slot == "claude-orchestrator-global"
     and .target.backend == "cmux"
   ' >/dev/null \
-  && [[ -f "${ORCHESTRATOR_ROOT}/agent/RUNNING" ]] \
-  && [[ -f "${ORCHESTRATOR_ROOT}/agent/pid" ]]; then
+  && [[ -f "${ORCHESTRATOR_ROOT}/agents/orchestrator/RUNNING" ]] \
+  && [[ -f "${ORCHESTRATOR_ROOT}/agents/orchestrator/pid" ]]; then
   ok "stop-agent dry-run returns a valid plan and leaves fake sentinel files untouched"
 else
   bad "stop-agent dry-run plan or sentinel preservation check failed"
   printf '%s\n' "${stop_plan}" | jq . 2>/dev/null | head -20
+fi
+
+# T19b — approver stop-agent can reconstruct the Codex slot from family metadata
+section "T19b approver stop-agent reconstructs Codex slot"
+mkdir -p "${APPROVER_ROOT}"
+printf 'started_at=2026-04-09T00:00:00Z\n' > "${APPROVER_ROOT}/RUNNING"
+printf '999998\n' > "${APPROVER_ROOT}/pid"
+printf 'cmux\n' > "${APPROVER_ROOT}/backend"
+printf 'codex\n' > "${APPROVER_ROOT}/family"
+printf 'surface:998\n' > "${APPROVER_ROOT}/surface_id"
+approver_stop_plan="$(run_orchestrator_script stop-agent.sh --agent-name approver --dry-run)"
+if printf '%s\n' "${approver_stop_plan}" | jq -e '
+    .action == "stop-agent"
+    and .mode == "dry-run"
+    and .family == "codex"
+    and .strategy == "stale-cleanup"
+    and .target.slot == "codex-approver-global"
+    and .target.backend == "cmux"
+  ' >/dev/null \
+  && [[ -f "${APPROVER_ROOT}/RUNNING" ]] \
+  && [[ -f "${APPROVER_ROOT}/family" ]]; then
+  ok "approver stop-agent dry-run rebuilds the codex slot from family metadata"
+else
+  bad "approver stop-agent dry-run did not rebuild the codex slot"
+  printf '%s\n' "${approver_stop_plan}" | jq . 2>/dev/null | head -20
 fi
 
 # T20 — protocol.sh can be sourced and exports the declared helpers
@@ -570,6 +700,566 @@ if printf '%s\n' "${advisor_state}" | jq -e '
 else
   bad "state transition dropped advisor metadata"
   printf '%s\n' "${advisor_state}" | jq '.tasks["advisor-state-task"], .agents' 2>/dev/null | head -30
+fi
+
+# T25 — advisor review approve allows the done transition to proceed
+section "T25 advisor review approve allows done"
+mkdir -p "${ORCHESTRATOR_ROOT}/tasks" "${ORCHESTRATOR_ROOT}/done"
+printf '# Work Item: advisor-review-approve\n' > "${ORCHESTRATOR_ROOT}/tasks/advisor-review-approve.md"
+printf 'advisor review change\n' >> "${REPO_DIR}/README.md"
+jq -n \
+  --arg project_path "${REPO_DIR}" \
+  --arg task_path "${ORCHESTRATOR_ROOT}/tasks/advisor-review-approve.md" \
+  --arg done_report_path "${ORCHESTRATOR_ROOT}/done/advisor-review-approve.md" \
+  '{
+    version: 1,
+    updated_at: "2026-04-10T00:00:00Z",
+    projects: {repo: {slug: "repo", path: $project_path, tasks: ["advisor-review-approve"]}},
+    tasks: {
+      "advisor-review-approve": {
+        slug: "advisor-review-approve",
+        status: "in_progress",
+        description: "exercise advisor approve",
+        project: "repo",
+        project_path: $project_path,
+        work_item_path: $task_path,
+        done_report_path: $done_report_path,
+        request_metadata: {advisor_mode: "review", executor_tier: "fast"},
+        agents: []
+      }
+    },
+    agents: {}
+  }' > "${ORCHESTRATOR_ROOT}/state.json"
+set +e
+advisor_approve_output="$(ADVISOR_STUB_VERDICT=approve run_conductor done advisor-review-approve --execute 2>&1)"
+advisor_approve_status=$?
+set -e
+if [[ "${advisor_approve_status}" -eq 0 ]] \
+  && printf '%s\n' "${advisor_approve_output}" | jq -e '.mode == "execute"' >/dev/null \
+  && jq -e '.tasks["advisor-review-approve"].status == "done"' "${ORCHESTRATOR_ROOT}/state.json" >/dev/null \
+  && grep -F '"event":"advisor-review"' "${ORCHESTRATOR_ROOT}/activity.jsonl" | grep -F '"verdict":"approve"' >/dev/null; then
+  ok "advisor approve verdict allows done transition"
+else
+  bad "advisor approve verdict did not allow done"
+  printf '%s\n' "${advisor_approve_output}" | sed 's/^/    /'
+  jq '.tasks["advisor-review-approve"]' "${ORCHESTRATOR_ROOT}/state.json" 2>/dev/null | sed 's/^/    /'
+fi
+
+# T26 — advisor review revise blocks the done transition
+section "T26 advisor review revise blocks done"
+printf '# Work Item: advisor-review-revise\n' > "${ORCHESTRATOR_ROOT}/tasks/advisor-review-revise.md"
+jq -n \
+  --arg project_path "${REPO_DIR}" \
+  --arg task_path "${ORCHESTRATOR_ROOT}/tasks/advisor-review-revise.md" \
+  --arg done_report_path "${ORCHESTRATOR_ROOT}/done/advisor-review-revise.md" \
+  '{
+    version: 1,
+    updated_at: "2026-04-10T00:00:00Z",
+    projects: {repo: {slug: "repo", path: $project_path, tasks: ["advisor-review-revise"]}},
+    tasks: {
+      "advisor-review-revise": {
+        slug: "advisor-review-revise",
+        status: "in_progress",
+        description: "exercise advisor revise",
+        project: "repo",
+        project_path: $project_path,
+        work_item_path: $task_path,
+        done_report_path: $done_report_path,
+        request_metadata: {advisor_mode: "review", executor_tier: "fast"},
+        agents: []
+      }
+    },
+    agents: {}
+  }' > "${ORCHESTRATOR_ROOT}/state.json"
+set +e
+advisor_revise_output="$(ADVISOR_STUB_VERDICT=revise run_conductor done advisor-review-revise --execute 2>&1)"
+advisor_revise_status=$?
+set -e
+if [[ "${advisor_revise_status}" -eq 20 ]] \
+  && printf '%s\n' "${advisor_revise_output}" | grep -F "advisor requested revision" >/dev/null \
+  && jq -e '.tasks["advisor-review-revise"].status == "in_progress"' "${ORCHESTRATOR_ROOT}/state.json" >/dev/null \
+  && [[ ! -f "${ORCHESTRATOR_ROOT}/done/advisor-review-revise.md" ]] \
+  && grep -F '"event":"advisor-review"' "${ORCHESTRATOR_ROOT}/activity.jsonl" | grep -F '"verdict":"revise"' >/dev/null; then
+  ok "advisor revise verdict blocks done transition"
+else
+  bad "advisor revise verdict did not block done"
+  printf '%s\n' "${advisor_revise_output}" | sed 's/^/    /'
+  jq '.tasks["advisor-review-revise"]' "${ORCHESTRATOR_ROOT}/state.json" 2>/dev/null | sed 's/^/    /'
+fi
+
+# T27 — advisor parse failures are recorded but do not block done
+section "T27 advisor parse failure falls through"
+printf '# Work Item: advisor-review-malformed\n' > "${ORCHESTRATOR_ROOT}/tasks/advisor-review-malformed.md"
+jq -n \
+  --arg project_path "${REPO_DIR}" \
+  --arg task_path "${ORCHESTRATOR_ROOT}/tasks/advisor-review-malformed.md" \
+  --arg done_report_path "${ORCHESTRATOR_ROOT}/done/advisor-review-malformed.md" \
+  '{
+    version: 1,
+    updated_at: "2026-04-10T00:00:00Z",
+    projects: {repo: {slug: "repo", path: $project_path, tasks: ["advisor-review-malformed"]}},
+    tasks: {
+      "advisor-review-malformed": {
+        slug: "advisor-review-malformed",
+        status: "in_progress",
+        description: "exercise advisor malformed response",
+        project: "repo",
+        project_path: $project_path,
+        work_item_path: $task_path,
+        done_report_path: $done_report_path,
+        request_metadata: {advisor_mode: "review", executor_tier: "fast"},
+        agents: []
+      }
+    },
+    agents: {}
+  }' > "${ORCHESTRATOR_ROOT}/state.json"
+set +e
+advisor_malformed_output="$(ADVISOR_STUB_VERDICT=malformed run_conductor done advisor-review-malformed --execute 2>&1)"
+advisor_malformed_status=$?
+set -e
+if [[ "${advisor_malformed_status}" -eq 0 ]] \
+  && printf '%s\n' "${advisor_malformed_output}" | jq -e '.mode == "execute"' >/dev/null \
+  && ! printf '%s\n' "${advisor_malformed_output}" | grep -F "parse error" >/dev/null \
+  && jq -e '.tasks["advisor-review-malformed"].status == "done"' "${ORCHESTRATOR_ROOT}/state.json" >/dev/null \
+  && grep -F '"event":"advisor-review-failed"' "${ORCHESTRATOR_ROOT}/activity.jsonl" | grep -F '"reason":"parse-failed"' >/dev/null; then
+  ok "advisor parse failure falls through to done transition"
+else
+  bad "advisor parse failure did not fall through cleanly"
+  printf '%s\n' "${advisor_malformed_output}" | sed 's/^/    /'
+  jq '.tasks["advisor-review-malformed"]' "${ORCHESTRATOR_ROOT}/state.json" 2>/dev/null | sed 's/^/    /'
+fi
+
+# T28 — daemon processes a dispatch request in dry-run mode and archives it
+section "T28 daemon dispatch --request dry-run"
+rm -rf "${ORCHESTRATOR_ROOT}"
+mkdir -p "${ORCHESTRATOR_ROOT}/inbox" "${ORCHESTRATOR_ROOT}/outbox" "${ORCHESTRATOR_ROOT}/inbox-processed"
+dispatch_req="${ORCHESTRATOR_ROOT}/inbox/req-daemon-dispatch.md"
+dispatch_res="${ORCHESTRATOR_ROOT}/outbox/res-daemon-dispatch.md"
+cat > "${dispatch_req}" <<EOF
+---
+schema_version: 1
+id: daemon-dispatch
+type: dispatch
+slug: daemon-dispatch
+requester:
+  slot: claude-base
+  project: ${REPO_DIR}
+  session_id: test
+  cmux_workspace_id: workspace:1
+created_at: 2026-04-14T00:00:00Z
+response_path: ${dispatch_res}
+timeout_seconds: 30
+---
+
+## Payload
+- slug: daemon-dispatch
+- description: Exercise daemon dispatch dry run
+- worker_family: codex
+- dry_run: true
+- no_worktree: false
+EOF
+set +e
+daemon_dispatch_output="$(run_orchestrator_script daemon.sh --once 2>&1)"
+daemon_dispatch_status=$?
+set -e
+if [[ "${daemon_dispatch_status}" -eq 0 ]] \
+  && [[ -f "${dispatch_res}" ]] \
+  && [[ -f "${ORCHESTRATOR_ROOT}/inbox-processed/req-daemon-dispatch.md" ]] \
+  && grep -F 'status: ok' "${dispatch_res}" >/dev/null \
+  && grep -F '"mode": "dry-run"' "${dispatch_res}" >/dev/null \
+  && grep -F 'codex-' "${dispatch_res}" >/dev/null; then
+  ok "daemon handled dispatch dry-run request and archived it"
+else
+  bad "daemon dispatch request handling failed"
+  printf '%s\n' "${daemon_dispatch_output}" | sed 's/^/    daemon: /'
+  [[ -f "${dispatch_res}" ]] && sed -n '1,80p' "${dispatch_res}" | sed 's/^/    response: /'
+fi
+
+# T29 — collab supports --request dry-run without mutating state
+section "T29 collab --request dry-run"
+rm -rf "${ORCHESTRATOR_ROOT}"
+mkdir -p "${ORCHESTRATOR_ROOT}/inbox" "${ORCHESTRATOR_ROOT}/outbox"
+collab_req="${ORCHESTRATOR_ROOT}/inbox/req-collab-request.md"
+cat > "${collab_req}" <<EOF
+---
+schema_version: 1
+id: collab-request
+type: collab
+slug: daemon-collab
+requester:
+  slot: claude-base
+  project: ${REPO_DIR}
+  session_id: test
+  cmux_workspace_id: workspace:1
+created_at: 2026-04-14T00:00:00Z
+response_path: ${ORCHESTRATOR_ROOT}/outbox/res-collab-request.md
+timeout_seconds: 30
+---
+
+## Payload
+- slug: daemon-collab
+- description: Exercise collab request dry run
+- dry_run: true
+- advisor_mode: review
+- executor_tier: fast
+EOF
+collab_request_output="$(run_conductor collab --request "${collab_req}" --dry-run)"
+if printf '%s\n' "${collab_request_output}" | jq -e '
+    .mode == "dry-run"
+    and .status == "ok"
+    and .base_slug == "daemon-collab"
+    and .claude_worker.output.plan.task.slug == "daemon-collab-claude"
+    and .codex_worker.output.plan.task.slug == "daemon-collab-codex"
+    and .claude_worker.output.plan.request.advisor_mode == "review"
+    and .codex_worker.output.plan.request.executor_tier == "fast"
+  ' >/dev/null; then
+  ok "collab --request dry-run derives both worker dispatch plans"
+else
+  bad "collab --request dry-run output was unexpected"
+  printf '%s\n' "${collab_request_output}" | jq . 2>/dev/null | head -80
+fi
+
+# T30 — registry updates upgrade v1 files to schema v2 and preserve agents
+section "T30 registry schema v2 backward compatibility"
+rm -rf "${ORCHESTRATOR_ROOT}"
+mkdir -p "${ORCHESTRATOR_ROOT}/agents"
+printf '%s\n' '{"schema_version":1,"agents":{"orchestrator":{"status":"stopped","pid":null}}}' > "${ORCHESTRATOR_ROOT}/agents/registry.json"
+set +e
+registry_update_output="$(
+  HOME="${HOME_DIR}" ORCHESTRATOR_ROOT="${ORCHESTRATOR_ROOT}" bash -lc '
+    . "'"${ROOT_DIR}"'/scripts/orchestrator/protocol.sh"
+    _locked_registry_update "'"${ORCHESTRATOR_ROOT}"'/agents/registry.json" ".agents[\"orchestrator\"].type = \"daemon\" | .agents[\"orchestrator\"].status = \"running\""
+  ' 2>&1
+)"
+registry_update_status=$?
+set -e
+if [[ "${registry_update_status}" -eq 0 ]] \
+  && jq -e '.schema_version == 2 and .agents.orchestrator.type == "daemon" and .agents.orchestrator.status == "running"' "${ORCHESTRATOR_ROOT}/agents/registry.json" >/dev/null; then
+  ok "registry v1 file is upgraded to schema_version 2 with type metadata"
+else
+  bad "registry v2 compatibility update failed"
+  printf '%s\n' "${registry_update_output}" | sed 's/^/    /'
+  [[ -f "${ORCHESTRATOR_ROOT}/agents/registry.json" ]] && jq . "${ORCHESTRATOR_ROOT}/agents/registry.json" 2>/dev/null | sed 's/^/    /'
+fi
+
+# T30b — request writer should clear stale inbox lock dirs
+section "T30b orchestrator request clears stale inbox lock"
+rm -rf "${ORCHESTRATOR_ROOT}"
+mkdir -p "${ORCHESTRATOR_ROOT}/inbox" "${ORCHESTRATOR_ROOT}/outbox" "${ORCHESTRATOR_ROOT}/locks"
+mkdir -p "${ORCHESTRATOR_ROOT}/locks/inbox.lock.d"
+touch -t 202604140000 "${ORCHESTRATOR_ROOT}/locks/inbox.lock.d"
+set +e
+stale_lock_output="$(
+  HOME="${HOME_DIR}" ORCHESTRATOR_ROOT="${ORCHESTRATOR_ROOT}" APPROVER_ROOT="${APPROVER_ROOT}" bash -lc '
+    . "'"${ROOT_DIR}"'/scripts/orchestrator/protocol.sh"
+    _orchestrator_write_request "stale-lock-test" "status" "" "ping" "5"
+  ' 2>&1
+)"
+stale_lock_status=$?
+set -e
+if [[ "${stale_lock_status}" -eq 0 ]] \
+  && [[ -f "${ORCHESTRATOR_ROOT}/inbox/req-stale-lock-test.md" ]] \
+  && [[ ! -d "${ORCHESTRATOR_ROOT}/locks/inbox.lock.d" ]]; then
+  ok "request writer removes stale inbox lock and writes the request"
+else
+  bad "request writer failed to recover from stale inbox lock"
+  printf '%s\n' "${stale_lock_output}" | sed 's/^/    /'
+  find "${ORCHESTRATOR_ROOT}" -maxdepth 2 -mindepth 1 | sed 's/^/    /'
+fi
+
+# T31 — state-read rejects blank state files
+section "T31 state-read rejects blank state files"
+rm -rf "${ORCHESTRATOR_ROOT}"
+mkdir -p "${ORCHESTRATOR_ROOT}"
+printf '\n' > "${ORCHESTRATOR_ROOT}/state.json"
+set +e
+blank_state_output="$(
+  HOME="${HOME_DIR}" ORCHESTRATOR_ROOT="${ORCHESTRATOR_ROOT}" \
+    "${ROOT_DIR}/scripts/orchestrator/core/state-read.sh" --root "${ORCHESTRATOR_ROOT}" 2>&1
+)"
+blank_state_status=$?
+set -e
+if [[ "${blank_state_status}" -ne 0 ]] \
+  && printf '%s\n' "${blank_state_output}" | grep -F "state file is blank" >/dev/null; then
+  ok "state-read fails loudly on blank state.json"
+else
+  bad "state-read accepted a blank state.json"
+  printf '%s\n' "${blank_state_output}" | sed 's/^/    /'
+fi
+
+# T32 — resume does not overwrite blank state files
+section "T32 resume refuses blank state without clobbering it"
+rm -rf "${ORCHESTRATOR_ROOT}" "${HOME_DIR}/.codex"
+mkdir -p "${ORCHESTRATOR_ROOT}" "${HOME_DIR}/.codex"
+printf '\n' > "${ORCHESTRATOR_ROOT}/state.json"
+printf '%s\n' '{"id":"resume-1","thread_name":"resume-blank-state","updated_at":"2026-04-14T00:00:00Z"}' > "${HOME_DIR}/.codex/session_index.jsonl"
+set +e
+resume_blank_output="$(run_conductor resume resume-blank-state --dry-run --agent codex 2>&1)"
+resume_blank_status=$?
+set -e
+resume_blank_state_bytes="$(wc -c < "${ORCHESTRATOR_ROOT}/state.json" | tr -d ' ')"
+if [[ "${resume_blank_status}" -ne 0 ]] \
+  && printf '%s\n' "${resume_blank_output}" | grep -F "failed to read orchestrator state" >/dev/null \
+  && [[ "${resume_blank_state_bytes}" == "1" ]]; then
+  ok "resume stops on blank state.json without overwriting it"
+else
+  bad "resume did not guard against blank state.json"
+  printf '%s\n' "${resume_blank_output}" | sed 's/^/    /'
+  printf '    state.json bytes = %s\n' "${resume_blank_state_bytes}"
+fi
+
+# T33 — cleanup removes stale task entries with no remaining agents
+section "T33 cleanup removes stale task entries"
+rm -rf "${ORCHESTRATOR_ROOT}"
+mkdir -p "${ORCHESTRATOR_ROOT}"
+jq -n '{
+  version: 1,
+  updated_at: "2026-04-14T00:00:00Z",
+  projects: {
+    repo: {
+      slug: "repo",
+      path: "/tmp/repo",
+      tasks: ["cleanup-me"],
+      updated_at: "2026-04-14T00:00:00Z"
+    }
+  },
+  tasks: {
+    "cleanup-me": {
+      slug: "cleanup-me",
+      status: "in_progress",
+      project: "repo",
+      project_path: "/tmp/repo",
+      agents: [],
+      updated_at: "2026-04-14T00:00:00Z"
+    }
+  },
+  agents: {}
+}' > "${ORCHESTRATOR_ROOT}/state.json"
+cleanup_stale_output="$(run_conductor cleanup cleanup-me --execute)"
+if printf '%s\n' "${cleanup_stale_output}" | jq -e '.mode == "execute" and .action == "cleanup"' >/dev/null \
+  && jq -e '.tasks["cleanup-me"] == null and (.projects.repo.tasks | index("cleanup-me")) == null' "${ORCHESTRATOR_ROOT}/state.json" >/dev/null; then
+  ok "cleanup removes stale task entries once no agents remain"
+else
+  bad "cleanup left stale task state behind"
+  printf '%s\n' "${cleanup_stale_output}" | sed 's/^/    /'
+  jq . "${ORCHESTRATOR_ROOT}/state.json" 2>/dev/null | sed 's/^/    /'
+fi
+
+# T34 — guard hook allows installed orchestrator lifecycle wrapper
+section "T34 guard hook allows installed orchestrator lifecycle wrapper"
+set +e
+run_guard_hook "${HOME}/.orchestrator/scripts/orchestrator/start-agent.sh --agent-name approver --execute" >/dev/null 2>&1
+guard_allow_status=$?
+set -e
+if [[ "${guard_allow_status}" -eq 0 ]]; then
+  ok "guard hook allows installed ~/.orchestrator lifecycle wrapper"
+else
+  bad "guard hook blocked installed ~/.orchestrator lifecycle wrapper"
+fi
+
+# T35 — guard hook still blocks repo-local lifecycle wrapper
+section "T35 guard hook blocks repo-local lifecycle wrapper"
+set +e
+run_guard_hook "${ROOT_DIR}/scripts/orchestrator/start-agent.sh --agent-name approver --execute" >/dev/null 2>&1
+guard_block_status=$?
+set -e
+if [[ "${guard_block_status}" -eq 2 ]]; then
+  ok "guard hook blocks repo-local lifecycle wrapper"
+else
+  bad "guard hook did not block repo-local lifecycle wrapper"
+  printf '    exit_status=%s\n' "${guard_block_status}"
+fi
+
+# T36 — guard hook allows deployed approver send-key wrapper
+section "T36 guard hook allows deployed approver send-key wrapper"
+set +e
+run_guard_hook "${HOME}/.approver/send-key.sh --surface surface:1 --workspace workspace:1 enter" >/dev/null 2>&1
+guard_send_key_status=$?
+set -e
+if [[ "${guard_send_key_status}" -eq 0 ]]; then
+  ok "guard hook allows deployed approver send-key wrapper"
+else
+  bad "guard hook blocked deployed approver send-key wrapper"
+  printf '    exit_status=%s\n' "${guard_send_key_status}"
+fi
+
+# T37 — approver send-key wrapper only allows enter
+section "T37 approver send-key wrapper only allows enter"
+set +e
+approver_send_key_output="$(run_approver_send_key --surface surface:1 --workspace workspace:1 escape 2>&1)"
+approver_send_key_status=$?
+set -e
+if [[ "${approver_send_key_status}" -ne 0 ]] \
+  && printf '%s\n' "${approver_send_key_output}" | grep -F "only --surface <id> --workspace <id> enter is allowed" >/dev/null; then
+  ok "approver send-key wrapper rejects non-enter keys"
+else
+  bad "approver send-key wrapper accepted unsupported keys"
+  printf '%s\n' "${approver_send_key_output}" | sed 's/^/    /'
+fi
+
+# T38 — stop-agent execute clears pending approver restart state
+section "T38 stop-agent execute clears pending approver restart state"
+mkdir -p "${APPROVER_ROOT}"
+printf 'cmux\n' > "${APPROVER_ROOT}/backend"
+printf 'codex\n' > "${APPROVER_ROOT}/family"
+printf 'codex-approver-global\n' > "${APPROVER_ROOT}/slot"
+printf 'workspace:27\n' > "${APPROVER_ROOT}/workspace_id"
+printf 'surface:998\n' > "${APPROVER_ROOT}/surface_id"
+printf 'workspace:27\n' > "${APPROVER_ROOT}/pending_workspace_id"
+printf 'surface:999\n' > "${APPROVER_ROOT}/pending_surface_id"
+printf 'started_at=2026-04-15T00:00:00Z\n' > "${APPROVER_ROOT}/RUNNING"
+set +e
+approver_stop_execute_output="$(run_orchestrator_script stop-agent.sh --agent-name approver --execute 2>&1)"
+approver_stop_execute_status=$?
+set -e
+if [[ "${approver_stop_execute_status}" -eq 0 ]] \
+  && [[ ! -e "${APPROVER_ROOT}/pending_surface_id" ]] \
+  && [[ ! -e "${APPROVER_ROOT}/pending_workspace_id" ]] \
+  && [[ ! -e "${APPROVER_ROOT}/surface_id" ]]; then
+  ok "stop-agent execute clears pending approver restart state"
+else
+  bad "stop-agent execute did not clear pending approver restart state"
+  printf '%s\n' "${approver_stop_execute_output}" | sed 's/^/    /'
+fi
+
+# T39 — start-agent disables force-restart
+section "T39 start-agent disables force-restart"
+start_agent_force_block="$(cat "${ROOT_DIR}/scripts/orchestrator/start-agent.sh")"
+if printf '%s\n' "${start_agent_force_block}" | grep -F 'die "--force-restart is disabled; use graceful stop then start"' >/dev/null \
+  && ! printf '%s\n' "${start_agent_force_block}" | grep -F 'force=0' >/dev/null \
+  && ! printf '%s\n' "${start_agent_force_block}" | grep -F 'stop-agent.sh" --agent-name "${agent_name}" --execute --force' >/dev/null; then
+  ok "start-agent disables force-restart and no longer contains force cleanup paths"
+else
+  bad "start-agent still contains force-restart lifecycle"
+  printf '%s\n' "${start_agent_force_block}" | sed 's/^/    /'
+fi
+
+# T40 — stop-agent disables force mode
+section "T40 stop-agent disables force mode"
+stop_agent_block="$(cat "${ROOT_DIR}/scripts/orchestrator/stop-agent.sh")"
+if printf '%s\n' "${stop_agent_block}" | grep -F 'die "--force is disabled; stop-agent always uses graceful stop"' >/dev/null \
+  && ! printf '%s\n' "${stop_agent_block}" | grep -F "strategy='force'" >/dev/null \
+  && printf '%s\n' "${stop_agent_block}" | grep -F 'enabled: $alive' >/dev/null; then
+  ok "stop-agent uses graceful shutdown only"
+else
+  bad "stop-agent still contains force mode"
+  printf '%s\n' "${stop_agent_block}" | sed 's/^/    /'
+fi
+
+# T41 — approver start path builds scanner loop attach command
+section "T41 approver start path builds scanner loop attach command"
+approver_start_block="$(cat "${ROOT_DIR}/scripts/orchestrator/start-agent.sh")"
+if printf '%s\n' "${approver_start_block}" | grep -F 'skip_bootstrap_prompt=1' >/dev/null \
+  && printf '%s\n' "${approver_start_block}" | grep -F 'approver-run.sh' >/dev/null \
+  && printf '%s\n' "${approver_start_block}" | grep -F 'agent_attach_command="${agent_dir}/approver-run.sh"' >/dev/null; then
+  ok "approver start path builds a scanner loop attach command without bootstrap prompt injection"
+else
+  bad "approver start path is missing scanner loop attach command"
+  printf '%s\n' "${approver_start_block}" | sed 's/^/    /'
+fi
+
+# T42 — approver attach path starts the session first, then attach-only
+section "T42 approver start path uses zmx run plus attach-only"
+cmux_spawn_block="$(cat "${ROOT_DIR}/scripts/orchestrator/effects/backends/cmux/spawn.sh")"
+protocol_block="$(cat "${ROOT_DIR}/scripts/orchestrator/protocol.sh")"
+if printf '%s\n' "${protocol_block}" | grep -F '_zmx_slot_unreachable()' >/dev/null \
+  && printf '%s\n' "${protocol_block}" | grep -F '_zmx_remove_slot_socket()' >/dev/null \
+  && printf '%s\n' "${approver_start_block}" | grep -F '_zmx_slot_unreachable "${slot}"' >/dev/null \
+  && printf '%s\n' "${approver_start_block}" | grep -F '_zmx_remove_slot_socket "${slot}"' >/dev/null \
+  && printf '%s\n' "${approver_start_block}" | grep -F 'zmx run "${slot}" "${agent_attach_command}"' >/dev/null \
+  && printf '%s\n' "${approver_start_block}" | grep -F 'export ORCHESTRATOR_AGENT_ATTACH_ONLY=1' >/dev/null \
+  && printf '%s\n' "${cmux_spawn_block}" | grep -F 'if [[ "${attach_only}" != "1" ]] && command -v zmx' >/dev/null \
+  && printf '%s\n' "${cmux_spawn_block}" | grep -F "printf -v base_agent_command 'zmx attach %q'" >/dev/null; then
+  ok "approver start path resets unreachable zmx slots and stale sockets, then starts the runner via zmx run and keeps pane attach-only"
+else
+  bad "approver start path is missing the zmx run + attach-only flow"
+  printf '%s\n' "${protocol_block}" | sed 's/^/    /'
+  printf '%s\n' "${approver_start_block}" | sed 's/^/    /'
+  printf '%s\n' "${cmux_spawn_block}" | sed 's/^/    /'
+fi
+
+# T43 — gc never mutates in-progress tasks
+section "T43 gc leaves in-progress tasks alone"
+gc_block="$(awk '
+  /gc_command\(\)/ {capture=1}
+  capture {print}
+  /^}/ && capture {exit}
+' "${ROOT_DIR}/scripts/conductor.sh")"
+if printf '%s\n' "${gc_block}" | grep -F 'cmux_snapshot="$(cmux_surface_snapshot)"' >/dev/null \
+  && printf '%s\n' "${gc_block}" | grep -F 'surface_alive=1' >/dev/null \
+  && printf '%s\n' "${gc_block}" | grep -F 'in_progress)' >/dev/null \
+  && printf '%s\n' "${gc_block}" | grep -F 'action="skip"' >/dev/null \
+  && ! printf '%s\n' "${gc_block}" | grep -F 'action="mark-failed"' >/dev/null; then
+  ok "gc does not mutate in-progress tasks"
+else
+  bad "gc still mutates in-progress tasks"
+  printf '%s\n' "${gc_block}" | sed 's/^/    /'
+fi
+
+# T44 — gc reports orphan zmx sessions without killing them
+section "T44 gc only reports orphan zmx sessions"
+gc_orphan_block="$(awk '
+  /# 1\. Orphan zmx sessions: report only\./ {capture=1}
+  capture {print}
+  /# 2\. Orphan worktrees:/ {exit}
+' "${ROOT_DIR}/scripts/conductor.sh")"
+if printf '%s\n' "${gc_orphan_block}" | grep -F 'action:"report-only"' >/dev/null \
+  && ! printf '%s\n' "${gc_orphan_block}" | grep -F 'zmx kill "${zname}"' >/dev/null \
+  && ! printf '%s\n' "${gc_orphan_block}" | grep -F 'rm -f "${_zmx_dir}/${zname}"' >/dev/null; then
+  ok "gc leaves orphan zmx sessions untouched"
+else
+  bad "gc still mutates orphan zmx sessions"
+  printf '%s\n' "${gc_orphan_block}" | sed 's/^/    /'
+fi
+
+# T45 — execute mode forbids --no-worktree
+section "T45 dispatch execute rejects no-worktree"
+set +e
+dispatch_no_worktree_output="$(bash "${ROOT_DIR}/scripts/conductor.sh" dispatch sample-task "desc" --execute --no-worktree 2>&1)"
+dispatch_no_worktree_status=$?
+set -e
+if [[ "${dispatch_no_worktree_status}" -ne 0 ]] \
+  && printf '%s\n' "${dispatch_no_worktree_output}" | grep -F -- '--no-worktree is disabled for execute' >/dev/null; then
+  ok "dispatch execute blocks no-worktree"
+else
+  bad "dispatch execute accepted no-worktree"
+  printf '%s\n' "${dispatch_no_worktree_output}" | sed 's/^/    /'
+fi
+
+# T46 — requester workspace is normalized to workspace:N form
+section "T46 protocol normalizes requester workspace refs"
+protocol_block="$(cat "${ROOT_DIR}/scripts/orchestrator/protocol.sh")"
+if printf '%s\n' "${protocol_block}" | grep -F '_orchestrator_requester_workspace_ref()' >/dev/null \
+  && printf '%s\n' "${protocol_block}" | grep -F 'printf '\''  cmux_workspace_id: %s\n'\'' "$(_orchestrator_requester_workspace_ref)"' >/dev/null; then
+  ok "protocol writes canonical requester workspace refs"
+else
+  bad "protocol still writes raw CMUX_WORKSPACE_ID"
+  printf '%s\n' "${protocol_block}" | sed 's/^/    /'
+fi
+
+# T47 — dispatch execute wires rollback on failure paths
+section "T47 dispatch execute rolls back failed launches"
+dispatch_block="$(sed -n '574,940p' "${ROOT_DIR}/scripts/conductor.sh")"
+if printf '%s\n' "${dispatch_block}" | grep -F 'rollback_dispatch_artifacts()' >/dev/null \
+  && printf '%s\n' "${dispatch_block}" | grep -F '_dispatch_fail()' >/dev/null \
+  && printf '%s\n' "${dispatch_block}" | grep -F '_dispatch_fail' >/dev/null; then
+  ok "dispatch execute rolls back work item, state, surface, and worktree on failure"
+else
+  bad "dispatch execute is missing rollback wiring"
+  printf '%s\n' "${dispatch_block}" | sed 's/^/    /'
+fi
+
+# T48 — team restart no longer routes through forceful lifecycle paths
+section "T48 team restart is graceful-only"
+team_block="$(cat "${ROOT_DIR}/scripts/orchestrator/team.sh")"
+if ! printf '%s\n' "${team_block}" | grep -F -- '--force-restart' >/dev/null \
+  && ! printf '%s\n' "${team_block}" | grep -F 'stop-agent.sh" --agent-name "${agent}" --force' >/dev/null \
+  && printf '%s\n' "${team_block}" | grep -F 'stop-agent.sh" --agent-name "${agent}" "$@"' >/dev/null \
+  && printf '%s\n' "${team_block}" | grep -F 'start-agent.sh" --agent-name "${agent}" "$@"' >/dev/null; then
+  ok "team restart uses graceful stop then start"
+else
+  bad "team restart still uses forceful lifecycle"
+  printf '%s\n' "${team_block}" | sed 's/^/    /'
 fi
 
 # Summary

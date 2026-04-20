@@ -54,7 +54,7 @@ Verification: logs should show `mcp startup: no servers` for default invocations
 Detect dispatch mode before invoking Codex:
 
 ```bash
-if bash -c '. scripts/orchestrator/protocol.sh && orchestrator_alive' 2>/dev/null; then
+if bash -c '. ~/.orchestrator/scripts/orchestrator/protocol.sh && orchestrator_alive' 2>/dev/null; then
   DISPATCH_MODE="orchestrator"   # dispatch codex worker via orchestrator
 else
   DISPATCH_MODE="exec"            # codex exec (non-interactive fallback)
@@ -68,13 +68,13 @@ Dispatch a codex worker through the Global Session Orchestrator using
 creation, worktree setup, and worker lifecycle.
 
 **Prerequisites:**
-- Orchestrator agent running (`bash scripts/orchestrator/health.sh`)
-- `scripts/orchestrator/protocol.sh` available
+- Orchestrator agent running (`bash ~/.orchestrator/scripts/orchestrator/health.sh`)
+- `~/.orchestrator/scripts/orchestrator/protocol.sh` available
 
 ```bash
 # Dispatch codex worker via orchestrator
 bash -c '
-  . scripts/orchestrator/protocol.sh
+  . ~/.orchestrator/scripts/orchestrator/protocol.sh
   orchestrator_request --type dispatch --slug "codex-{task}" --timeout 180 --payload "## Payload
 - slug: codex-{task}
 - description: {task description}
@@ -173,7 +173,7 @@ Read .agent/LATEST.md for full context from Claude Code.
 Report what was done and any issues encountered."
 
 bash -c '
-  . scripts/orchestrator/protocol.sh
+  . ~/.orchestrator/scripts/orchestrator/protocol.sh
   orchestrator_request --type dispatch --slug "codex-fullcycle" --timeout 180 --payload "## Payload
 - slug: codex-fullcycle
 - description: Full cycle codex task with handoff context
@@ -1056,7 +1056,7 @@ via the orchestrator status protocol:
 
 ```bash
 bash -c '
-  . scripts/orchestrator/protocol.sh
+  . ~/.orchestrator/scripts/orchestrator/protocol.sh
   orchestrator_request --type status --slug "codex-{task}" --timeout 30 --payload "## Payload
 - slug: codex-{task}
 "

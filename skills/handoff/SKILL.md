@@ -309,7 +309,7 @@ t=6  user verifies the new session
 **Operational prerequisite:**
 - The Global Session Orchestrator must already be running. If
   `handoff-rotate.sh` reports that the orchestrator is down, start it with
-  `bash scripts/orchestrator/start-agent.sh --execute` and retry.
+  `bash ~/.orchestrator/scripts/orchestrator/start-agent.sh --execute` and retry.
 
 ### When to use rotation
 - Long sessions (>50 messages) where remaining work is small

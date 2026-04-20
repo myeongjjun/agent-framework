@@ -12,6 +12,7 @@ ROLLBACK_SCOPE=(skills hooks agent-context scripts sync-hooks.sh sync-skills.sh)
 CLAUDE_SKILLS_DIR="${HOME}/.claude/skills"
 CODEX_SKILLS_DIR="${HOME}/.codex/skills"
 CLAUDE_HOOKS_DIR="${HOME}/.claude/hooks"
+CODEX_HOOKS_DIR="${HOME}/.codex/hooks"
 
 usage() {
   cat <<'EOF'
@@ -217,21 +218,24 @@ cleanup_deployed_skill_dir() {
 }
 
 cleanup_deployed_hooks() {
-  [[ -d "$CLAUDE_HOOKS_DIR" ]] || return 0
-
   local source_hooks=()
   mapfile -t source_hooks < <(find "${REPO_ROOT}/hooks" -mindepth 2 -maxdepth 2 -type f -name '*.sh' -exec basename {} \; | sort -u)
+  local hook_dir
 
-  local deployed_file
-  local hook_name
-  while IFS= read -r deployed_file; do
-    [[ -n "$deployed_file" ]] || continue
-    hook_name="$(basename "$deployed_file")"
-    if ! contains_name "$hook_name" "${source_hooks[@]}"; then
-      rm -f -- "$deployed_file"
-      echo "Removed stale deployed hook: ${CLAUDE_HOOKS_DIR}/${hook_name}"
-    fi
-  done < <(find "$CLAUDE_HOOKS_DIR" -mindepth 1 -maxdepth 1 -type f -name '*.sh' | sort)
+  for hook_dir in "$CLAUDE_HOOKS_DIR" "$CODEX_HOOKS_DIR"; do
+    [[ -d "$hook_dir" ]] || continue
+
+    local deployed_file
+    local hook_name
+    while IFS= read -r deployed_file; do
+      [[ -n "$deployed_file" ]] || continue
+      hook_name="$(basename "$deployed_file")"
+      if ! contains_name "$hook_name" "${source_hooks[@]}"; then
+        rm -f -- "$deployed_file"
+        echo "Removed stale deployed hook: ${hook_dir}/${hook_name}"
+      fi
+    done < <(find "$hook_dir" -mindepth 1 -maxdepth 1 -type f -name '*.sh' | sort)
+  done
 }
 
 rollback_release() {

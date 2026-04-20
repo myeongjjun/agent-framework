@@ -52,6 +52,13 @@
 - **Skill Language Convention**: English for workflow/logic sections, Korean only for output format examples and trigger phrases → [`code-style-skill-language-convention.md`](agent-context/constraints/code-style-skill-language-convention.md)
 <!-- ACP:CRITICAL_CONSTRAINTS_END -->
 
+## Language Policy
+
+- User-facing responses should be in Korean unless the user requests another language.
+- Agent-facing instructions, task briefs, reviews, handoffs, and workflow notes may use English when it improves brevity, consistency, token efficiency, or technical precision.
+- Agent-to-agent communication may use English or the most efficient language for the context.
+- Preserve code, commands, logs, JQL, issue keys, file paths, API names, and exact error messages in their original form.
+
 ## Project Info
 
 **Name**: Agent Framework
@@ -86,7 +93,8 @@ control):
 
 # Hook sync (see ADR-021)
 ./sync-hooks.sh --status
-./sync-hooks.sh --push                    # all categories
+./sync-hooks.sh --target both --push      # Claude + Codex
+./sync-hooks.sh --target codex --push     # Codex only
 ./sync-hooks.sh --push --profile <name>   # general + observability + <name>
 
 # Agent sync (see ADR-027)

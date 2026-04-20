@@ -1,6 +1,7 @@
 #!/bin/bash
 # session-start-review.sh - Review previous session's activity on new session start
-# Event: SessionStart (no matcher)
+# @hook event: SessionStart
+# @hook timeout: 5
 # Non-blocking: always exits 0
 #
 # Checks yesterday's transcript activity for anomalies.
@@ -9,9 +10,27 @@
 # Replaces auto-analyze.sh (Stop hook disabled due to cmux.sock timing).
 set -uo pipefail
 
+input=$(cat)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 EXTRACT_SCRIPT="${REPO_ROOT}/scripts/extract-traces.sh"
+TRACE_AGENT="claude"
+
+case "$SCRIPT_DIR" in
+  "${HOME}/.codex/hooks"*)
+    TRACE_AGENT="codex"
+    ;;
+esac
+
+emit_message() {
+  local message="$1"
+
+  if [[ "$TRACE_AGENT" == "codex" ]]; then
+    printf '%s\n' "$message"
+  else
+    printf '%s\n' "$message" >&2
+  fi
+}
 
 # Check yesterday's activity (not today — today just started)
 YESTERDAY=$(date -u -v-1d '+%Y-%m-%d' 2>/dev/null || date -u -d 'yesterday' '+%Y-%m-%d' 2>/dev/null)
@@ -19,12 +38,12 @@ TRACE_FILE="$(mktemp)"
 trap 'rm -f "$TRACE_FILE"' EXIT
 
 # Prefer transcript extraction over the legacy activity JSONL hook logs.
-"$EXTRACT_SCRIPT" --agent claude --days 1 >"$TRACE_FILE" 2>/dev/null || exit 0
+"$EXTRACT_SCRIPT" --agent "$TRACE_AGENT" --days 1 >"$TRACE_FILE" 2>/dev/null || exit 0
 
 # extract-traces --days 1 is calendar-day based, so fall back to an exact-date
 # query to preserve the original "review yesterday" behavior.
 if ! jq -e --arg day "$YESTERDAY" 'select((.ts // "")[:10] == $day)' "$TRACE_FILE" >/dev/null 2>&1; then
-  "$EXTRACT_SCRIPT" --agent claude --date "$YESTERDAY" >"$TRACE_FILE" 2>/dev/null || exit 0
+  "$EXTRACT_SCRIPT" --agent "$TRACE_AGENT" --date "$YESTERDAY" >"$TRACE_FILE" 2>/dev/null || exit 0
 fi
 
 # Quick metrics via jq
@@ -80,18 +99,18 @@ has_alert=false
 if awk -v rate="$bash_rate" 'BEGIN { exit !(rate > 10) }'; then
   bash_fail=$(echo "$result" | jq -r '.bash_fail // 0')
   bash_total=$(echo "$result" | jq -r '.bash_total // 0')
-  echo "[session-review] Yesterday's Bash failure rate: ${bash_fail}/${bash_total} (${bash_rate}%)" >&2
+  emit_message "[session-review] Yesterday's Bash failure rate: ${bash_fail}/${bash_total} (${bash_rate}%)"
   has_alert=true
 fi
 
 if [[ "$run_count" -gt 0 ]]; then
   runs_summary=$(echo "$result" | jq -r '.runs[] | "\(.sid): \(.tool) x\(.count)"' 2>/dev/null)
-  echo "[session-review] Consecutive failure runs detected: ${runs_summary}" >&2
+  emit_message "[session-review] Consecutive failure runs detected: ${runs_summary}"
   has_alert=true
 fi
 
 if [[ "$has_alert" == true ]]; then
-  echo "[session-review] Run: ./scripts/analyze-activity.sh --source claude --days 1 --errors" >&2
+  emit_message "[session-review] Run: ./scripts/analyze-activity.sh --source ${TRACE_AGENT} --days 1 --errors"
 fi
 
 # Check for recent handoff entry — suggest /takeover if found
@@ -105,7 +124,7 @@ if [ -f "$LATEST_MD" ]; then
   now=$(date +%s)
   age_hours=$(( (now - latest_mtime) / 3600 ))
   if [ "$age_hours" -lt 24 ]; then
-    echo "[session-review] Recent handoff found: .agent/LATEST.md (${age_hours}h ago) -- consider running /takeover" >&2
+    emit_message "[session-review] Recent handoff found: .agent/LATEST.md (${age_hours}h ago) -- consider running /takeover"
   fi
 fi
 

@@ -1,5 +1,8 @@
 #!/bin/bash
 # guard-acp-direct-edit.sh
+# @hook event: PreToolUse
+# @hook matcher: Edit,Write,MultiEdit
+# @hook timeout: 3
 #
 # Warn when Edit/Write/MultiEdit targets a file under agent-context/.
 #
