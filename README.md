@@ -1,6 +1,19 @@
 # Agent Framework
 
-A portable framework for managing AI agent capabilities: skills, hooks, constraints, and an autonomous improvement loop. Supports **Claude Code** and **Codex CLI**.
+An **opinionated agent-ops kit** for managing AI agent capabilities: skills, hooks, constraints, an autonomous improvement loop, **a long-lived orchestrator daemon, and an auto-approver agent pattern**. Supports **Claude Code** and **Codex CLI**.
+
+## Scope
+
+agent-framework is deliberately opinionated. It bundles the specific primitives we have found effective for running AI agents over long sessions — not a minimal primitives library. Adopting agent-framework means adopting these opinions:
+
+- **Session backend**: [`cmux`](https://github.com/myeongjjun/cmux) + [`zmx`](https://github.com/myeongjjun/zmx) for persistent agent sessions. The orchestrator and conductor scripts assume these tools are available.
+- **Long-lived orchestrator daemon**: a single bash daemon at `~/.orchestrator/` mediates dispatch, rotation, cleanup, and health. Direct session mutations are blocked by `guard-direct-session-control.sh`; all changes go through `orchestrator_request --type <...>`.
+- **Auto-approver agent**: an approver agent watches permission prompts and auto-approves the safe subset, backed by a policy file and audit log.
+- **Worktree-isolated workers**: dispatched workers always run in their own git worktree (non-negotiable for execute mode).
+
+If you want pure skill/hook infrastructure without the orchestrator stack, the `skills/` and `hooks/` subtrees work standalone — the orchestrator scripts only activate when you deploy and start them.
+
+See ADR: `agent-context/decisions/2026-04-20-agent-framework-opinionated-kit.md` for the scope decision.
 
 ## Quick Start
 
@@ -18,7 +31,7 @@ cd agent-framework
 
 ## What's Included
 
-This repo is the **framework layer** — reusable infrastructure for any AI agent workflow. Add your own domain skills on top.
+This repo is the **opinionated agent-ops kit** — the specific primitives we run in production, not a generic primitives library. Add your own domain skills on top.
 
 ### Skills (11)
 
@@ -34,17 +47,30 @@ This repo is the **framework layer** — reusable infrastructure for any AI agen
 | Category | Hooks | Purpose |
 |----------|-------|---------|
 | `general` | `guard-prod-kubectl.sh` | Block kubectl writes on prod context |
+| `general` | `guard-acp-direct-edit.sh` | Enforce ACP skill usage for agent-context/ edits |
+| `general` | `guard-deployed-artifact-edit.sh` | Block direct edits of deployed runtime (~/.orchestrator/, ~/.approver/) |
+| `general` | `guard-direct-session-control.sh` | Role-based access: block direct session mutations, force orchestrator_request path |
 | `observability` | `session-start-review.sh` | Review previous session on start |
 
 ### Scripts
 
 | Script | Purpose |
 |--------|---------|
-| `scripts/sync-all.sh` | Unified deploy: skills + hooks |
+| `scripts/sync-all.sh` | Unified deploy: skills + hooks + agents + orchestrator |
+| `scripts/conductor.sh` | Dispatch + cleanup + tidy + gc lifecycle for sibling sessions |
+| `scripts/orchestrator/` | Long-lived daemon subtree — `daemon.sh`, `protocol.sh`, `health.sh`, `start-agent.sh`, `stop-agent.sh`, `team.sh`, `effects/`, `core/` |
 | `scripts/agent-release.sh` | Capability versioning (tag, rollback, diff) |
 | `scripts/extract-traces.py` | Unified Claude + Codex transcript extractor |
 | `scripts/analyze-activity.sh` | Activity analysis with per-agent breakdown |
 | `scripts/apply-proposal.sh` | Proposal lifecycle management |
+| `scripts/handoff-rotate.sh` | Session rotation via orchestrator (compress RAM without losing context) |
+| `scripts/test-conductor.sh` | End-to-end conductor test suite |
+
+### Agents
+
+| Agent | Role |
+|-------|------|
+| `agents/approver.md` | Monitors cmux surfaces for stuck workers, auto-approves safe operations, performs root-cause analysis on why approval was needed |
 
 ## Architecture
 
@@ -122,8 +148,10 @@ Autonomous improvement cycle: observe agent behavior, diagnose issues, propose c
 | `bash` | 4.0+ | Required by sync/release scripts |
 | `jq` | 1.6+ | Required by analysis and hook workflows |
 | `python3` | 3.8+ | Required for `extract-traces.py` |
+| `rsync` | current | Required by `sync-all.sh` Step 5 (orchestrator subtree) |
 | Claude Code CLI | current | Required for Claude deployment target |
 | Codex CLI | current | Optional, required for `codex`/`collab` skills |
+| [`cmux`](https://github.com/myeongjjun/cmux) + [`zmx`](https://github.com/myeongjjun/zmx) | current | Required for orchestrator, conductor, handoff-rotate. Without these, only the standalone skill/hook subset works. |
 
 ## License
 
