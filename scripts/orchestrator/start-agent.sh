@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 #
-# start-agent.sh — Start a persistent agent in the agent-team workspace.
+# start-agent.sh — Start a persistent LLM agent in the agent-team workspace.
 #
-# Supports the orchestrator (default) and any named agent with a bootstrap
-# prompt. All agents share one cmux workspace ("agent-team") with separate
-# surfaces.
+# Supports the orchestrator (default) and LLM-backed named agents with a
+# bootstrap prompt. Daemon-backed agents are supervised elsewhere.
 #
 # Flow:
 #   1. Resolve/create shared cmux workspace ("agent-team")
@@ -82,12 +81,16 @@ done
 # --- Constants ----------------------------------------------------------------
 
 _validate_agent_name "${agent_name}" || die "invalid agent name: ${agent_name}"
+declared_type="$(_agent_declared_type "${agent_name}" 2>/dev/null || true)"
+if [[ "${agent_name}" == "approver" || "${declared_type}" == "daemon" && "${agent_name}" != "orchestrator" ]]; then
+  die "agent '${agent_name}' is daemon-supervised; use team.sh start ${agent_name}"
+fi
 
 if [[ -z "${agent_type}" ]]; then
   if [[ "${agent_name}" == "orchestrator" ]]; then
-    agent_type="${ORCHESTRATOR_AGENT_TYPE:-daemon}"
+    agent_type="${ORCHESTRATOR_AGENT_TYPE:-${declared_type:-daemon}}"
   else
-    agent_type="llm-agent"
+    agent_type="${declared_type:-llm-agent}"
   fi
 fi
 case "${agent_type}" in
@@ -113,13 +116,9 @@ fi
 
 runtime_root="$(_orchestrator_root)"
 agent_dir="$(_agent_dir "${agent_name}")"
-if [[ "${agent_name}" == "approver" ]]; then
-  launch_cwd="${agent_dir}"
-else
-  launch_cwd="$(pwd -P)"
-  if git -C "${launch_cwd}" rev-parse --show-toplevel >/dev/null 2>&1; then
-    launch_cwd="$(git -C "${launch_cwd}" rev-parse --show-toplevel)"
-  fi
+launch_cwd="$(pwd -P)"
+if git -C "${launch_cwd}" rev-parse --show-toplevel >/dev/null 2>&1; then
+  launch_cwd="$(git -C "${launch_cwd}" rev-parse --show-toplevel)"
 fi
 agents_root="$(_agents_dir)"
 registry_file="${agents_root}/registry.json"
@@ -263,18 +262,6 @@ mkdir -p "${runtime_root}"/{inbox,outbox,inbox-processed,locks,mailbox}
 mkdir -p "${agent_dir}"/{inbox,outbox,mailbox}
 cp -f "${bootstrap_src}" "${agent_dir}/bootstrap.md"
 
-# Copy agent-specific helper scripts to runtime dir
-if [[ "${agent_name}" == "approver" ]]; then
-  for helper in approver-send-key.sh approver-scan.sh approver-run.sh; do
-    if [[ -f "${SCRIPT_DIR}/effects/${helper}" ]]; then
-      cp -f "${SCRIPT_DIR}/effects/${helper}" "${agent_dir}/${helper}"
-      chmod +x "${agent_dir}/${helper}"
-    fi
-  done
-  # Alias for bootstrap compatibility
-  [[ -f "${agent_dir}/approver-send-key.sh" ]] && ln -sf approver-send-key.sh "${agent_dir}/send-key.sh"
-fi
-
 # --- 1. Resolve or create shared agent-team workspace -------------------------
 # All agents share one cmux workspace ("agent-team"). Each agent gets its
 # own surface within this workspace.
@@ -337,32 +324,26 @@ _cleanup_on_error() {
 trap _cleanup_on_error EXIT
 
 session_id=''
-if [[ "${agent_name}" == "approver" ]]; then
-  skip_bootstrap_prompt=1
-  agent_attach_command="${agent_dir}/approver-run.sh"
-  agent_cmd='bash'
-else
-  case "${agent_family}" in
-    claude)
-      session_id="$(uuidgen | tr '[:upper:]' '[:lower:]')"
-      if [[ -n "${model}" ]]; then
-        printf -v agent_cmd 'claude --dangerously-skip-permissions --model %q --session-id %q' "${model}" "${session_id}"
-      else
-        printf -v agent_cmd 'claude --dangerously-skip-permissions --session-id %q' "${session_id}"
-      fi
-      ;;
-    codex)
-      if [[ -n "${model}" ]]; then
-        printf -v agent_cmd 'codex --full-auto -m %q' "${model}"
-      else
-        agent_cmd='codex --full-auto'
-      fi
-      ;;
-    *)
-      die "unsupported llm-agent family: ${agent_family}"
-      ;;
-  esac
-fi
+case "${agent_family}" in
+  claude)
+    session_id="$(uuidgen | tr '[:upper:]' '[:lower:]')"
+    if [[ -n "${model}" ]]; then
+      printf -v agent_cmd 'claude --dangerously-skip-permissions --model %q --session-id %q' "${model}" "${session_id}"
+    else
+      printf -v agent_cmd 'claude --dangerously-skip-permissions --session-id %q' "${session_id}"
+    fi
+    ;;
+  codex)
+    if [[ -n "${model}" ]]; then
+      printf -v agent_cmd 'codex --full-auto -m %q' "${model}"
+    else
+      agent_cmd='codex --full-auto'
+    fi
+    ;;
+  *)
+    die "unsupported llm-agent family: ${agent_family}"
+    ;;
+esac
 
 printf -v base_agent_command 'zmx attach %q %s' "${slot}" "${agent_cmd}"
 if [[ -n "${pid_file}" ]]; then
@@ -380,20 +361,6 @@ fi
 export ORCHESTRATOR_TARGET_WORKSPACE_ID="${ws_id}"
 export ORCHESTRATOR_AGENT_EXTRA_ARGS="${agent_cmd#${agent_family} }"
 export ORCHESTRATOR_AGENT_PID_FILE="${pid_file}"
-if [[ "${agent_name}" == "approver" ]]; then
-  if _zmx_slot_unreachable "${slot}"; then
-    zmx kill "${slot}" >/dev/null 2>&1 || true
-    _zmx_remove_slot_socket "${slot}"
-    sleep 1
-  fi
-  if ! zmx run "${slot}" "${agent_attach_command}" >/dev/null 2>&1; then
-    zmx kill "${slot}" >/dev/null 2>&1 || true
-    _zmx_remove_slot_socket "${slot}"
-    sleep 1
-    zmx run "${slot}" "${agent_attach_command}" >/dev/null 2>&1 || die "failed to start approver zmx session"
-  fi
-  export ORCHESTRATOR_AGENT_ATTACH_ONLY=1
-fi
 if (( reuse_surface == 1 )); then
   surface_id="${reuse_surface_id}"
   spawn_target_workspace="${reuse_workspace_id}"

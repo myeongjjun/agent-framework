@@ -5,9 +5,10 @@
 # SIDE EFFECT: calls `git worktree remove` and optionally `git branch -D`.
 # Dry-run by default.
 #
-# Stage 0: cleanup is invoked by `dispatch-done` after the sibling agent
-# has merged or signalled completion. The branch is preserved by default
-# (the caller decides whether to keep it for review or delete it).
+# Called by `conductor.sh done --cleanup` / `conductor.sh cleanup` / tidy /
+# gc after the sibling agent has merged or signalled completion. The
+# branch is preserved by default (the caller decides whether to keep it
+# for review or delete it).
 #
 # Usage:
 #   cleanup-worktree.sh [--dry-run|--execute] <project-cwd> <worktree-path> [--branch <name>] [--delete-branch] [--force]

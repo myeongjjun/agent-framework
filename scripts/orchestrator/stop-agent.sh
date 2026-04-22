@@ -121,6 +121,7 @@ agent_dir="$(_agent_dir "${agent_name}")"
 runtime_root="$(_orchestrator_root)"
 registry_file="$(_agents_dir)/registry.json"
 backend_name="$(read_metadata backend 2>/dev/null || printf 'unknown')"
+declared_type="$(_agent_declared_type "${agent_name}" 2>/dev/null || true)"
 agent_family="$(read_metadata family 2>/dev/null || true)"
 agent_type="$(
   if [[ -f "${registry_file}" ]]; then
@@ -133,14 +134,29 @@ fi
 if [[ -z "${agent_family}" ]]; then
   agent_family="$(_agent_declared_family "${agent_name}" 2>/dev/null || true)"
 fi
-[[ -n "${agent_family}" ]] || agent_family='claude'
-slot_name="$(read_metadata slot 2>/dev/null || _agent_slot_name "${agent_name}" "${agent_family}")"
-[[ -n "${agent_type}" ]] || { [[ "${backend_name}" == "daemon" ]] && agent_type="daemon" || agent_type="llm-agent"; }
+if [[ "${agent_name}" == "approver" ]]; then
+  backend_name='daemon'
+fi
+[[ -n "${agent_type}" ]] || {
+  if [[ "${backend_name}" == "daemon" || "${declared_type}" == "daemon" ]]; then
+    agent_type="daemon"
+  else
+    agent_type="llm-agent"
+  fi
+}
+if [[ "${agent_type}" == "daemon" ]]; then
+  agent_family=''
+  slot_name=''
+else
+  [[ -n "${agent_family}" ]] || agent_family='claude'
+  slot_name="$(read_metadata slot 2>/dev/null || _agent_slot_name "${agent_name}" "${agent_family}")"
+fi
 surface_id="$(read_metadata surface_id 2>/dev/null || true)"
 pending_surface_id="$(read_metadata pending_surface_id 2>/dev/null || true)"
 pending_workspace_id="$(read_metadata pending_workspace_id 2>/dev/null || true)"
 pid_value="$(_agent_pid "${agent_name}" 2>/dev/null || true)"
 scan_pid_file="${agent_dir}/scan.pid"
+disabled_file="${agent_dir}/DISABLED"
 kill_script=''
 strategy='graceful'
 alive_now=0
@@ -185,7 +201,7 @@ if [[ "${mode}" == 'dry-run' ]]; then
       runtime_root: $runtime_root,
       target: {
         backend: $backend,
-        slot: $slot,
+        slot: (if $slot == "" then null else $slot end),
         surface_id: (if $surface_id == "" then null else $surface_id end),
         pid: (if $pid == "" then null else $pid end)
       },
@@ -197,6 +213,8 @@ if [[ "${mode}" == 'dry-run' ]]; then
     }'
   exit 0
 fi
+
+local_ws_id="$(read_metadata workspace_id 2>/dev/null || true)"
 
 # --- Graceful shutdown --------------------------------------------------------
 
@@ -268,17 +286,17 @@ if [[ "${backend_name}" != "daemon" && -n "${slot_name}" ]]; then
 fi
 
 # Close the cmux surface(s) so restarts don't leave orphaned panes.
-if [[ "${backend_name}" != "daemon" ]]; then
-  local_ws_id="$(read_metadata workspace_id 2>/dev/null || true)"
-  if [[ "${agent_name}" == "approver" && -n "${local_ws_id}" ]]; then
-    while IFS=$'\t' read -r workspace_surface_id workspace_surface_title; do
-      [[ -n "${workspace_surface_id}" ]] || continue
-      [[ "${workspace_surface_title}" == "daemon-log" ]] && continue
-      close_surface_if_present "${local_ws_id}" "${workspace_surface_id}"
-    done < <(workspace_surface_rows "${local_ws_id}")
-  else
-    close_surface_if_present "${local_ws_id:-}" "${surface_id}"
+if [[ "${agent_name}" == "approver" && -n "${local_ws_id}" ]]; then
+  while IFS=$'\t' read -r workspace_surface_id workspace_surface_title; do
+    [[ -n "${workspace_surface_id}" ]] || continue
+    [[ "${workspace_surface_title}" == "daemon-log" ]] && continue
+    close_surface_if_present "${local_ws_id}" "${workspace_surface_id}"
+  done < <(workspace_surface_rows "${local_ws_id}")
+  if [[ -n "${pending_surface_id}" ]]; then
+    close_surface_if_present "${pending_workspace_id:-${local_ws_id}}" "${pending_surface_id}"
   fi
+elif [[ "${backend_name}" != "daemon" ]]; then
+  close_surface_if_present "${local_ws_id:-}" "${surface_id}"
   if [[ -n "${pending_surface_id}" ]]; then
     close_surface_if_present "${pending_workspace_id:-${local_ws_id:-}}" "${pending_surface_id}"
   fi
@@ -290,7 +308,7 @@ fi
 #
 # Match both the renamed title ("daemon-log") AND the raw tail command,
 # because rename-tab can fail silently leaving surfaces with untamed titles.
-if [[ "${backend_name}" == "daemon" ]]; then
+if [[ "${backend_name}" == "daemon" && "${agent_name}" != "approver" ]]; then
   _orch_ws_id="$(cat "$(_agents_dir)/.workspace_id" 2>/dev/null || true)"
   if [[ -n "${_orch_ws_id}" ]]; then
     while IFS=$'\t' read -r _log_surf_id _log_surf_title; do
@@ -303,6 +321,11 @@ if [[ "${backend_name}" == "daemon" ]]; then
       close_surface_if_present "${_orch_ws_id}" "${_log_surf_id}"
     done < <(workspace_surface_rows "${_orch_ws_id}" 2>/dev/null || true)
   fi
+fi
+
+if [[ "${agent_name}" == "approver" ]]; then
+  mkdir -p "${agent_dir}"
+  : > "${disabled_file}"
 fi
 
 clear_agent_state

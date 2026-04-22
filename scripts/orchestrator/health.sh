@@ -51,7 +51,7 @@ dedupe_log_surfaces() {
         ;;
       approver-log)
         title_pat='"approver-log"'
-        raw_pat='tail -f .*decisions\.jsonl'
+        raw_pat='tail (-n 40 )?-f .*(loop\.log|decisions\.jsonl)'
         ;;
     esac
     local tree_output proper_surfaces raw_surfaces
@@ -84,16 +84,71 @@ dedupe_log_surfaces() {
   done
 }
 
+log_surface_keeper() {
+  local ws_id="${1:?}" kind="${2:?}" title_pat raw_pat tree_output proper_surfaces raw_surfaces
+  case "${kind}" in
+    daemon-log)
+      title_pat='"daemon-log"'
+      raw_pat='tail -f .*activity\.jsonl'
+      ;;
+    approver-log)
+      title_pat='"approver-log"'
+      raw_pat='tail (-n 40 )?-f .*(loop\.log|decisions\.jsonl)'
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+
+  tree_output="$(cmux tree --workspace "${ws_id}" 2>/dev/null || true)"
+  [[ -n "${tree_output}" ]] || return 1
+  proper_surfaces="$(printf '%s\n' "${tree_output}" | awk -v pat="${title_pat}" '
+      $0 ~ pat { match($0, /surface:[0-9]+/); if (RSTART>0) print substr($0, RSTART, RLENGTH) }')"
+  raw_surfaces="$(printf '%s\n' "${tree_output}" | awk -v pat="${raw_pat}" '
+      $0 ~ pat { match($0, /surface:[0-9]+/); if (RSTART>0) print substr($0, RSTART, RLENGTH) }')"
+
+  if [[ -n "${proper_surfaces}" ]]; then
+    head -1 <<<"${proper_surfaces}"
+    return 0
+  fi
+  if [[ -n "${raw_surfaces}" ]]; then
+    head -1 <<<"${raw_surfaces}"
+    return 0
+  fi
+  return 1
+}
+
+prune_agent_team_surfaces() {
+  local ws_id="${1:?}"
+  shift
+  local keepers=("$@") sid
+  while IFS= read -r sid; do
+    [[ -n "${sid}" ]] || continue
+    if [[ " ${keepers[*]} " == *" ${sid} "* ]]; then
+      continue
+    fi
+    cmux close-surface --surface "${sid}" --workspace "${ws_id}" >/dev/null 2>&1 || true
+  done < <(
+    cmux tree --workspace "${ws_id}" 2>/dev/null | awk '
+      /surface:[0-9]+.*\[terminal\]/ {
+        match($0, /surface:[0-9]+/)
+        if (RSTART > 0) {
+          print substr($0, RSTART, RLENGTH)
+        }
+      }'
+  )
+}
+
 # Recover surfaces for all alive daemon agents into a single shared workspace.
 # Layout: one workspace "agent-team", two panes split left/right.
 #   left  = orchestrator daemon-log  (activity.jsonl)
-#   right = approver-log             (decisions.jsonl)
+#   right = approver-log             (loop.log)
 recover_surfaces() {
   local agents=("$@")
   command -v cmux >/dev/null 2>&1 || return 1
 
   # Find existing "agent-team" workspace or create one
-  local ws_id default_surface
+  local ws_id default_surface=''
   ws_id="$(cmux tree --all 2>/dev/null \
     | grep -E 'workspace workspace:[0-9]+ "agent-team"' \
     | grep -oE 'workspace:[0-9]+' | head -1 || true)"
@@ -101,8 +156,6 @@ recover_surfaces() {
   if [[ -n "${ws_id}" ]]; then
     # Existing workspace: dedupe any duplicate log surfaces before adding
     dedupe_log_surfaces "${ws_id}"
-    # Use existing workspace, need a fresh surface per agent
-    default_surface=""
   else
     local ws_output
     ws_output="$(cmux new-workspace --name "agent-team" 2>&1)" || return 1
@@ -113,12 +166,23 @@ recover_surfaces() {
       | grep -oE 'surface:[0-9]+' | head -1 || true)"
   fi
 
+  local daemon_surface approver_surface
+  daemon_surface="$(log_surface_keeper "${ws_id}" daemon-log 2>/dev/null || true)"
+  approver_surface="$(log_surface_keeper "${ws_id}" approver-log 2>/dev/null || true)"
+  prune_agent_team_surfaces "${ws_id}" "${daemon_surface}" "${approver_surface}"
+
   local first=1
   for name in "${agents[@]}"; do
     local agent_dir surface_id
     agent_dir="$(_agent_dir "${name}")"
 
-    if (( first )) && [[ -n "${default_surface}" ]]; then
+    if [[ "${name}" == "orchestrator" && -n "${daemon_surface}" ]]; then
+      surface_id="${daemon_surface}"
+      first=0
+    elif [[ "${name}" == "approver" && -n "${approver_surface}" ]]; then
+      surface_id="${approver_surface}"
+      first=0
+    elif (( first )) && [[ -n "${default_surface}" ]]; then
       # New workspace: reuse the default surface for the first agent
       surface_id="${default_surface}"
       first=0
@@ -136,6 +200,7 @@ recover_surfaces() {
       orchestrator)
         local log_file="${ORCH_ROOT}/activity.jsonl"
         if [[ -f "${log_file}" ]]; then
+          cmux send-key --surface "${surface_id}" --workspace "${ws_id}" ctrl-c >/dev/null 2>&1 || true
           cmux send --surface "${surface_id}" --workspace "${ws_id}" \
             "tail -f ${log_file} | jq -r '[.timestamp,.event,.slug // \"-\"] | join(\" \")'" >/dev/null 2>&1 || true
           cmux send-key --surface "${surface_id}" --workspace "${ws_id}" enter >/dev/null 2>&1 || true
@@ -143,12 +208,13 @@ recover_surfaces() {
         cmux rename-tab --surface "${surface_id}" --workspace "${ws_id}" "daemon-log" >/dev/null 2>&1 || true
         ;;
       approver)
-        local scan_log="${APPROVER_ROOT}/decisions.jsonl"
-        if [[ -f "${scan_log}" ]]; then
-          cmux send --surface "${surface_id}" --workspace "${ws_id}" \
-            "tail -f ${scan_log} | jq -r '[.timestamp,.decision,.surface // \"-\",.command_summary // \"-\"] | join(\" \")'" >/dev/null 2>&1 || true
-          cmux send-key --surface "${surface_id}" --workspace "${ws_id}" enter >/dev/null 2>&1 || true
-        fi
+        local scan_log="${APPROVER_ROOT}/loop.log"
+        mkdir -p "${APPROVER_ROOT}"
+        : >> "${scan_log}"
+        cmux send-key --surface "${surface_id}" --workspace "${ws_id}" ctrl-c >/dev/null 2>&1 || true
+        cmux send --surface "${surface_id}" --workspace "${ws_id}" \
+          "tail -n 40 -f ${scan_log}" >/dev/null 2>&1 || true
+        cmux send-key --surface "${surface_id}" --workspace "${ws_id}" enter >/dev/null 2>&1 || true
         cmux rename-tab --surface "${surface_id}" --workspace "${ws_id}" "approver-log" >/dev/null 2>&1 || true
         ;;
     esac
@@ -178,6 +244,9 @@ check_agent() {
     pid_value="$(tr -d '[:space:]' < "${pid_file}" 2>/dev/null || true)"
   else
     pid_value=""
+  fi
+  if [[ "${name}" == "approver" && -z "${pid_value}" && -f "${APPROVER_ROOT}/scan.pid" ]]; then
+    pid_value="$(tr -d '[:space:]' < "${APPROVER_ROOT}/scan.pid" 2>/dev/null || true)"
   fi
 
   # L1: PID check via _agent_pid_state — distinguishes ESRCH from EPERM
@@ -317,6 +386,7 @@ if (( check_all == 1 )); then
   # Collect alive agents that need surface recovery
   needs_recovery=()
   all_agents=()
+  recoverable_agents=()
   registry_file="$(_agents_dir)/registry.json"
   if [[ -f "${registry_file}" ]]; then
     while IFS= read -r name; do
@@ -339,11 +409,14 @@ if (( check_all == 1 )); then
     if (( local_alive )) && ! agent_surface_ok "${name}" 2>/dev/null; then
       needs_recovery+=("${name}")
     fi
+    if (( local_alive )) && [[ "${name}" == "orchestrator" || "${name}" == "approver" ]]; then
+      recoverable_agents+=("${name}")
+    fi
   done
 
   # Batch recover into a single workspace
-  if (( ${#needs_recovery[@]} > 0 )); then
-    recover_surfaces "${needs_recovery[@]}" 2>/dev/null || true
+  if (( ${#needs_recovery[@]} > 0 )) && (( ${#recoverable_agents[@]} > 0 )); then
+    recover_surfaces "${recoverable_agents[@]}" 2>/dev/null || true
   fi
 
   # Second pass: report
@@ -357,12 +430,17 @@ fi
 
 # Single agent: recover if needed, then report
 local_alive=0
+single_recovery_agents=()
 if [[ "${agent_name}" == "orchestrator" ]]; then
   orchestrator_alive && local_alive=1
 else
   _agent_alive "${agent_name}" && local_alive=1
 fi
-if (( local_alive )) && ! agent_surface_ok "${agent_name}" 2>/dev/null; then
-  recover_surfaces "${agent_name}" 2>/dev/null || true
+orchestrator_alive && single_recovery_agents+=("orchestrator")
+if _agent_alive approver 2>/dev/null; then
+  single_recovery_agents+=("approver")
+fi
+if (( local_alive )) && ! agent_surface_ok "${agent_name}" 2>/dev/null && (( ${#single_recovery_agents[@]} > 0 )); then
+  recover_surfaces "${single_recovery_agents[@]}" 2>/dev/null || true
 fi
 check_agent "${agent_name}"

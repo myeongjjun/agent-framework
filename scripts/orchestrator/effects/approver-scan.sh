@@ -7,6 +7,7 @@ RUNTIME_DIR="${APPROVER_ROOT:-${SCRIPT_DIR}}"
 SELF_WORKSPACE_FILE="${RUNTIME_DIR}/workspace_id"
 SELF_SURFACE_FILE="${RUNTIME_DIR}/surface_id"
 DECISIONS_FILE="${RUNTIME_DIR}/decisions.jsonl"
+LOOP_LOG="${RUNTIME_DIR}/loop.log"
 PID_FILE="${RUNTIME_DIR}/scan.pid"
 
 mode="once"
@@ -38,6 +39,15 @@ done
 
 self_workspace=""
 self_surface=""
+
+timestamp_utc() {
+  date -u +"%Y-%m-%dT%H:%M:%SZ"
+}
+
+log_runtime() {
+  local message="$1"
+  printf '%s %s\n' "$(timestamp_utc)" "${message}" >> "${LOOP_LOG}"
+}
 
 refresh_self_context() {
   self_workspace=""
@@ -198,6 +208,9 @@ log_decision() {
     --argjson approvals "${approvals}" \
     '{timestamp:$timestamp,workspace:$workspace,surface:$surface,worker_slot:$worker_slot,prompt_type:$prompt_type,command_summary:$command_summary,decision:$decision,why_needed:$why_needed,approvals:$approvals}' \
     >> "${DECISIONS_FILE}"
+
+  log_runtime \
+    "decision=${decision} workspace=${workspace_id} surface=${surface_id} prompt_type=${type} why=${why} approvals=${approvals} summary=$(printf '%s' "${summary}" | tr '\n' ' ' | cut -c1-160)"
 }
 
 scan_tree() {
@@ -283,23 +296,32 @@ scan_once() {
 }
 
 run_loop() {
+  local next_heartbeat
   if [[ -f "${PID_FILE}" ]]; then
     existing_pid="$(tr -d '[:space:]' < "${PID_FILE}" 2>/dev/null || true)"
     if [[ "${existing_pid}" =~ ^[0-9]+$ ]] && kill -0 "${existing_pid}" 2>/dev/null; then
+      log_runtime "scan loop already running existing_pid=${existing_pid}"
       exit 0
     fi
   fi
 
   printf '%s\n' "$$" > "${PID_FILE}"
   trap 'rm -f "${PID_FILE}"' EXIT
+  next_heartbeat=$(( $(date +%s) + 30 ))
+  log_runtime "scan loop started pid=$$ interval=${interval}s"
 
   while :; do
     scan_once
+    if (( $(date +%s) >= next_heartbeat )); then
+      log_runtime "heartbeat pid=$$ interval=${interval}s"
+      next_heartbeat=$(( $(date +%s) + 30 ))
+    fi
     sleep "${interval}"
   done
 }
 
 mkdir -p "${RUNTIME_DIR}" "$(dirname "${DECISIONS_FILE}")"
+: >> "${LOOP_LOG}"
 
 case "${mode}" in
   once) scan_once ;;

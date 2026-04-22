@@ -779,8 +779,10 @@ dispatch_command() {
   [[ -n "${target_workspace_id}" ]] || target_workspace_id="${ORCHESTRATOR_TARGET_WORKSPACE_ID:-}"
 
   # Rotate ghost sessions use --no-worktree because they're temporary
-  # session archives, not task workers that need isolation.
-  if (( execute == 1 )) && (( no_worktree == 1 )) && [[ "${slug}" != ghost-* ]]; then
+  # session archives, not task workers that need isolation. Accept both
+  # the legacy `ghost-<ts>` form and the current `<origin>-ghost-<N>`
+  # form produced by daemon.sh's derive_ghost_slug.
+  if (( execute == 1 )) && (( no_worktree == 1 )) && [[ "${slug}" != ghost-* && "${slug}" != *-ghost-* ]]; then
     die "--no-worktree is disabled for execute; dispatch workers must use an isolated worktree"
   fi
 

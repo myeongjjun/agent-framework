@@ -3,7 +3,7 @@
 #
 # The guard-direct-session-control.sh hook blocks direct cmux send-key
 # calls but allows scripts under the deployed approver runtime dir.
-# This wrapper is copied to the approver's runtime dir by start-agent.sh.
+# This wrapper is copied to the approver's runtime dir by daemon.sh.
 set -euo pipefail
 
 if [[ "${1:-}" == "--dry-run" ]]; then

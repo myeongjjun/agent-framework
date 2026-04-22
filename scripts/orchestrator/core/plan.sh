@@ -126,15 +126,19 @@ esac
 project_slug="$(slugify "${project_name}")"
 
 # --- zmx session name length cap ---
-# macOS UNIX socket path limit is 104 bytes. The zmx socket lives at
-#   <socket_dir>/<session_name>
-# so session_name max = 104 - len(socket_dir) - 1 (slash).
-# Detect at runtime; fall back to 46 (conservative default for macOS).
+# macOS sockaddr_un.sun_path is a 104-byte buffer that must include the
+# terminating NUL byte, so the usable socket path is 103 bytes. The zmx
+# socket lives at <socket_dir>/<session_name>, meaning session_name max =
+# 104 - len(socket_dir) - 1 (slash) - 1 (NUL) - safety margin. Reserving
+# only the slash (-1) passes this check but still fails at bind() time
+# because the NUL is not accounted for.
+# Detect at runtime; fall back to 43 (conservative default for macOS).
 _zmx_socket_dir="$(ls -d /var/folders/*/*/T/zmx-"$(id -u)" 2>/dev/null | head -1)"
 if [[ -n "${_zmx_socket_dir}" ]]; then
-  _zmx_max_name=$(( 104 - ${#_zmx_socket_dir} - 1 ))
+  # Reserve 4 bytes: 1 slash + 1 NUL terminator + 2 safety margin.
+  _zmx_max_name=$(( 104 - ${#_zmx_socket_dir} - 4 ))
 else
-  _zmx_max_name=46
+  _zmx_max_name=43
 fi
 
 # Build slot name: {family}-{project_slug}-{task_slug}-{index}

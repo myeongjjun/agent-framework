@@ -7,11 +7,14 @@
 # Role-based access control for orchestrator lifecycle and effect operations.
 #
 # Role is derived from the zmx slot in the PPID ancestor chain:
-#   base          = zmx attach claude-agent-framework (or codex-, exact)
-#   orchestrator  = zmx attach claude-orchestrator-global (or codex-)
-#   approver      = zmx attach claude-approver-global (or codex-)
-#   worker        = zmx attach claude-agent-framework-<slug>-<N> (or codex-)
-#   unknown       = any other slot or no zmx in chain
+#   orchestrator  = zmx attach <family>-orchestrator-global
+#   approver      = zmx attach <family>-approver-global
+#   base          = zmx attach <family>-agent-framework[-<digits>]    (rotation
+#                   target or numbered base when family slot collides)
+#   worker        = zmx attach <family>-agent-framework-<slug>-<digits> (any
+#                   slot with a slug segment + trailing index, e.g.
+#                   ...-dispatch-foo-1, ...-collab-bar-2, ...-ghost-1776...-1)
+#   unknown       = no recognized slot in chain
 #
 # Permission matrix:
 #   base           → start/stop orchestrator+approver (bootstrap only),
@@ -24,9 +27,12 @@
 # All mutation goes through `orchestrator_request --type <...>`:
 #   dispatch, collab, inject, rotate, gc, tidy, done, cleanup, shutdown
 #
-# Rationale for strict base detection (exact `claude-agent-framework` slot):
-# it's an explicit opt-in barrier. Forks or other projects running Claude in
-# different slots cannot accidentally engage this orchestrator's lifecycle.
+# Rationale for slug-based worker detection (whitelist over blacklist): the
+# previous rule "trailing hyphen → worker" misclassified numbered base slots
+# (e.g. codex-agent-framework-2 created by cross-family rotation when the
+# default codex slot is already in use). The slug+index pattern only matches
+# conductor-spawned workers, so any other agent-framework slot defaults to
+# base — which preserves the invariant "rotation chain stays base".
 
 set -euo pipefail
 
@@ -43,18 +49,10 @@ command=$(echo "$input" | jq -r '.tool_input.command // empty')
 
 # --- Role detection via PPID chain ------------------------------------------
 # Walk up the process tree looking for `zmx attach <slot>` in the command
-# line. Patterns (first match wins):
-#   *zmx attach claude-orchestrator-global*   → orchestrator
-#   *zmx attach codex-orchestrator-global*    → orchestrator
-#   *zmx attach claude-approver-global*       → approver
-#   *zmx attach codex-approver-global*        → approver
-#   *zmx attach claude-agent-framework-<suffix>* → worker
-#   *zmx attach codex-agent-framework-<suffix>*  → worker
-#   *zmx attach claude-agent-framework<space>*   → base
-#   *zmx attach codex-agent-framework<space>*    → base
-#   otherwise                                    → unknown
+# line. Order: orchestrator/approver (fixed names) → extract slot for
+# agent-framework and classify by suffix shape.
 detect_role() {
-  local pid=$$ depth=0 max_depth=10 cmdline role="unknown"
+  local pid=$$ depth=0 max_depth=10 cmdline role="unknown" slot
   while (( depth < max_depth && pid > 1 )); do
     cmdline="$(ps -o command= -p "${pid}" 2>/dev/null || true)"
     case "${cmdline}" in
@@ -62,11 +60,15 @@ detect_role() {
         role="orchestrator"; break ;;
       *"zmx attach claude-approver-global"*|*"zmx attach codex-approver-global"*)
         role="approver"; break ;;
-      *"zmx attach claude-agent-framework-"*|*"zmx attach codex-agent-framework-"*)
-        role="worker"; break ;;
-      *"zmx attach claude-agent-framework "*|*"zmx attach codex-agent-framework "*)
-        role="base"; break ;;
     esac
+    if [[ "${cmdline}" =~ zmx[[:space:]]+attach[[:space:]]+((claude|codex)-agent-framework[^[:space:]]*) ]]; then
+      slot="${BASH_REMATCH[1]}"
+      if [[ "${slot}" =~ ^(claude|codex)-agent-framework-.+-[0-9]+$ ]]; then
+        role="worker"; break
+      elif [[ "${slot}" =~ ^(claude|codex)-agent-framework(-[0-9]+)?$ ]]; then
+        role="base"; break
+      fi
+    fi
     pid="$(ps -o ppid= -p "${pid}" 2>/dev/null | tr -d ' ' || echo 1)"
     (( depth++ )) || true
   done

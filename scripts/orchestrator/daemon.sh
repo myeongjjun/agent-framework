@@ -34,10 +34,12 @@ export ORCHESTRATOR_CALLER_TOKEN="daemon:$$"
 . "${SCRIPT_DIR}/protocol.sh"
 
 mode='run'
+command_mode='run'
 while (($# > 0)); do
   case "$1" in
     --once) mode='once' ;;
     --foreground) mode='run' ;;
+    --ensure-approver) command_mode='ensure-approver' ;;
     --help|-h)
       sed -n '2,10p' "$0" >&2
       exit 0
@@ -55,9 +57,17 @@ inbox_dir="${root_dir}/inbox"
 outbox_dir="${root_dir}/outbox"
 processed_dir="${root_dir}/inbox-processed"
 log_file="${root_dir}/activity.jsonl"
+approver_name='approver'
+approver_dir="$(_agent_dir "${approver_name}")"
+approver_disabled_file="${approver_dir}/DISABLED"
+approver_pid_file="${approver_dir}/pid"
+approver_scan_pid_file="${approver_dir}/scan.pid"
+approver_loop_log="${approver_dir}/loop.log"
+approver_daemon_log="${approver_dir}/daemon.log"
 
 stop_requested=0
 shutdown_reason=""
+runtime_started=0
 
 die() {
   printf 'daemon.sh: %s\n' "$*" >&2
@@ -333,11 +343,15 @@ handle_tidy() {
 
 handle_resume() {
   local req_file="$1" slug dry_run agent_family keep_alive mode_flag args output rc
+  local requester_workspace
   slug="$(payload_field "${req_file}" slug)"
   dry_run="$(payload_field "${req_file}" dry_run)"
   agent_family="$(payload_field "${req_file}" worker_family)"
   keep_alive="$(payload_field "${req_file}" keep_alive)"
+  requester_workspace="$(request_workspace "${req_file}")"
   [[ -n "${slug}" ]] || { printf 'missing payload field: slug\n'; return 1; }
+  [[ -n "${requester_workspace}" && "${requester_workspace}" != "-" ]] \
+    || { printf 'requester.cmux_workspace_id is required\n'; return 1; }
   mode_flag='--execute'
   [[ "${dry_run}" == "true" ]] && mode_flag='--dry-run'
 
@@ -346,7 +360,7 @@ handle_resume() {
   [[ "${keep_alive}" == "true" ]] && args+=(--keep-alive)
 
   set +e
-  output="$("${CONDUCTOR_SH}" "${args[@]}" 2>&1)"
+  output="$(ORCHESTRATOR_TARGET_WORKSPACE_ID="${requester_workspace}" "${CONDUCTOR_SH}" "${args[@]}" 2>&1)"
   rc=$?
   set -e
   if (( rc == 0 )); then
@@ -422,7 +436,10 @@ handle_inject() {
 
 zmx_pid_for() {
   local slot="$1"
-  zmx list 2>/dev/null | sed -n "s/.*name=${slot}.*pid=\\([0-9][0-9]*\\).*/\\1/p" | head -1
+  # Require whitespace directly after ${slot} so prefix-matching doesn't
+  # pick up sibling slots (e.g. `claude-agent-framework` must NOT match
+  # the running `claude-agent-framework-2` or `...-ghost-*` lines).
+  zmx list 2>/dev/null | sed -n "s/.*name=${slot}[[:space:]].*pid=\\([0-9][0-9]*\\).*/\\1/p" | head -1
 }
 
 wait_zmx_pid() {
@@ -491,10 +508,49 @@ wait_agent_ready() {
   return 1
 }
 
+# Check whether a candidate ghost slug collides with existing state.
+# Returns 0 when in use, 1 when free. Consulting state.json (not zmx) is
+# sufficient because conductor.sh registers every dispatched slug there,
+# and a stale entry still wins because reusing a name would confuse
+# Claude's `--resume <slug>` picker (two JSONLs answering to one name).
+_ghost_slug_in_use() {
+  local slug="$1" state
+  state="$("${STATE_READ}" --root "${root_dir}" 2>/dev/null || true)"
+  [[ -n "${state}" ]] || return 1
+  jq -e --arg s "${slug}" '.tasks[$s] // false' <<<"${state}" >/dev/null 2>&1
+}
+
+# Derive a human-searchable ghost slug from the origin zmx slot so
+# operators can find the archive later by grepping their slot name
+# (e.g. `zmx list | grep agent-framework`). Falls back to timestamp
+# suffix only if 99 sibling ghosts already exist for the same slot.
+# Enforces validate_slug's 32-char / lowercase-kebab rule.
+derive_ghost_slug() {
+  local orig_zmx="$1" base prefix n candidate
+  case "${orig_zmx}" in
+    claude-*) base="${orig_zmx#claude-}" ;;
+    codex-*)  base="${orig_zmx#codex-}" ;;
+    *)        base="${orig_zmx}" ;;
+  esac
+  # Reserve 6 chars for "-ghost" and up to 3 for "-NN" so the total
+  # stays within the 32-char slug limit even at the N=99 boundary.
+  (( ${#base} > 23 )) && { base="${base:0:23}"; base="${base%-}"; }
+  prefix="${base}-ghost"
+  for (( n=1; n<=99; n++ )); do
+    candidate="${prefix}-${n}"
+    if ! _ghost_slug_in_use "${candidate}"; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+  done
+  printf '%s-%s\n' "${prefix}" "$(date +%s)"
+}
+
 handle_rotate() {
   local req_file="$1" entry_path surface_id dry_run target_agent orig_zmx orig_workspace project_dir
-  local orig_pid ghost_slug mode_flag ghost_desc ghost_output ghost_rc ghost_zmx attach_cmd attach_output takeover_output
-  local fresh_pid
+  local orig_pid ghost_slug mode_flag ghost_desc ghost_output ghost_rc ghost_zmx attach_cmd attach_output takeover_output takeover_cmd
+  local fresh_pid orig_family base_target target_zmx _n entry_session_id ghost_agent ghost_extra_args
+  local _canonical_base _orig_suffix
 
   entry_path="$(payload_field "${req_file}" entry_path)"
   surface_id="$(payload_field "${req_file}" surface_id)"
@@ -527,7 +583,67 @@ handle_rotate() {
     fi
   fi
 
-  ghost_slug="ghost-$(date +%s)"
+  # Keep the archive in the requester's family so session continuation
+  # uses the native resume path for that CLI. Cross-family rotation only
+  # affects the fresh base target slot.
+  case "${orig_zmx}" in
+    claude-*) orig_family=claude; base_target="${target_agent}-${orig_zmx#claude-}" ;;
+    codex-*)  orig_family=codex;  base_target="${target_agent}-${orig_zmx#codex-}" ;;
+    *) printf 'unrecognized family prefix in orig_zmx: %s\n' "${orig_zmx}"; return 1 ;;
+  esac
+  if [[ "${orig_family}" == "${target_agent}" ]]; then
+    # Same-family rotate: prefer migrating back to the canonical
+    # (unnumbered) base slot when it's free. A numbered slot like
+    # `claude-agent-framework-2` usually came from a past cross-family
+    # collision bump; without this migration, every subsequent rotate
+    # keeps the drift forever. Ghost slug still records the origin's
+    # numbered form (e.g. `agent-framework-2-ghost-1`), preserving
+    # the lineage for later lookup.
+    _orig_suffix="${orig_zmx##*-}"
+    _canonical_base="${orig_zmx%-*}"
+    if [[ "${_orig_suffix}" =~ ^[0-9]+$ ]] \
+        && [[ "${_canonical_base}" != "${orig_zmx}" ]] \
+        && [[ -z "$(zmx_pid_for "${_canonical_base}")" ]]; then
+      target_zmx="${_canonical_base}"
+    else
+      target_zmx="${orig_zmx}"
+    fi
+  else
+    target_zmx="${base_target}"
+    _n=2
+    while [[ -n "$(zmx_pid_for "${target_zmx}")" ]]; do
+      target_zmx="${base_target}-${_n}"
+      _n=$(( _n + 1 ))
+      (( _n > 99 )) && { printf 'too many collisions for base slot: %s\n' "${base_target}"; return 1; }
+    done
+  fi
+
+  ghost_slug="$(derive_ghost_slug "${orig_zmx}")"
+  ghost_agent="${orig_family}"
+  case "${orig_family}" in
+    claude)
+      # -n <slug> sets the display name so a later `claude --resume <slug>`
+      # can locate this continued session via the /resume picker's
+      # name-match path. Without it the continuation inherits no stable
+      # identifier and is unrecoverable by slug.
+      ghost_extra_args="--continue -n ${ghost_slug}"
+      ;;
+    codex)
+      entry_session_id="$(
+        awk -F'|' '
+          /^\| ID \|/ {
+            gsub(/^[ \t]+|[ \t]+$/, "", $3)
+            print $3
+            exit
+          }
+        ' "${entry_path}"
+      )"
+      [[ -n "${entry_session_id}" && "${entry_session_id}" != "N/A" ]] \
+        || { printf 'entry session id is required for codex-origin rotate: %s\n' "${entry_path}"; return 1; }
+      ghost_extra_args="resume ${entry_session_id} --full-auto"
+      ;;
+  esac
+
   mode_flag='--execute'
   [[ "${dry_run}" == "true" ]] && mode_flag='--dry-run'
   ghost_desc="Ghost archive for rotation of ${orig_zmx}. Stay alive as a passive session archive. Do NOT self-cleanup or mark done. The user will inspect and clean up manually."
@@ -536,8 +652,8 @@ handle_rotate() {
   ghost_output="$(
     cd "${project_dir}" && \
       ORCHESTRATOR_TARGET_WORKSPACE_ID="${orig_workspace}" \
-      ORCHESTRATOR_AGENT_EXTRA_ARGS="--continue" \
-      "${CONDUCTOR_SH}" dispatch "${ghost_slug}" "${ghost_desc}" "${mode_flag}" --agent claude --no-worktree --keep-alive 2>&1
+      ORCHESTRATOR_AGENT_EXTRA_ARGS="${ghost_extra_args}" \
+      "${CONDUCTOR_SH}" dispatch "${ghost_slug}" "${ghost_desc}" "${mode_flag}" --agent "${ghost_agent}" --no-worktree --keep-alive 2>&1
   )"
   ghost_rc=$?
   set -e
@@ -545,13 +661,18 @@ handle_rotate() {
   ghost_zmx="$(jq -r '.plan.agents[0].slot // empty' <<<"${ghost_output}" 2>/dev/null || true)"
 
   case "${target_agent}" in
-    claude) attach_cmd="zmx attach ${orig_zmx} claude --dangerously-skip-permissions" ;;
-    codex) attach_cmd="zmx attach ${orig_zmx} codex --full-auto" ;;
+    claude) attach_cmd="zmx attach ${target_zmx} claude --dangerously-skip-permissions" ;;
+    codex) attach_cmd="zmx attach ${target_zmx} codex --full-auto" ;;
+  esac
+
+  case "${target_agent}" in
+    claude) takeover_cmd="/takeover" ;;
+    codex) takeover_cmd='$takeover' ;;
   esac
 
   if [[ "${dry_run}" == "true" ]]; then
-    attach_output="$(ORCHESTRATOR_BACKEND=cmux "${INJECT_EFFECT}" --dry-run --as-prompt --workspace "${orig_workspace}" "${surface_id}" "${attach_cmd}")"
-    takeover_output="$(ORCHESTRATOR_BACKEND=cmux "${INJECT_EFFECT}" --dry-run --as-prompt --workspace "${orig_workspace}" "${surface_id}" "/takeover")"
+    attach_output="$(ORCHESTRATOR_BACKEND=cmux "${INJECT_EFFECT}" --dry-run --as-prompt --family "${target_agent}" --workspace "${orig_workspace}" "${surface_id}" "${attach_cmd}")"
+    takeover_output="$(ORCHESTRATOR_BACKEND=cmux "${INJECT_EFFECT}" --dry-run --as-prompt --family "${target_agent}" --workspace "${orig_workspace}" "${surface_id}" "${takeover_cmd}")"
     jq -n \
       --arg orig_zmx "${orig_zmx}" \
       --arg orig_surface "${surface_id}" \
@@ -561,12 +682,13 @@ handle_rotate() {
       --arg ghost_zmx "${ghost_zmx}" \
       --arg entry_path "${entry_path}" \
       --arg target_agent "${target_agent}" \
+      --arg target_slot "${target_zmx}" \
       --argjson ghost_dispatch "${ghost_output}" \
       --argjson base_attach "${attach_output}" \
       --argjson takeover_inject "${takeover_output}" \
       '{rotate:{requester_slot:$orig_zmx, requester_surface:$orig_surface, requester_workspace:$orig_workspace,
         requester_pid:$orig_pid, ghost_slug:$ghost_slug, ghost_slot:$ghost_zmx, entry_path:$entry_path,
-        target_agent:$target_agent, kill_step:("kill -QUIT " + $orig_pid)},
+        target_agent:$target_agent, target_slot:$target_slot, kill_step:("kill -QUIT " + $orig_pid)},
         ghost_dispatch:$ghost_dispatch, base_attach:$base_attach, takeover_inject:$takeover_inject}' | jq '.'
     return 0
   fi
@@ -612,8 +734,10 @@ handle_rotate() {
   # Attach inject: target is shell → command execution. No verify (shell
   # alternate-screens to agent UI, fingerprint disappears, retry would
   # re-send into the newly-booted agent as a user prompt).
-  attach_output="$(ORCHESTRATOR_BACKEND=cmux "${INJECT_EFFECT}" --execute --as-prompt --workspace "${orig_workspace}" "${surface_id}" "${attach_cmd}" 2>&1)"
-  fresh_pid="$(wait_zmx_pid "${orig_zmx}" "${orig_pid}" 20)" || { printf 'fresh %s did not boot within 20s\n' "${target_agent}"; return 1; }
+  attach_output="$(ORCHESTRATOR_BACKEND=cmux "${INJECT_EFFECT}" --execute --as-prompt --family "${target_agent}" --workspace "${orig_workspace}" "${surface_id}" "${attach_cmd}" 2>&1)"
+  local _exclude_pid=""
+  [[ "${target_zmx}" == "${orig_zmx}" ]] && _exclude_pid="${orig_pid}"
+  fresh_pid="$(wait_zmx_pid "${target_zmx}" "${_exclude_pid}" 20)" || { printf 'fresh %s did not boot within 20s in slot %s\n' "${target_agent}" "${target_zmx}"; return 1; }
   # Wait for the fresh agent's input to be actually live (screen shows
   # agent-specific ready marker). Replaces a blind sleep — proceed only
   # when Claude/Codex has wired up stdin.
@@ -621,7 +745,7 @@ handle_rotate() {
     || { printf 'fresh %s did not reach input-ready state within 30s\n' "${target_agent}"; return 1; }
   # /takeover inject: --verify as belt-and-suspenders retry if the first
   # send+enter still raced with stdin.
-  takeover_output="$(ORCHESTRATOR_BACKEND=cmux "${INJECT_EFFECT}" --execute --verify --as-prompt --workspace "${orig_workspace}" "${surface_id}" "/takeover" 2>&1)"
+  takeover_output="$(ORCHESTRATOR_BACKEND=cmux "${INJECT_EFFECT}" --execute --verify --as-prompt --family "${target_agent}" --workspace "${orig_workspace}" "${surface_id}" "${takeover_cmd}" 2>&1)"
 
   jq -n \
     --arg orig_zmx "${orig_zmx}" \
@@ -633,12 +757,13 @@ handle_rotate() {
     --arg ghost_zmx "${ghost_zmx}" \
     --arg entry_path "${entry_path}" \
     --arg target_agent "${target_agent}" \
+    --arg target_slot "${target_zmx}" \
     --argjson ghost_dispatch "${ghost_output}" \
     --argjson base_attach "${attach_output}" \
     --argjson takeover_inject "${takeover_output}" \
     '{rotate:{requester_slot:$orig_zmx, requester_surface:$orig_surface, requester_workspace:$orig_workspace,
       requester_pid:$orig_pid, fresh_pid:$fresh_pid, ghost_slug:$ghost_slug, ghost_slot:$ghost_zmx,
-      entry_path:$entry_path, target_agent:$target_agent},
+      entry_path:$entry_path, target_agent:$target_agent, target_slot:$target_slot},
       ghost_dispatch:$ghost_dispatch, base_attach:$base_attach, takeover_inject:$takeover_inject,
       user_commands:["zmx attach " + $ghost_zmx, "bash ~/.orchestrator/scripts/conductor.sh cleanup " + $ghost_slug + " --execute"]}' | jq '.'
 }
@@ -729,6 +854,7 @@ process_request() {
 }
 
 cleanup_runtime() {
+  (( runtime_started == 1 )) || return 0
   json_activity "$(jq -cn \
     --arg timestamp "$(iso8601)" \
     --arg reason "${shutdown_reason:-exit}" \
@@ -747,7 +873,131 @@ signal_shutdown() {
   shutdown_reason="signal"
 }
 
+approver_enabled() {
+  [[ ! -f "${approver_disabled_file}" ]]
+}
+
+sync_approver_runtime() {
+  local helper src
+  mkdir -p "${approver_dir}"
+  for helper in approver-send-key.sh approver-scan.sh approver-run.sh; do
+    src="${SCRIPT_DIR}/effects/${helper}"
+    [[ -f "${src}" ]] || die "missing approver helper: ${src}"
+    cp -f "${src}" "${approver_dir}/${helper}"
+    chmod +x "${approver_dir}/${helper}"
+  done
+  ln -sf approver-send-key.sh "${approver_dir}/send-key.sh"
+  printf 'daemon\n' > "${approver_dir}/backend"
+  printf 'daemon\n' > "${approver_dir}/type"
+  : >> "${approver_loop_log}"
+  : >> "${approver_daemon_log}"
+}
+
+approver_registry_running() {
+  local pid="${1:?}" now
+  now="$(iso8601)"
+  _locked_registry_update "${registry_file}" \
+    "$(printf '.schema_version = 2 | .agents["%s"] = {type:"daemon",status:"running",pid:%s,slot:null,surface_id:null,workspace_id:null,started_at:(.agents["%s"].started_at // "%s"),last_health:"%s",restart_count:((.agents["%s"].restart_count // 0))}' \
+      "${approver_name}" "${pid}" "${approver_name}" "${now}" "${now}" "${approver_name}")" >/dev/null 2>&1 || true
+}
+
+approver_registry_stopped() {
+  local now
+  now="$(iso8601)"
+  _locked_registry_update "${registry_file}" \
+    "$(printf '.schema_version = 2 | .agents["%s"] = ((.agents["%s"] // {type:"daemon",restart_count:0}) + {type:"daemon",status:"stopped",pid:null,slot:null,surface_id:null,workspace_id:null,last_health:"%s"})' \
+      "${approver_name}" "${approver_name}" "${now}")" >/dev/null 2>&1 || true
+}
+
+record_approver_runtime() {
+  local pid="${1:?}" now
+  now="$(iso8601)"
+  printf 'started_at=%s\n' "${now}" > "${approver_dir}/RUNNING"
+  printf '%s\n' "${pid}" > "${approver_pid_file}"
+  printf 'daemon\n' > "${approver_dir}/backend"
+  printf 'daemon\n' > "${approver_dir}/type"
+}
+
+spawn_approver_daemon() {
+  local runner="${approver_dir}/approver-run.sh"
+  [[ -x "${runner}" ]] || return 1
+  # setsid is Linux-only; macOS falls back to nohup. Both yield a detached
+  # background process that survives the parent's exit.
+  local detach_cmd
+  if command -v setsid >/dev/null 2>&1; then
+    detach_cmd=setsid
+  else
+    detach_cmd=nohup
+  fi
+  (
+    cd -- "${approver_dir}" || exit 1
+    APPROVER_ROOT="${approver_dir}" \
+      "${detach_cmd}" "${runner}" >> "${approver_daemon_log}" 2>&1 < /dev/null &
+    disown 2>/dev/null || true
+  ) >/dev/null 2>&1
+}
+
+wait_for_approver_ready() {
+  local pid=''
+  for _i in $(seq 1 50); do
+    if [[ -f "${approver_scan_pid_file}" && -f "${approver_dir}/BOOTSTRAPPED" ]]; then
+      pid="$(tr -d '[:space:]' < "${approver_scan_pid_file}" 2>/dev/null || true)"
+      if [[ "${pid}" =~ ^[0-9]+$ ]] && kill -0 "${pid}" 2>/dev/null; then
+        printf '%s\n' "${pid}"
+        return 0
+      fi
+    fi
+    sleep 0.2
+  done
+  return 1
+}
+
+stop_approver_runtime() {
+  local pid=''
+  pid="$(_agent_pid "${approver_name}" 2>/dev/null || true)"
+  if [[ "${pid}" =~ ^[0-9]+$ ]] && kill -0 "${pid}" 2>/dev/null; then
+    kill -TERM "${pid}" 2>/dev/null || true
+    for _i in $(seq 1 10); do
+      kill -0 "${pid}" 2>/dev/null || break
+      sleep 0.2
+    done
+    kill -0 "${pid}" 2>/dev/null && kill -KILL "${pid}" 2>/dev/null || true
+  fi
+  rm -f "${approver_dir}/RUNNING" "${approver_pid_file}" "${approver_scan_pid_file}" "${approver_dir}/BOOTSTRAPPED" 2>/dev/null || true
+  approver_registry_stopped
+}
+
+ensure_approver_runtime() {
+  local pid
+  sync_approver_runtime
+  if ! approver_enabled; then
+    stop_approver_runtime
+    return 0
+  fi
+
+  if _agent_alive "${approver_name}" 2>/dev/null; then
+    pid="$(_agent_pid "${approver_name}" 2>/dev/null || true)"
+    if [[ "${pid}" =~ ^[0-9]+$ ]]; then
+      record_approver_runtime "${pid}"
+      approver_registry_running "${pid}"
+      return 0
+    fi
+  fi
+
+  rm -f "${approver_dir}/RUNNING" "${approver_pid_file}" "${approver_scan_pid_file}" "${approver_dir}/BOOTSTRAPPED" 2>/dev/null || true
+  spawn_approver_daemon || return 1
+  pid="$(wait_for_approver_ready)" || return 1
+  record_approver_runtime "${pid}"
+  approver_registry_running "${pid}"
+  json_activity "$(jq -cn \
+    --arg timestamp "$(iso8601)" \
+    --arg agent "${approver_name}" \
+    --argjson pid "${pid}" \
+    '{timestamp:$timestamp,event:"approver-started",agent:$agent,pid:$pid}')" 2>/dev/null || true
+}
+
 start_runtime() {
+  runtime_started=1
   mkdir -p "${inbox_dir}" "${outbox_dir}" "${processed_dir}" "${root_dir}/locks" "${agent_dir}" "$(_agents_dir)"
   printf 'started_at=%s\n' "$(iso8601)" > "${agent_dir}/RUNNING"
   printf '%s\n' "$$" > "${agent_dir}/pid"
@@ -770,7 +1020,20 @@ trap cleanup_runtime EXIT
 [[ -x "${STATE_READ}" ]] || die "state-read not executable: ${STATE_READ}"
 [[ -x "${INJECT_EFFECT}" ]] || die "inject effect not executable: ${INJECT_EFFECT}"
 
+if [[ "${command_mode}" == "ensure-approver" ]]; then
+  mkdir -p "${root_dir}/locks" "${approver_dir}" "$(_agents_dir)"
+  if ensure_approver_runtime; then
+    pid="$(_agent_pid "${approver_name}" 2>/dev/null || true)"
+    printf 'status=%s\n' "$(approver_enabled && printf 'running' || printf 'stopped')"
+    printf 'agent=%s\n' "${approver_name}"
+    [[ -n "${pid}" ]] && printf 'pid=%s\n' "${pid}"
+    exit 0
+  fi
+  die "failed to reconcile approver runtime"
+fi
+
 start_runtime
+ensure_approver_runtime >/dev/null 2>&1 || true
 
 # Periodic auto-tidy: every N iterations of the poll loop, run a tidy
 # reconcile to clean up fire-and-forget workers whose zmx has died.
@@ -791,8 +1054,12 @@ run_heartbeat() {
   local now; now="$(iso8601)"
   local jq_expr
   jq_expr="$(printf '.agents["%s"].last_health = "%s"' "${agent_name}" "${now}")"
-  if _agent_alive "approver" 2>/dev/null; then
-    jq_expr+="$(printf ' | if (.agents | has("approver")) then .agents["approver"].last_health = "%s" else . end' "${now}")"
+  if _agent_alive "${approver_name}" 2>/dev/null; then
+    jq_expr+="$(printf ' | .agents["%s"].last_health = "%s" | .agents["%s"].status = "running" | .agents["%s"].type = "daemon"' \
+      "${approver_name}" "${now}" "${approver_name}" "${approver_name}")"
+  elif [[ -f "${registry_file}" ]]; then
+    jq_expr+="$(printf ' | if (.agents | has("%s")) then .agents["%s"].status = "stopped" else . end' \
+      "${approver_name}" "${approver_name}")"
   fi
   _locked_registry_update "${registry_file}" "${jq_expr}" >/dev/null 2>&1 || true
 }
@@ -816,6 +1083,7 @@ run_periodic_tidy() {
     done <<<"${_projects}"
   fi
   set -e
+  ensure_approver_runtime >/dev/null 2>&1 || true
 }
 
 while :; do

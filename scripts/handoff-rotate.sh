@@ -2,7 +2,7 @@
 #
 # handoff-rotate.sh — Thin client for orchestrator-mediated handoff rotation.
 #
-# Run from INSIDE the heavy claude session you want to rotate out, AFTER
+# Run from INSIDE the heavy session you want to rotate out, AFTER
 # you've already run /handoff and have a fresh .agent/entry-*.md on disk.
 #
 # Architecture (cmux path):
@@ -14,21 +14,39 @@
 #
 #   orchestrator session
 #     1. resolve original pid from requester slot
-#     2. spawn ghost split first (`claude --continue`)
+#     2. spawn ghost split first (`claude --continue` or `codex resume <session>`)
 #     3. kill -QUIT original pid and wait for death
-#     4. inject fresh `zmx attach <orig> claude` into the base surface
-#     5. inject `/takeover`
+#     4. inject fresh `zmx attach <orig> <target-agent>` into the base surface
+#     5. inject `/takeover` or `$takeover`
 #
 # References: ADR-026, ADR-028, skills/handoff/SKILL.md ## Rotation
 
 set -euo pipefail
 
-DRY_RUN=0
-[[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1
-
 err()  { printf '\033[1;31m✗\033[0m %s\n' "$*" >&2; exit 1; }
 ok()   { printf '\033[1;32m✓\033[0m %s\n' "$*"; }
 info() { printf '\033[1;34mℹ\033[0m %s\n' "$*"; }
+
+DRY_RUN=0
+TARGET_AGENT=""
+while (( $# > 0 )); do
+  case "$1" in
+    --dry-run)  DRY_RUN=1 ;;
+    --target)   shift; TARGET_AGENT="${1:-}" ;;
+    --target=*) TARGET_AGENT="${1#--target=}" ;;
+    -h|--help)
+      cat <<'USAGE'
+Usage: handoff-rotate.sh [--dry-run] [--target claude|codex]
+
+  --dry-run         Plan only; do not kill the current session.
+  --target AGENT    Fresh agent family in the rotated slot.
+                    Default: match origin.
+USAGE
+      exit 0 ;;
+    *) err "unknown flag: $1 (try --help)" ;;
+  esac
+  shift
+done
 
 # --- 0. Multi-environment dispatch -------------------------------------------
 #
@@ -61,11 +79,20 @@ ORIG_WS="$CMUX_WORKSPACE_ID"
 PROJECT_DIR="$PWD"
 PROTOCOL_SH="${HOME}/.orchestrator/scripts/orchestrator/protocol.sh"
 
-# Sanity: this script is claude-only for now. Refuse codex sessions until
-# the codex variant of /takeover is wired up.
+# Origin family detection. Rotate keeps the ghost/archive in the same
+# family as the requester so session continuity uses the family's native
+# resume mechanism.
 case "$ORIG_ZMX" in
-  claude-*) : ;;
-  *) err "ZMX_SESSION='$ORIG_ZMX' is not a claude-* session (codex not yet supported)" ;;
+  claude-*) ORIG_AGENT="claude" ;;
+  codex-*)  ORIG_AGENT="codex" ;;
+  *)        err "ZMX_SESSION='$ORIG_ZMX' is neither claude-* nor codex-*" ;;
+esac
+
+# Target family resolution: default to origin, validate claude|codex.
+[[ -z "$TARGET_AGENT" ]] && TARGET_AGENT="$ORIG_AGENT"
+case "$TARGET_AGENT" in
+  claude|codex) : ;;
+  *) err "invalid --target: '$TARGET_AGENT' (must be claude or codex)" ;;
 esac
 
 # --- 2. Preflight: handoff entry on disk -------------------------------------
@@ -128,6 +155,7 @@ ENTRY_PATH="$PROJECT_DIR/$LATEST_ENTRY"
 PAYLOAD=$(cat <<EOF
 - entry_path: $ENTRY_PATH
 - surface_id: $ORIG_SURF
+- target_agent: $TARGET_AGENT
 - dry_run: $( [[ $DRY_RUN -eq 1 ]] && printf 'true' || printf 'false' )
 EOF
 )
@@ -161,11 +189,12 @@ cat <<EOF
   request: $REQUEST_ID
   target:  zmx=$ORIG_ZMX surface=$ORIG_SURF workspace=$ORIG_WS
   entry:   $ENTRY_PATH
+  agent:   $ORIG_AGENT → $TARGET_AGENT
 
 The orchestrator will:
-  1. spawn a ghost split with 'claude --continue'
-  2. SIGQUIT the current Claude pid
-  3. reattach a fresh 'claude' in $ORIG_SURF
+  1. spawn a ghost split with '$ORIG_AGENT --continue' (archive of current session)
+  2. SIGQUIT the current $ORIG_AGENT pid
+  3. reattach a fresh '$TARGET_AGENT' in $ORIG_SURF
   4. inject /takeover
 
 Inspect response later: ~/.orchestrator/outbox/res-${REQUEST_ID#req-}.md

@@ -50,6 +50,68 @@ NC='\033[0m'
 
 die() { printf 'team.sh: %s\n' "$*" >&2; exit 1; }
 
+parse_mode_flag() {
+  local arg mode='dry-run'
+  for arg in "$@"; do
+    case "${arg}" in
+      --execute) mode='execute' ;;
+      --dry-run) mode='dry-run' ;;
+      --family|--model|--bootstrap)
+        die "approver is daemon-supervised; family/model/bootstrap overrides are not supported"
+        ;;
+      --*)
+        die "unknown approver lifecycle argument: ${arg}"
+        ;;
+      *)
+        die "unexpected approver lifecycle argument: ${arg}"
+        ;;
+    esac
+  done
+  printf '%s\n' "${mode}"
+}
+
+team_approver_start() {
+  local mode
+  mode="$(parse_mode_flag "$@")"
+  if [[ "${mode}" == 'dry-run' ]]; then
+    jq -n \
+      --arg agent "approver" \
+      --arg mode "${mode}" \
+      '{action:"team-start",agent:$agent,mode:$mode,path:"daemon-supervisor"}'
+    return 0
+  fi
+  mkdir -p "$(_agent_dir approver)"
+  rm -f "$(_agent_dir approver)/DISABLED"
+  "${SCRIPT_DIR}/daemon.sh" --ensure-approver
+  "${SCRIPT_DIR}/health.sh" --agent-name approver >/dev/null 2>&1 || true
+}
+
+team_approver_stop() {
+  local mode
+  mode="$(parse_mode_flag "$@")"
+  if [[ "${mode}" == 'dry-run' ]]; then
+    "${SCRIPT_DIR}/stop-agent.sh" --agent-name approver --dry-run
+    return 0
+  fi
+  mkdir -p "$(_agent_dir approver)"
+  : > "$(_agent_dir approver)/DISABLED"
+  "${SCRIPT_DIR}/stop-agent.sh" --agent-name approver --execute
+}
+
+team_approver_restart() {
+  local mode
+  mode="$(parse_mode_flag "$@")"
+  if [[ "${mode}" == 'dry-run' ]]; then
+    jq -n \
+      --arg agent "approver" \
+      --arg mode "${mode}" \
+      '{action:"team-restart",agent:$agent,mode:$mode,path:"daemon-supervisor"}'
+    return 0
+  fi
+  team_approver_stop --execute >/dev/null 2>&1 || true
+  team_approver_start --execute
+}
+
 usage() {
   cat <<'EOF'
 Usage:
@@ -85,8 +147,9 @@ show_agent_card() {
   local src="${AGENT_DEFS_DIR}/${name}.md"
   [[ -f "${src}" ]] || die "no agent definition found: ${src}"
 
-  local desc family model tools persistent priority restart health_interval tags
+  local desc family model tools persistent priority restart health_interval tags type
   desc="$(fm_field "${src}" description)"
+  type="$(fm_field "${src}" type)"
   family="$(fm_field "${src}" family)"
   model="$(fm_field "${src}" model)"
   tools="$(fm_field "${src}" tools)"
@@ -99,8 +162,9 @@ show_agent_card() {
   # A2A Agent Card format
   echo -e "${BOLD}Agent Card: ${BLUE}${name}${NC}"
   echo -e "  ${DIM}description:${NC}    ${desc}"
-  echo -e "  ${DIM}family:${NC}         ${family:-claude}"
-  echo -e "  ${DIM}model:${NC}          ${model:-default}"
+  echo -e "  ${DIM}type:${NC}           ${type:-llm-agent}"
+  echo -e "  ${DIM}family:${NC}         ${family:--}"
+  echo -e "  ${DIM}model:${NC}          ${model:--}"
   echo -e "  ${DIM}tools:${NC}          ${tools:-all}"
   echo -e "  ${DIM}persistent:${NC}     ${persistent:-false}"
   echo -e "  ${DIM}priority:${NC}       ${priority:-10}"
@@ -151,20 +215,32 @@ case "${cmd}" in
   start)
     agent="${1:?start requires agent name}"
     shift
-    "${SCRIPT_DIR}/start-agent.sh" --agent-name "${agent}" "$@"
+    if [[ "${agent}" == "approver" ]]; then
+      team_approver_start "$@"
+    else
+      "${SCRIPT_DIR}/start-agent.sh" --agent-name "${agent}" "$@"
+    fi
     ;;
 
   stop)
     agent="${1:?stop requires agent name}"
     shift
-    "${SCRIPT_DIR}/stop-agent.sh" --agent-name "${agent}" "$@"
+    if [[ "${agent}" == "approver" ]]; then
+      team_approver_stop "$@"
+    else
+      "${SCRIPT_DIR}/stop-agent.sh" --agent-name "${agent}" "$@"
+    fi
     ;;
 
   restart)
     agent="${1:?restart requires agent name}"
     shift
-    "${SCRIPT_DIR}/stop-agent.sh" --agent-name "${agent}" "$@" 2>/dev/null || true
-    "${SCRIPT_DIR}/start-agent.sh" --agent-name "${agent}" "$@"
+    if [[ "${agent}" == "approver" ]]; then
+      team_approver_restart "$@"
+    else
+      "${SCRIPT_DIR}/stop-agent.sh" --agent-name "${agent}" "$@" 2>/dev/null || true
+      "${SCRIPT_DIR}/start-agent.sh" --agent-name "${agent}" "$@"
+    fi
     ;;
 
   health)
@@ -212,6 +288,7 @@ case "${cmd}" in
       name="$(basename "${f}" .md)"
       [[ "${name}" == "README" || "${name}" == "INDEX" ]] && continue
       desc="$(fm_field "${f}" description | head -1)"
+      type="$(fm_field "${f}" type)"
       family="$(fm_field "${f}" family)"
       model="$(fm_field "${f}" model)"
       persistent="$(fm_field "${f}" persistent)"
@@ -219,6 +296,7 @@ case "${cmd}" in
       [[ "${persistent}" == "true" ]] && marker=" ${CYAN}[persistent]${NC}"
       echo -e "  ${BLUE}${name}${NC}${marker}"
       [[ -n "${desc}" ]] && echo -e "    ${DIM}${desc}${NC}"
+      [[ -n "${type}" ]] && echo -e "    ${DIM}type: ${type}${NC}"
       [[ -n "${family}" ]] && echo -e "    ${DIM}family: ${family}${NC}"
       [[ -n "${model}" ]] && echo -e "    ${DIM}model: ${model}${NC}"
     done

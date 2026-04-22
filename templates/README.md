@@ -1,7 +1,15 @@
-# templates/
+# Templates
 
-Scaffolding slot for project templates — e.g., a starter layout for a new skill, a new agent definition, or a new plugin — that you copy as a starting point.
+Project templates for quick scaffolding of new skills, agents, and plugins.
 
-The framework ships nothing here; the directory is intentionally empty. The canonical skill format lives in existing `skills/*/SKILL.md` files, and the agent format lives in `agents/*.md` — treat those as the living templates until you have a reason to freeze a snapshot here.
+## Structure
 
-See [FORKING.md](../FORKING.md) for the broader fork/customization workflow.
+- **skill-template/**: Template for creating new Claude Code skills
+- **agent-template/**: Template for creating custom agents
+- **plugin-template/**: Template for creating plugins and MCP servers
+
+## Usage
+
+Copy templates as starting points for new projects. Customize as needed.
+
+TODO: Add template usage guide and examples.

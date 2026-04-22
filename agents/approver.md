@@ -1,67 +1,68 @@
 ---
 name: "approver"
-description: "Monitors cmux surfaces for stuck workers, auto-approves safe operations, and performs root-cause analysis on why approval was needed to improve permission policies"
-family: "codex"
-model: "gpt-5.4-mini"
-tools: "Read, Bash, Grep, Glob, Write"
+description: "Bash daemon that scans cmux surfaces for stuck workers and auto-approves safe approval prompts by pressing enter. No LLM, no zmx."
+type: "daemon"
 
 # --- Persistent Agent Config (agent-team extension) ---
-# These fields are read by start-agent.sh for lifecycle management.
+# Read by start-agent.sh and daemon.sh supervision for lifecycle management.
 persistent: true
 health_interval: 30
 restart_policy: "always"
 max_restarts: 5
 priority: 1
-resources:
-  model_tier: "fast"
-tags: ["infra", "automation", "agent-team"]
+tags: ["infra", "automation", "agent-team", "daemon"]
 ---
 
-You are the **Approver Agent**, a member of the agent-team.
+# Approver Daemon
 
-## Mission
+The approver is a pure bash daemon. It is **not** an LLM session. Its
+runtime is `scripts/orchestrator/effects/approver-scan.sh --loop`,
+double-forked under supervision by `scripts/orchestrator/daemon.sh`.
 
-Keep approval handling fast and narrow:
+## Runtime
 
-1. Scan active cmux surfaces for live approval prompts.
-2. Press `enter` immediately on safe prompts.
-3. Write one short JSONL report per approval.
+| Item | Value |
+|------|-------|
+| Runtime root | `~/.approver/` |
+| Scan loop | `~/.approver/approver-scan.sh --loop` |
+| Scan PID file | `~/.approver/scan.pid` |
+| Decision log | `~/.approver/decisions.jsonl` |
+| Loop log | `~/.approver/loop.log` |
+| Send-key helper | `~/.approver/approver-send-key.sh` |
 
-## Operating Loop
+## Supervision
 
-Use the runtime helper for the hot path:
+The orchestrator daemon (`scripts/orchestrator/daemon.sh`) supervises the
+scan loop on its periodic tick (piggybacks on `run_periodic_tidy`, ~30s):
 
-```bash
-nohup ~/.approver/approver-scan.sh --loop >/dev/null 2>&1 &
-```
+- If `~/.approver/RUNNING` exists but the recorded `scan.pid` is dead,
+  the daemon double-forks a fresh `approver-scan.sh --loop` and records
+  the new PID.
+- Heartbeat (`last_health`) is refreshed in
+  `~/.orchestrator/agents/registry.json` whenever the scan is alive.
 
-If the helper is unavailable, fall back to the same minimal sequence:
+## Lifecycle
 
-1. `cmux tree --all`
-2. `cmux read-screen`
-3. `~/.approver/send-key.sh --surface ... --workspace ... enter`
-4. Append one short JSON line to `~/.approver/decisions.jsonl`
+| Action | Command |
+|--------|---------|
+| Start  | `team.sh start approver --execute` |
+| Stop   | `team.sh stop approver --execute` |
+| Restart| `team.sh restart approver --execute` |
+| Status | `team.sh card approver` / `team.sh status` |
 
-## Safety Rules
+No cmux agent surface is created for the approver: the runtime is a
+detached bash process. The `agent-team` workspace shows an
+`approver-log` pane that tails `~/.approver/loop.log`, managed by
+`health.sh recover_surfaces()`.
 
-- NEVER approve operations you cannot fully understand from the prompt text
-- NEVER approve operations on files under `~/.ssh/`, `~/.aws/`, `~/.env`,
-  or any path containing "credential", "secret", or "token"
-- NEVER approve `rm -rf` with paths outside of `.worktrees/` or `/tmp/`
-- NEVER approve force-push to main/master branches
-- When in doubt, DO NOT approve — let the worker timeout and report
-  the incident
+## Safety Rules (enforced in `approver-scan.sh`)
 
-## Bootstrapping
-
-On startup:
-1. Write `echo READY > <your_agent_dir>/BOOTSTRAPPED`
-2. Begin the scan loop immediately
-3. Report agent-team membership to the orchestrator via mailbox
-
-## IPC
-
-- Your runtime directory: `~/.approver/`
-- Your decision log: `~/.approver/decisions.jsonl`
-- Orchestrator mailbox: `~/.orchestrator/agents/orchestrator/mailbox/`
-- To alert orchestrator of a denied/flagged operation, write to its mailbox
+- NEVER approve `rm -rf` outside `.worktrees/` or `/tmp/`.
+- NEVER approve `git push --force` or `git reset --hard`.
+- NEVER approve operations on `~/.ssh/`, `~/.aws/`, `~/.env`, or paths
+  matching `credential|secret|token`.
+- NEVER auto-confirm `Allow always` highlighted prompts (persistent
+  tool grants require a human).
+- Per-surface cooldown (`~/.approver/approvals/*.ts`) prevents the
+  slow-path and the fast-path watcher from double-approving the next
+  prompt.

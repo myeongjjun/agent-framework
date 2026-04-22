@@ -28,10 +28,10 @@
 #   T17  orchestrator health dead when no sentinel            (agent health)
 #   T17c approver health rejects stale scan metadata          (agent health)
 #   T18  start-agent dry-run plan without side effects        (bootstrap plan)
-#   T18b approver start-agent defaults to Codex family        (family inference)
-#   T18c approver start-agent uses runtime dir as launch cwd
+#   T18b approver start-agent is rejected                     (daemon path)
+#   T18c approver team start dry-run stays on daemon path
 #   T19  stop-agent dry-run plan on fake state                (shutdown plan)
-#   T19b approver stop-agent reconstructs Codex slot          (family fallback)
+#   T19b approver stop-agent treats runtime as daemon         (daemon stop)
 #   T20  protocol.sh is sourceable and exports helpers        (library contract)
 #   T21  done execute is idempotent for already-done task     (bug 1)
 #   T22  dispatch rejects active duplicate but reuses done     (bug 3)
@@ -50,8 +50,9 @@
 #   T37  approver send-key wrapper only allows enter
 #   T38  stop-agent execute clears pending approver restart state
 #   T39  start-agent disables force-restart
-#   T40  approver start path builds scanner loop attach command
-#   T41  approver start path overrides zmx attach command for scanner loop
+#   T40  stop-agent disables force mode
+#   T41  start-agent rejects daemon-supervised approver
+#   T42  team start approver uses daemon supervisor
 
 set -euo pipefail
 IFS=$'\n\t'
@@ -466,28 +467,40 @@ else
   printf '%s\n' "${start_plan}" | head -5
 fi
 
-# T18b — approver start-agent infers codex family from agent definition
-section "T18b approver start-agent defaults to Codex"
-approver_start_plan="$(run_orchestrator_script start-agent.sh --agent-name approver --dry-run)"
-if [[ "${approver_start_plan}" == *"action=start-agent"* ]] \
-  && [[ "${approver_start_plan}" == *"agent=approver"* ]] \
-  && [[ "${approver_start_plan}" == *"family=codex"* ]] \
-  && [[ "${approver_start_plan}" == *"slot=codex-approver-global"* ]] \
-  && [[ "${approver_start_plan}" == *"bootstrap-approver.md"* ]] \
-  && [[ ! -e "${APPROVER_ROOT}" ]]; then
-  ok "approver dry-run resolves codex family and slot without side effects"
+# T18b — approver start-agent is rejected because it is daemon-supervised
+section "T18b approver start-agent is rejected"
+set +e
+approver_start_plan="$(run_orchestrator_script start-agent.sh --agent-name approver --dry-run 2>&1)"
+approver_start_status=$?
+set -e
+if [[ "${approver_start_status}" -ne 0 ]] \
+  && printf '%s\n' "${approver_start_plan}" | grep -F "daemon-supervised" >/dev/null; then
+  ok "approver start-agent refuses daemon-supervised startup"
 else
-  bad "approver dry-run did not resolve codex family correctly"
+  bad "approver start-agent did not reject daemon-supervised startup"
   printf '%s\n' "${approver_start_plan}" | head -5
 fi
 
-# T18c — approver start-agent uses its runtime dir as launch cwd
-section "T18c approver start-agent uses runtime dir as launch cwd"
-if [[ "${approver_start_plan}" == *"cwd=${APPROVER_ROOT}"* ]]; then
-  ok "approver dry-run uses the approver runtime dir as launch cwd"
+# T18c — team.sh dry-run routes approver start through the daemon supervisor
+section "T18c approver team start stays on daemon path"
+approver_team_start_plan="$(
+  cd "${REPO_DIR}" && \
+    HOME="${HOME_DIR}" \
+    ORCHESTRATOR_ROOT="${ORCHESTRATOR_ROOT}" \
+    APPROVER_ROOT="${APPROVER_ROOT}" \
+    ORCHESTRATOR_BACKEND=cmux \
+      "${ROOT_DIR}/scripts/orchestrator/team.sh" start approver --dry-run
+)"
+if printf '%s\n' "${approver_team_start_plan}" | jq -e '
+    .action == "team-start"
+    and .agent == "approver"
+    and .mode == "dry-run"
+    and .path == "daemon-supervisor"
+  ' >/dev/null; then
+  ok "team.sh dry-run keeps approver on the daemon-supervisor path"
 else
-  bad "approver dry-run did not use the approver runtime dir as cwd"
-  printf '%s\n' "${approver_start_plan}" | head -5
+  bad "team.sh dry-run did not report the daemon-supervisor path"
+  printf '%s\n' "${approver_team_start_plan}" | jq . 2>/dev/null | head -20
 fi
 
 # T19 — stop-agent dry-run handles imaginary running state without side effects
@@ -514,28 +527,25 @@ else
   printf '%s\n' "${stop_plan}" | jq . 2>/dev/null | head -20
 fi
 
-# T19b — approver stop-agent can reconstruct the Codex slot from family metadata
-section "T19b approver stop-agent reconstructs Codex slot"
+# T19b — approver stop-agent treats runtime as a daemon-backed process
+section "T19b approver stop-agent treats runtime as daemon"
 mkdir -p "${APPROVER_ROOT}"
 printf 'started_at=2026-04-09T00:00:00Z\n' > "${APPROVER_ROOT}/RUNNING"
 printf '999998\n' > "${APPROVER_ROOT}/pid"
-printf 'cmux\n' > "${APPROVER_ROOT}/backend"
-printf 'codex\n' > "${APPROVER_ROOT}/family"
-printf 'surface:998\n' > "${APPROVER_ROOT}/surface_id"
+printf 'daemon\n' > "${APPROVER_ROOT}/backend"
 approver_stop_plan="$(run_orchestrator_script stop-agent.sh --agent-name approver --dry-run)"
 if printf '%s\n' "${approver_stop_plan}" | jq -e '
     .action == "stop-agent"
     and .mode == "dry-run"
-    and .family == "codex"
+    and .type == "daemon"
     and .strategy == "stale-cleanup"
-    and .target.slot == "codex-approver-global"
-    and .target.backend == "cmux"
+    and .target.slot == null
+    and .target.backend == "daemon"
   ' >/dev/null \
-  && [[ -f "${APPROVER_ROOT}/RUNNING" ]] \
-  && [[ -f "${APPROVER_ROOT}/family" ]]; then
-  ok "approver stop-agent dry-run rebuilds the codex slot from family metadata"
+  && [[ -f "${APPROVER_ROOT}/RUNNING" ]]; then
+  ok "approver stop-agent dry-run treats approver as a daemon runtime"
 else
-  bad "approver stop-agent dry-run did not rebuild the codex slot"
+  bad "approver stop-agent dry-run did not report daemon shutdown"
   printf '%s\n' "${approver_stop_plan}" | jq . 2>/dev/null | head -20
 fi
 
@@ -1100,9 +1110,7 @@ fi
 # T38 — stop-agent execute clears pending approver restart state
 section "T38 stop-agent execute clears pending approver restart state"
 mkdir -p "${APPROVER_ROOT}"
-printf 'cmux\n' > "${APPROVER_ROOT}/backend"
-printf 'codex\n' > "${APPROVER_ROOT}/family"
-printf 'codex-approver-global\n' > "${APPROVER_ROOT}/slot"
+printf 'daemon\n' > "${APPROVER_ROOT}/backend"
 printf 'workspace:27\n' > "${APPROVER_ROOT}/workspace_id"
 printf 'surface:998\n' > "${APPROVER_ROOT}/surface_id"
 printf 'workspace:27\n' > "${APPROVER_ROOT}/pending_workspace_id"
@@ -1115,8 +1123,9 @@ set -e
 if [[ "${approver_stop_execute_status}" -eq 0 ]] \
   && [[ ! -e "${APPROVER_ROOT}/pending_surface_id" ]] \
   && [[ ! -e "${APPROVER_ROOT}/pending_workspace_id" ]] \
-  && [[ ! -e "${APPROVER_ROOT}/surface_id" ]]; then
-  ok "stop-agent execute clears pending approver restart state"
+  && [[ ! -e "${APPROVER_ROOT}/surface_id" ]] \
+  && [[ -f "${APPROVER_ROOT}/DISABLED" ]]; then
+  ok "stop-agent execute clears pending approver restart state and disables supervision"
 else
   bad "stop-agent execute did not clear pending approver restart state"
   printf '%s\n' "${approver_stop_execute_output}" | sed 's/^/    /'
@@ -1146,36 +1155,27 @@ else
   printf '%s\n' "${stop_agent_block}" | sed 's/^/    /'
 fi
 
-# T41 — approver start path builds scanner loop attach command
-section "T41 approver start path builds scanner loop attach command"
+# T41 — start-agent rejects daemon-supervised approver and no longer carries scanner launch logic
+section "T41 start-agent rejects daemon-supervised approver"
 approver_start_block="$(cat "${ROOT_DIR}/scripts/orchestrator/start-agent.sh")"
-if printf '%s\n' "${approver_start_block}" | grep -F 'skip_bootstrap_prompt=1' >/dev/null \
-  && printf '%s\n' "${approver_start_block}" | grep -F 'approver-run.sh' >/dev/null \
-  && printf '%s\n' "${approver_start_block}" | grep -F 'agent_attach_command="${agent_dir}/approver-run.sh"' >/dev/null; then
-  ok "approver start path builds a scanner loop attach command without bootstrap prompt injection"
+if printf '%s\n' "${approver_start_block}" | grep -F "daemon-supervised; use team.sh start" >/dev/null \
+  && ! printf '%s\n' "${approver_start_block}" | grep -F 'bootstrap-approver.md' >/dev/null \
+  && ! printf '%s\n' "${approver_start_block}" | grep -F 'approver-run.sh' >/dev/null; then
+  ok "start-agent rejects daemon-supervised approver and no longer contains scanner launch logic"
 else
-  bad "approver start path is missing scanner loop attach command"
+  bad "start-agent still contains the old approver launch path"
   printf '%s\n' "${approver_start_block}" | sed 's/^/    /'
 fi
 
-# T42 — approver attach path starts the session first, then attach-only
-section "T42 approver start path uses zmx run plus attach-only"
-cmux_spawn_block="$(cat "${ROOT_DIR}/scripts/orchestrator/effects/backends/cmux/spawn.sh")"
-protocol_block="$(cat "${ROOT_DIR}/scripts/orchestrator/protocol.sh")"
-if printf '%s\n' "${protocol_block}" | grep -F '_zmx_slot_unreachable()' >/dev/null \
-  && printf '%s\n' "${protocol_block}" | grep -F '_zmx_remove_slot_socket()' >/dev/null \
-  && printf '%s\n' "${approver_start_block}" | grep -F '_zmx_slot_unreachable "${slot}"' >/dev/null \
-  && printf '%s\n' "${approver_start_block}" | grep -F '_zmx_remove_slot_socket "${slot}"' >/dev/null \
-  && printf '%s\n' "${approver_start_block}" | grep -F 'zmx run "${slot}" "${agent_attach_command}"' >/dev/null \
-  && printf '%s\n' "${approver_start_block}" | grep -F 'export ORCHESTRATOR_AGENT_ATTACH_ONLY=1' >/dev/null \
-  && printf '%s\n' "${cmux_spawn_block}" | grep -F 'if [[ "${attach_only}" != "1" ]] && command -v zmx' >/dev/null \
-  && printf '%s\n' "${cmux_spawn_block}" | grep -F "printf -v base_agent_command 'zmx attach %q'" >/dev/null; then
-  ok "approver start path resets unreachable zmx slots and stale sockets, then starts the runner via zmx run and keeps pane attach-only"
+# T42 — team.sh restart approver uses the daemon supervisor path
+section "T42 team.sh restart approver uses daemon supervisor"
+team_block="$(cat "${ROOT_DIR}/scripts/orchestrator/team.sh")"
+if printf '%s\n' "${team_block}" | grep -F 'team_approver_restart' >/dev/null \
+  && printf '%s\n' "${team_block}" | grep -F '"${SCRIPT_DIR}/daemon.sh" --ensure-approver' >/dev/null; then
+  ok "team.sh restart approver routes through the daemon supervisor"
 else
-  bad "approver start path is missing the zmx run + attach-only flow"
-  printf '%s\n' "${protocol_block}" | sed 's/^/    /'
-  printf '%s\n' "${approver_start_block}" | sed 's/^/    /'
-  printf '%s\n' "${cmux_spawn_block}" | sed 's/^/    /'
+  bad "team.sh restart approver did not route through the daemon supervisor"
+  printf '%s\n' "${team_block}" | sed 's/^/    /'
 fi
 
 # T43 — gc never mutates in-progress tasks

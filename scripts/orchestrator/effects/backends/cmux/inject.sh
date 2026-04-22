@@ -104,9 +104,23 @@ if (( verify == 1 )); then
   while (( _ready_waited < 10 )); do
     _screen="$(cmux read-screen --surface "${surface_id}" ${ws_args[@]+"${ws_args[@]}"} --lines 15 2>/dev/null || true)"
     if [[ -n "${_screen}" ]]; then
-      if printf '%s' "${_screen}" | grep -qiE '(bypass permissions on|gpt-[0-9a-z.]+|auto-accept|high fast)'; then
-        break
-      fi
+      case "${family}" in
+        claude)
+          if printf '%s' "${_screen}" | grep -qiE '(bypass permissions on|auto-accept)'; then
+            break
+          fi
+          ;;
+        codex)
+          if printf '%s' "${_screen}" | grep -qiE '(gpt-[0-9a-z.]+|auto-accept|high fast|sandbox|Codex)'; then
+            break
+          fi
+          ;;
+        *)
+          if printf '%s' "${_screen}" | grep -qiE '(bypass permissions on|gpt-[0-9a-z.]+|auto-accept|high fast|sandbox|Codex)'; then
+            break
+          fi
+          ;;
+      esac
     fi
     sleep 0.5
     (( _ready_waited++ )) || true
@@ -114,6 +128,14 @@ if (( verify == 1 )); then
 fi
 cmux send --surface "${surface_id}" ${ws_args[@]+"${ws_args[@]}"} "${inject_command}" >/dev/null
 cmux send-key --surface "${surface_id}" ${ws_args[@]+"${ws_args[@]}"} enter >/dev/null
+
+# Codex occasionally renders the prompt text before the first Enter is
+# consumed during fresh-surface bootstrap. A second submit pulse is
+# cheaper than re-sending the text and avoids duplicating the payload.
+if (( verify == 1 )) && (( as_prompt == 1 )) && [[ "${family}" == "codex" ]]; then
+  sleep 0.5
+  cmux send-key --surface "${surface_id}" ${ws_args[@]+"${ws_args[@]}"} enter >/dev/null
+fi
 
 if (( verify == 1 )); then
   # Verify the prompt actually reached the screen. If the first attempt

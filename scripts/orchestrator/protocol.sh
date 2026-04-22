@@ -131,6 +131,14 @@ _agent_discover_pid() {
       if ! command -v pgrep >/dev/null 2>&1; then
         return 1
       fi
+      if [[ "${agent_name}" == "approver" ]]; then
+        candidate="$(_agent_dir "${agent_name}")/approver-scan.sh --loop"
+        pid="$(pgrep -f -- "${candidate}" 2>/dev/null | head -1 || true)"
+        if [[ "${pid}" =~ ^[0-9]+$ ]] && kill -0 "${pid}" 2>/dev/null; then
+          printf '%s\n' "${pid}"
+          return 0
+        fi
+      fi
       for candidate in \
         "${ORCHESTRATOR_PROTOCOL_DIR}/daemon.sh --foreground" \
         "$(_orchestrator_root)/scripts/orchestrator/daemon.sh --foreground"
@@ -166,6 +174,20 @@ _agent_discover_pid() {
 _agent_pid() {
   local agent_name="${1:?}" pid_file pid
   pid_file="$(_agent_metadata_file "${agent_name}" pid)"
+
+  if [[ "${agent_name}" == "approver" ]]; then
+    local scan_pid_file scan_pid
+    scan_pid_file="$(_agent_metadata_file "${agent_name}" scan.pid)"
+    if [[ -f "${scan_pid_file}" ]]; then
+      scan_pid="$(tr -d '[:space:]' < "${scan_pid_file}" 2>/dev/null || true)"
+      if [[ "${scan_pid}" =~ ^[0-9]+$ ]] && kill -0 "${scan_pid}" 2>/dev/null; then
+        mkdir -p "$(dirname "${pid_file}")"
+        printf '%s\n' "${scan_pid}" > "${pid_file}"
+        printf '%s\n' "${scan_pid}"
+        return 0
+      fi
+    fi
+  fi
 
   pid="$(_agent_recorded_pid "${agent_name}" 2>/dev/null || true)"
   if [[ "${pid}" =~ ^[0-9]+$ ]] && kill -0 "${pid}" 2>/dev/null; then
@@ -471,6 +493,23 @@ _agent_declared_family() {
   case "${family}" in
     claude|codex)
       printf '%s\n' "${family}"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+_agent_declared_type() {
+  local agent_name="${1:?}" def_file declared_type
+
+  def_file="$(_agent_definition_file "${agent_name}" 2>/dev/null || true)"
+  [[ -n "${def_file}" ]] || return 1
+
+  declared_type="$(_frontmatter_field "${def_file}" type 2>/dev/null || true)"
+  case "${declared_type}" in
+    daemon|llm-agent|service)
+      printf '%s\n' "${declared_type}"
       ;;
     *)
       return 1
