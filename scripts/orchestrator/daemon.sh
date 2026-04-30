@@ -1079,9 +1079,21 @@ run_periodic_tidy() {
     _projects="$(jq -r '.projects // {} | to_entries[] | .value.path // empty' <<<"${_state}" 2>/dev/null || true)"
     while IFS= read -r _proj; do
       [[ -n "${_proj}" && -d "${_proj}" ]] || continue
-      ( cd -- "${_proj}" && "${CONDUCTOR_SH}" tidy --execute >/dev/null 2>&1 ) || true
+      # Periodic tidy is dry-run only by default — destructive worktree
+      # removal must be a deliberate, manual action. The dry-run still
+      # surfaces removal candidates via activity.jsonl so an operator can
+      # review and explicitly call `orchestrator_request --type tidy`
+      # with execute when ready. See .collab/hook-failure-observe-* for
+      # the incident that motivated this change.
+      ( cd -- "${_proj}" && "${CONDUCTOR_SH}" tidy --dry-run >/dev/null 2>&1 ) || true
     done <<<"${_projects}"
   fi
+  # Maintain the canonical agent-team workspace shape (daemon-log +
+  # approver-log panes). Global, not per-project — runs once per tick.
+  # Idempotent. Without this, drift from a closed pane, stale registry
+  # surface_id, or daemon restart persists indefinitely because nothing
+  # else in the daemon loop invokes health.sh recover_surfaces.
+  bash "${SCRIPT_DIR}/ensure-agent-team-shape.sh" >/dev/null 2>&1 || true
   set -e
   ensure_approver_runtime >/dev/null 2>&1 || true
 }

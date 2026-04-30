@@ -28,7 +28,7 @@ Usage:
   scripts/conductor.sh list
   scripts/conductor.sh status [<slug>]
   scripts/conductor.sh done <slug> [--dry-run|--execute] [--cleanup]
-  scripts/conductor.sh cleanup <slug> [--dry-run|--execute]
+  scripts/conductor.sh cleanup <slug> [--dry-run|--execute] [--force]
   scripts/conductor.sh resume <slug> [--dry-run|--execute] [--agent claude|codex] [--keep-alive]
   scripts/conductor.sh gc [--dry-run|--execute] [--force] [--max-age N]
   scripts/conductor.sh tidy [--dry-run|--execute] [--all|<slug>...]
@@ -196,6 +196,89 @@ append_activity() {
   local entry="$1"
   mkdir -p "${ORCHESTRATOR_ROOT}"
   printf '%s\n' "${entry}" >> "${ORCHESTRATOR_ROOT}/activity.jsonl"
+}
+
+git_worktree_snapshot() {
+  local repo_cwd="${1:-${PWD}}"
+  git -C "${repo_cwd}" worktree list --porcelain 2>/dev/null || true
+}
+
+canonicalize_path() {
+  local target_path="${1:-}"
+  [[ -n "${target_path}" ]] || return 1
+
+  if [[ -d "${target_path}" ]]; then
+    (
+      cd "${target_path}" 2>/dev/null && pwd -P
+    ) || printf '%s\n' "${target_path}"
+    return 0
+  fi
+
+  local parent base
+  parent="$(dirname -- "${target_path}")"
+  base="$(basename -- "${target_path}")"
+  if [[ -d "${parent}" ]]; then
+    printf '%s/%s\n' "$(
+      cd "${parent}" 2>/dev/null && pwd -P
+    )" "${base}"
+  else
+    printf '%s\n' "${target_path}"
+  fi
+}
+
+git_worktree_path_registered() {
+  local snapshot="${1:-}"
+  local target_path="${2:-}"
+  [[ -n "${snapshot}" && -n "${target_path}" ]] || return 1
+  local target_real
+  target_real="$(canonicalize_path "${target_path}")"
+  local line registered_path
+  while IFS= read -r line; do
+    [[ "${line}" == worktree\ * ]] || continue
+    registered_path="${line#worktree }"
+    if [[ "$(canonicalize_path "${registered_path}")" == "${target_real}" ]]; then
+      return 0
+    fi
+  done <<<"${snapshot}"
+  return 1
+}
+
+git_worktree_branch_registered() {
+  local snapshot="${1:-}"
+  local target_branch="${2:-}"
+  [[ -n "${snapshot}" && -n "${target_branch}" ]] || return 1
+  awk -v target="refs/heads/${target_branch}" '
+    /^branch / && $2 == target { found=1 }
+    END { exit(found ? 0 : 1) }
+  ' <<<"${snapshot}"
+}
+
+zmx_snapshot() {
+  if ! command -v zmx >/dev/null 2>&1; then
+    return 0
+  fi
+  zmx list 2>/dev/null || true
+}
+
+zmx_snapshot_has_start_dir() {
+  local snapshot="${1:-}"
+  local target_path="${2:-}"
+  [[ -n "${snapshot}" && -n "${target_path}" ]] || return 1
+  local target_real
+  target_real="$(canonicalize_path "${target_path}")"
+  local line field start_dir
+  local fields=()
+  while IFS= read -r line; do
+    IFS=' ' read -r -a fields <<<"${line}"
+    for field in "${fields[@]}"; do
+      [[ "${field}" == start_dir=* ]] || continue
+      start_dir="${field#start_dir=}"
+      if [[ "$(canonicalize_path "${start_dir}")" == "${target_real}" ]]; then
+        return 0
+      fi
+    done
+  done <<<"${snapshot}"
+  return 1
 }
 
 # Parse a request file (frontmatter + payload) into shell variables.
@@ -1195,6 +1278,7 @@ done_command() {
 cleanup_command() {
   local slug="${1:-}"
   local execute="${2:-0}"
+  local force=0
   local state task_status project_path project_slug worktree_path worktree_branch agent_slot agent_surface_id
   local surface_cleanup_output worktree_cleanup_output
 
@@ -1208,6 +1292,7 @@ cleanup_command() {
       case "$1" in
         --dry-run)  do_execute=0 ;;
         --execute)  do_execute=1 ;;
+        --force)    force=1 ;;
         *)          die "unknown cleanup flag: $1" ;;
       esac
       shift
@@ -1251,6 +1336,26 @@ cleanup_command() {
     return 0
   fi
 
+  # Explicit cleanup may remove a registered worktree, but never while a
+  # live zmx session still owns that directory. Require both signals so
+  # normal post-done cleanup continues to work for stale-but-inactive
+  # worktrees.
+  if [[ -n "${worktree_path}" && "${force}" != "1" ]]; then
+    local cleanup_worktree_registry cleanup_zmx_live_snapshot
+    local cleanup_registered_in_git=0 cleanup_zmx_start_dir_match=0
+    cleanup_worktree_registry="$(git_worktree_snapshot "${project_path:-${PWD}}")"
+    cleanup_zmx_live_snapshot="$(zmx_snapshot)"
+    if git_worktree_path_registered "${cleanup_worktree_registry}" "${worktree_path}"; then
+      cleanup_registered_in_git=1
+    fi
+    if zmx_snapshot_has_start_dir "${cleanup_zmx_live_snapshot}" "${worktree_path}"; then
+      cleanup_zmx_start_dir_match=1
+    fi
+    if (( cleanup_registered_in_git == 1 )) && (( cleanup_zmx_start_dir_match == 1 )); then
+      die "cleanup refused for '${slug}': live signals detected (registered git worktree, zmx start_dir=${worktree_path}); re-run with --force to override"
+    fi
+  fi
+
   # 1. Close cmux surface (before zmx kill — surface needs session alive to identify)
   #    GUARD: never close a surface that belongs to a persistent agent in the
   #    agent-team registry. GC/cleanup targets task workers, not team agents.
@@ -1284,8 +1389,19 @@ cleanup_command() {
       [[ -n "${ws_for_close}" ]] && close_args+=(--workspace "${ws_for_close}")
       if cmux close-surface "${close_args[@]}" >/dev/null 2>&1; then
         surface_cleanup_output="$(jq -n --arg surface "${agent_surface_id}" '{action:"close-surface",mode:"execute",surface:$surface}')"
+        append_activity "$(jq -nc \
+          --arg ts "$(timestamp_utc)" \
+          --arg slug "${slug}" \
+          --arg surface "${agent_surface_id}" \
+          '{ts:$ts, event:"cleanup.surface", slug:$slug, surface:$surface, result:"closed"}')"
       else
         surface_cleanup_output="$(jq -n --arg surface "${agent_surface_id}" --arg ws "${ws_for_close}" '{action:"close-surface",mode:"failed",surface:$surface,workspace:$ws}')"
+        append_activity "$(jq -nc \
+          --arg ts "$(timestamp_utc)" \
+          --arg slug "${slug}" \
+          --arg surface "${agent_surface_id}" \
+          --arg workspace "${ws_for_close}" \
+          '{ts:$ts, event:"cleanup.surface", slug:$slug, surface:$surface, workspace:$workspace, result:"failed"}')"
       fi
     fi
   fi
@@ -1304,6 +1420,11 @@ cleanup_command() {
       fi
       zmx kill "${agent_slot}" >/dev/null 2>&1 || true
     fi
+    append_activity "$(jq -nc \
+      --arg ts "$(timestamp_utc)" \
+      --arg slug "${slug}" \
+      --arg slot "${agent_slot}" \
+      '{ts:$ts, event:"cleanup.zmx", slug:$slug, slot:$slot, result:"kill-requested"}')"
   fi
 
   # 3. Remove worktree + branch
@@ -1315,6 +1436,11 @@ cleanup_command() {
     if ! jq -e . <<<"${worktree_cleanup_output}" >/dev/null 2>&1; then
       worktree_cleanup_output="$(jq -n --arg raw "${worktree_cleanup_output}" '{action:"cleanup-worktree",mode:"failed",raw:$raw}')"
     fi
+    append_activity "$(jq -nc \
+      --arg ts "$(timestamp_utc)" \
+      --arg slug "${slug}" \
+      --argjson effect "${worktree_cleanup_output}" \
+      '{ts:$ts, event:"cleanup.worktree", slug:$slug, effect:$effect}')"
   fi
 
   # 4. Remove agent from state.json. If this was the final agent (or the
@@ -1888,6 +2014,12 @@ gc_command() {
   local known_branches
   known_branches="$(jq -r '[.tasks // {} | .[].worktree_branch // empty] | .[]' <<<"${state}" 2>/dev/null)" || true
 
+  # Snapshot git's live worktree registry once. State mappings can stale,
+  # but a branch/path still attached to a registered worktree remains
+  # authoritative and must block orphan cleanup.
+  local _gc_worktree_snapshot
+  _gc_worktree_snapshot="$(git_worktree_snapshot "${PWD}")"
+
   # 1. Orphan zmx sessions: report only.
   #    Never kill sessions or delete sockets solely because state.json does not
   #    reference them. User dialogue sessions can share the project slug.
@@ -1916,15 +2048,40 @@ gc_command() {
   # 2. Orphan worktrees: .worktrees/dispatch-* dirs not in state
   local worktrees_dir="${PWD}/.worktrees"
   if [[ -d "${worktrees_dir}" ]]; then
+    # Snapshot signals that mark a worktree as still-needed even when it
+    # is not referenced from state.json. Missing state only means "lookup
+    # stale"; live git/zmx signals still win and must skip deletion.
+    local _gc_zmx_snapshot
+    _gc_zmx_snapshot=""
+    if command -v zmx >/dev/null 2>&1; then
+      _gc_zmx_snapshot="$(zmx_snapshot)"
+    fi
     local wt_dir
     for wt_dir in "${worktrees_dir}"/dispatch-*; do
       [[ -d "${wt_dir}" ]] || continue
       if ! grep -qxF "${wt_dir}" <<<"${known_worktrees}" 2>/dev/null; then
+        # Protect: registered git worktree or zmx start_dir match.
+        if git_worktree_path_registered "${_gc_worktree_snapshot}" "${wt_dir}"; then
+          continue
+        fi
+        if zmx_snapshot_has_start_dir "${_gc_zmx_snapshot}" "${wt_dir}"; then
+          continue
+        fi
         (( orphan_worktree++ )) || true
         orphan_details="$(jq --arg path "${wt_dir}" --arg type "worktree" \
           '. += [{type:$type, path:$path, action:"remove"}]' <<<"${orphan_details}")"
         if (( execute )); then
-          git worktree remove --force "${wt_dir}" 2>/dev/null || rm -rf "${wt_dir}" 2>/dev/null || true
+          local orphan_worktree_result="worktree-remove-failed"
+          if git worktree remove --force "${wt_dir}" 2>/dev/null; then
+            orphan_worktree_result="worktree-removed"
+          elif rm -rf "${wt_dir}" 2>/dev/null; then
+            orphan_worktree_result="worktree-force-removed"
+          fi
+          append_activity "$(jq -nc \
+            --arg ts "$(timestamp_utc)" \
+            --arg path "${wt_dir}" \
+            --arg result "${orphan_worktree_result}" \
+            '{ts:$ts, event:"gc.orphan-worktree", path:$path, result:$result}')"
         fi
       fi
     done
@@ -1935,11 +2092,24 @@ gc_command() {
   git_dispatch_branches="$(git branch --list 'dispatch/*' --format='%(refname:short)' 2>/dev/null)" || true
   for br in ${git_dispatch_branches}; do
     if ! grep -qxF "${br}" <<<"${known_branches}" 2>/dev/null; then
+      # A branch still attached to any registered worktree is live even if
+      # state.json forgot the mapping; never delete it from periodic gc.
+      if git_worktree_branch_registered "${_gc_worktree_snapshot}" "${br}"; then
+        continue
+      fi
       (( orphan_branch++ )) || true
       orphan_details="$(jq --arg branch "${br}" --arg type "branch" \
         '. += [{type:$type, branch:$branch, action:"delete"}]' <<<"${orphan_details}")"
       if (( execute )); then
-        git branch -D "${br}" 2>/dev/null || true
+        local orphan_branch_result="branch-delete-failed"
+        if git branch -D "${br}" 2>/dev/null; then
+          orphan_branch_result="branch-deleted"
+        fi
+        append_activity "$(jq -nc \
+          --arg ts "$(timestamp_utc)" \
+          --arg branch "${br}" \
+          --arg result "${orphan_branch_result}" \
+          '{ts:$ts, event:"gc.orphan-branch", branch:$branch, result:$result}')"
       fi
     fi
   done
@@ -2003,10 +2173,9 @@ gc_command() {
 # Unlike gc (which consults state.json), tidy uses the filesystem + zmx as
 # the source of truth:
 #   - Scan .worktrees/dispatch-* directories
-#   - Derive slot name from the path convention: dispatch-<slug>-<agent>-<N>
-#   - Check zmx list for that slot
-#   - If zmx is gone, the worker has exited → worktree is safe to remove
-#   - If zmx is alive, skip (worker still running)
+#   - Treat any registered git worktree as explicit-cleanup only
+#   - Treat any zmx session whose start_dir matches the path as live
+#   - Remove only paths with neither live signal
 #
 # Accepts no args → list all candidates (dry-run).
 # With --execute → remove candidates (or the specific slugs passed as args).
@@ -2028,9 +2197,16 @@ tidy_command() {
   local project_cwd="${PWD}"
   local worktrees_dir="${project_cwd}/.worktrees"
   local zmx_snapshot=""
-  if command -v zmx &>/dev/null; then
-    zmx_snapshot="$(zmx list 2>/dev/null || true)"
-  fi
+  zmx_snapshot="$(zmx_snapshot)"
+
+  # git worktree registry snapshot — any directory currently registered as
+  # a worktree was created intentionally and must not be reaped behind
+  # git's back. Cleanup is the explicit responsibility of `done` /
+  # `cleanup`, not the periodic tidy. Conservative-by-design: better to
+  # leak an unused worktree than to nuke a recovered/manually-recreated
+  # one (see .collab/hook-failure-observe-* for the original incident).
+  local worktree_registry=""
+  worktree_registry="$(git_worktree_snapshot "${project_cwd}")"
 
   # Gather candidates from the filesystem
   local candidates="[]"
@@ -2040,6 +2216,13 @@ tidy_command() {
       [[ -d "${wt_dir}" ]] || continue
       local wt_name
       wt_name="$(basename "${wt_dir}")"
+
+      # Refuse to remove the worktree we are currently executing inside.
+      # tidy can be invoked from a worker session; without this guard a
+      # caller could nuke its own CWD mid-call.
+      case "${PWD}" in
+        "${wt_dir}"|"${wt_dir}/"*) continue ;;
+      esac
 
       # Path convention: dispatch-<slug>-<agent>-<N>
       # Derive slot: <agent>-<project>-<slug>-<N>
@@ -2061,15 +2244,24 @@ tidy_command() {
       project_slug="$(basename "${project_cwd}")"
       local slot="${agent}-${project_slug}-${slug}-${index}"
 
-      # Check zmx status
-      local zmx_status="gone"
-      if [[ -n "${zmx_snapshot}" ]] && grep -qF "name=${slot}" <<<"${zmx_snapshot}"; then
-        zmx_status="alive"
+      # Additional protection signals (any one keeps the worktree alive):
+      # - registered git worktree (intentional; cleanup belongs to done/cleanup)
+      # - zmx session whose start_dir is exactly this path (truncation-proof)
+      local registered_in_git=0 zmx_start_dir_match=0
+      if git_worktree_path_registered "${worktree_registry}" "${wt_dir}"; then
+        registered_in_git=1
       fi
+      if zmx_snapshot_has_start_dir "${zmx_snapshot}" "${wt_dir}"; then
+        zmx_start_dir_match=1
+      fi
+      local zmx_status="gone"
+      (( zmx_start_dir_match == 1 )) && zmx_status="alive"
 
-      # Classification
+      # Classification — live signals only. Registered git worktrees are
+      # explicit-cleanup only, and zmx start_dir is the authoritative
+      # owner signal even when slot names drift due to truncation.
       local classification
-      if [[ "${zmx_status}" == "alive" ]]; then
+      if (( registered_in_git == 1 )) || (( zmx_start_dir_match == 1 )); then
         classification="running"
       else
         classification="done"
@@ -2120,19 +2312,33 @@ tidy_command() {
 
     local action_result="planned"
     if (( execute == 1 )); then
-      # Remove worktree (git worktree remove), fallback to rm if worktree is broken
+      # Worktree removal is intentionally non-destructive: run only the
+      # native git operation and stop on refusal. The previous `rm -rf`
+      # fallback silently destroyed live workers' CWDs (and the Claude
+      # session JSONL parent path that ties resume to that CWD), so we
+      # remove it. If git refuses (typically: untracked files inside —
+      # itself a strong "still in use" signal), we log and let the
+      # operator decide.
       if git -C "${project_cwd}" worktree remove "${path}" 2>/dev/null; then
         action_result="worktree-removed"
-      elif rm -rf "${path}" 2>/dev/null; then
-        action_result="worktree-force-removed"
       else
-        action_result="worktree-remove-failed"
+        action_result="worktree-remove-refused"
       fi
 
       # Delete branch if present (best effort)
       if [[ -n "${branch}" ]]; then
         git -C "${project_cwd}" branch -D "${branch}" 2>/dev/null || true
       fi
+
+      # Audit trail: persist every removal so destructive tidy actions
+      # are reviewable post-hoc (the daemon's periodic invocation pipes
+      # tidy stdout to /dev/null).
+      append_activity "$(jq -nc \
+        --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        --arg event "tidy.cleanup" \
+        --argjson item "${item}" \
+        --arg result "${action_result}" \
+        '{ts:$ts, event:$event, action:($item + {action_result:$result})}')"
 
       (( cleaned++ )) || true
     fi

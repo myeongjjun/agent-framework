@@ -133,7 +133,7 @@ project_slug="$(slugify "${project_name}")"
 # only the slash (-1) passes this check but still fails at bind() time
 # because the NUL is not accounted for.
 # Detect at runtime; fall back to 43 (conservative default for macOS).
-_zmx_socket_dir="$(ls -d /var/folders/*/*/T/zmx-"$(id -u)" 2>/dev/null | head -1)"
+_zmx_socket_dir="$(ls -d /var/folders/*/*/T/zmx-"$(id -u)" 2>/dev/null | head -1 || true)"
 if [[ -n "${_zmx_socket_dir}" ]]; then
   # Reserve 4 bytes: 1 slash + 1 NUL terminator + 2 safety margin.
   _zmx_max_name=$(( 104 - ${#_zmx_socket_dir} - 4 ))

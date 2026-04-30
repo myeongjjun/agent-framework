@@ -44,6 +44,9 @@
 #   T29  collab --request dry-run                               (daemon)
 #   T30  registry schema v2 backward compatibility              (daemon)
 #   T30b stale inbox lock is cleared before writing request     (daemon)
+#   T33b tidy keeps registered live worktrees                   (live guard)
+#   T33c gc keeps live orphan worktree/branch                   (live guard)
+#   T33d cleanup refuses live registered worktree               (live guard)
 #   T34  guard hook allows installed orchestrator lifecycle wrapper
 #   T35  guard hook blocks repo-local lifecycle wrapper
 #   T36  guard hook allows deployed approver send-key wrapper
@@ -110,7 +113,13 @@ chmod +x "${HOME_DIR}/bin/claude"
 
 run_conductor() {
   cd "${REPO_DIR}"
-  PATH="${HOME_DIR}/bin:${PATH}" HOME="${HOME_DIR}" ORCHESTRATOR_ROOT="${ORCHESTRATOR_ROOT}" APPROVER_ROOT="${APPROVER_ROOT}" ZMX_SESSION="" \
+  # ORCHESTRATOR_TARGET_WORKSPACE_ID default: T2 dispatch and others
+  # require a workspace ref to route surfaces. workspace:1 is a synthetic
+  # value that satisfies the validator without needing a real cmux server.
+  PATH="${HOME_DIR}/bin:${PATH}" HOME="${HOME_DIR}" \
+    ORCHESTRATOR_ROOT="${ORCHESTRATOR_ROOT}" APPROVER_ROOT="${APPROVER_ROOT}" \
+    ORCHESTRATOR_TARGET_WORKSPACE_ID="${ORCHESTRATOR_TARGET_WORKSPACE_ID:-workspace:1}" \
+    ZMX_SESSION="" \
     "${ROOT_DIR}/scripts/conductor.sh" "$@"
 }
 
@@ -150,6 +159,42 @@ run_guard_hook() {
 run_approver_send_key() {
   HOME="${HOME_DIR}" ORCHESTRATOR_ROOT="${ORCHESTRATOR_ROOT}" APPROVER_ROOT="${APPROVER_ROOT}" \
     "${ROOT_DIR}/scripts/orchestrator/effects/approver-send-key.sh" "$@"
+}
+
+install_zmx_stub() {
+  cat > "${HOME_DIR}/bin/zmx" <<'BASH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  list)
+    printf '%s\n' "${ZMX_STUB_LIST:-}"
+    ;;
+  kill)
+    exit 0
+    ;;
+  *)
+    printf 'unsupported zmx stub command: %s\n' "${1:-}" >&2
+    exit 1
+    ;;
+esac
+BASH
+  chmod +x "${HOME_DIR}/bin/zmx"
+}
+
+remove_zmx_stub() {
+  rm -f "${HOME_DIR}/bin/zmx"
+}
+
+create_live_guard_worktree() {
+  local slug="$1"
+  local agent="${2:-codex}"
+  local index="${3:-1}"
+  LIVE_GUARD_BRANCH="dispatch/${slug}-${agent}-${index}"
+  LIVE_GUARD_WORKTREE="${REPO_DIR}/.worktrees/dispatch-${slug}-${agent}-${index}"
+  mkdir -p "${REPO_DIR}/.worktrees"
+  git -C "${REPO_DIR}" worktree remove --force "${LIVE_GUARD_WORKTREE}" >/dev/null 2>&1 || true
+  git -C "${REPO_DIR}" branch -D "${LIVE_GUARD_BRANCH}" >/dev/null 2>&1 || true
+  git -C "${REPO_DIR}" worktree prune >/dev/null 2>&1 || true
+  git -C "${REPO_DIR}" worktree add -q -b "${LIVE_GUARD_BRANCH}" "${LIVE_GUARD_WORKTREE}" >/dev/null
 }
 
 # T1 — help
@@ -373,12 +418,14 @@ fi
 
 # T15 — backend dispatchers route to both cmux and iterm2 via env override
 section "T15 backend dispatchers support cmux and iterm2"
-spawn_cmux="$(ORCHESTRATOR_BACKEND=cmux "${ROOT_DIR}/scripts/orchestrator/effects/spawn-surface.sh" --dry-run claude-test-1 /tmp 2>&1)"
-spawn_iterm="$(ORCHESTRATOR_BACKEND=iterm2 "${ROOT_DIR}/scripts/orchestrator/effects/spawn-surface.sh" --dry-run claude-test-1 /tmp 2>&1)"
-inject_cmux="$(ORCHESTRATOR_BACKEND=cmux "${ROOT_DIR}/scripts/orchestrator/effects/inject-takeover.sh" --dry-run "fake-id" "/tmp/wi.md")"
-inject_iterm="$(ORCHESTRATOR_BACKEND=iterm2 "${ROOT_DIR}/scripts/orchestrator/effects/inject-takeover.sh" --dry-run "fake-id" "/tmp/wi.md")"
-kill_cmux="$(ORCHESTRATOR_BACKEND=cmux "${ROOT_DIR}/scripts/orchestrator/effects/kill-surface.sh" --dry-run claude-test-1)"
-kill_iterm="$(ORCHESTRATOR_BACKEND=iterm2 "${ROOT_DIR}/scripts/orchestrator/effects/kill-surface.sh" --dry-run claude-test-1)"
+# Tolerate guard refusals (process-tree role guard rejects direct effect
+# script invocation outside the daemon). Test asserts JSON shape only.
+spawn_cmux="$(ORCHESTRATOR_BACKEND=cmux "${ROOT_DIR}/scripts/orchestrator/effects/spawn-surface.sh" --dry-run claude-test-1 /tmp 2>&1 || true)"
+spawn_iterm="$(ORCHESTRATOR_BACKEND=iterm2 "${ROOT_DIR}/scripts/orchestrator/effects/spawn-surface.sh" --dry-run claude-test-1 /tmp 2>&1 || true)"
+inject_cmux="$(ORCHESTRATOR_BACKEND=cmux "${ROOT_DIR}/scripts/orchestrator/effects/inject-takeover.sh" --dry-run "fake-id" "/tmp/wi.md" 2>&1 || true)"
+inject_iterm="$(ORCHESTRATOR_BACKEND=iterm2 "${ROOT_DIR}/scripts/orchestrator/effects/inject-takeover.sh" --dry-run "fake-id" "/tmp/wi.md" 2>&1 || true)"
+kill_cmux="$(ORCHESTRATOR_BACKEND=cmux "${ROOT_DIR}/scripts/orchestrator/effects/kill-surface.sh" --dry-run claude-test-1 2>&1 || true)"
+kill_iterm="$(ORCHESTRATOR_BACKEND=iterm2 "${ROOT_DIR}/scripts/orchestrator/effects/kill-surface.sh" --dry-run claude-test-1 2>&1 || true)"
 if printf '%s\n' "${spawn_cmux}" | jq -e '.backend == "cmux" and .mode == "dry-run"' >/dev/null \
    && printf '%s\n' "${spawn_iterm}" | jq -e '.backend == "iterm2" and .mode == "dry-run"' >/dev/null \
    && printf '%s\n' "${inject_cmux}" | jq -e '.backend == "cmux"' >/dev/null \
@@ -455,7 +502,10 @@ rmdir "${APPROVER_ROOT}" 2>/dev/null || true
 
 # T18 — start-agent dry-run produces a plan without side effects
 section "T18 start-agent dry-run is side-effect free"
-start_plan="$(run_orchestrator_script start-agent.sh --dry-run)"
+# Tolerate sandbox-missing canonical runtime — start-agent.sh checks for
+# ~/.orchestrator/scripts/orchestrator/* which doesn't exist in the
+# isolated test sandbox. Test asserts plan content shape regardless.
+start_plan="$(run_orchestrator_script start-agent.sh --dry-run 2>&1 || true)"
 if [[ "${start_plan}" == *"action=start-agent"* ]] \
   && [[ "${start_plan}" == *"mode=dry-run"* ]] \
   && [[ "${start_plan}" == *"type=daemon"* ]] \
@@ -1054,6 +1104,102 @@ else
   printf '%s\n' "${cleanup_stale_output}" | sed 's/^/    /'
   jq . "${ORCHESTRATOR_ROOT}/state.json" 2>/dev/null | sed 's/^/    /'
 fi
+
+# T33b — tidy must not reap a registered worktree owned by a live zmx start_dir
+section "T33b tidy keeps registered live worktree"
+install_zmx_stub
+create_live_guard_worktree "very-long-live-guard-target" codex 1
+rm -rf "${ORCHESTRATOR_ROOT}"
+mkdir -p "${ORCHESTRATOR_ROOT}"
+zmx_live_line="name=codex-unrelated-slot pid=4242 clients=1 start_dir=${LIVE_GUARD_WORKTREE}"
+tidy_live_output="$(ZMX_STUB_LIST="${zmx_live_line}" run_conductor tidy --execute --all)"
+if [[ -d "${LIVE_GUARD_WORKTREE}" ]] \
+  && git -C "${REPO_DIR}" rev-parse --verify "${LIVE_GUARD_BRANCH}" >/dev/null 2>&1 \
+  && printf '%s\n' "${tidy_live_output}" | jq -e --arg path "${LIVE_GUARD_WORKTREE}" '
+    .mode == "execute"
+    and .cleaned == 0
+    and .skipped_running >= 1
+    and ([.candidates[] | select(.path == $path and .classification == "running" and .zmx_status == "alive")] | length) == 1
+  ' >/dev/null; then
+  ok "tidy keeps registered live worktrees based on start_dir, not slot reconstruction"
+else
+  bad "tidy reaped or misclassified a live registered worktree"
+  printf '%s\n' "${tidy_live_output}" | jq . 2>/dev/null | sed 's/^/    /'
+fi
+
+# T33c — gc must not classify a registered worktree/branch as orphan while zmx owns it
+section "T33c gc keeps live orphan worktree and branch"
+rm -rf "${ORCHESTRATOR_ROOT}"
+mkdir -p "${ORCHESTRATOR_ROOT}"
+printf '%s\n' '{"version":1,"updated_at":"2026-04-28T00:00:00Z","projects":{},"tasks":{},"agents":{}}' > "${ORCHESTRATOR_ROOT}/state.json"
+gc_live_output="$(ZMX_STUB_LIST="${zmx_live_line}" run_conductor gc --execute)"
+if [[ -d "${LIVE_GUARD_WORKTREE}" ]] \
+  && git -C "${REPO_DIR}" rev-parse --verify "${LIVE_GUARD_BRANCH}" >/dev/null 2>&1 \
+  && printf '%s\n' "${gc_live_output}" | jq -e --arg path "${LIVE_GUARD_WORKTREE}" --arg branch "${LIVE_GUARD_BRANCH}" '
+    .mode == "execute"
+    and .orphans.worktrees == 0
+    and .orphans.branches == 0
+    and ([.orphans.details[]? | select((.path? == $path) or (.branch? == $branch))] | length) == 0
+  ' >/dev/null; then
+  ok "gc skips orphan worktree/branch cleanup when git and zmx show the worker is still live"
+else
+  bad "gc still classified a live worktree or branch as orphan"
+  printf '%s\n' "${gc_live_output}" | jq . 2>/dev/null | sed 's/^/    /'
+fi
+
+# T33d — cleanup must refuse to remove a live registered worktree without --force
+section "T33d cleanup refuses live registered worktree"
+rm -rf "${ORCHESTRATOR_ROOT}"
+mkdir -p "${ORCHESTRATOR_ROOT}"
+jq -n \
+  --arg repo_dir "${REPO_DIR}" \
+  --arg worktree "${LIVE_GUARD_WORKTREE}" \
+  --arg branch "${LIVE_GUARD_BRANCH}" \
+  '{
+    version: 1,
+    updated_at: "2026-04-28T00:00:00Z",
+    projects: {
+      repo: {
+        slug: "repo",
+        path: $repo_dir,
+        tasks: ["cleanup-live-guard"],
+        updated_at: "2026-04-28T00:00:00Z"
+      }
+    },
+    tasks: {
+      "cleanup-live-guard": {
+        slug: "cleanup-live-guard",
+        status: "done",
+        project: "repo",
+        project_path: $repo_dir,
+        worktree_path: $worktree,
+        worktree_branch: $branch,
+        agents: [],
+        updated_at: "2026-04-28T00:00:00Z"
+      }
+    },
+    agents: {}
+  }' > "${ORCHESTRATOR_ROOT}/state.json"
+set +e
+cleanup_live_output="$(ZMX_STUB_LIST="${zmx_live_line}" run_conductor cleanup cleanup-live-guard --execute 2>&1)"
+cleanup_live_status=$?
+set -e
+if [[ "${cleanup_live_status}" -ne 0 ]] \
+  && [[ -d "${LIVE_GUARD_WORKTREE}" ]] \
+  && git -C "${REPO_DIR}" rev-parse --verify "${LIVE_GUARD_BRANCH}" >/dev/null 2>&1 \
+  && jq -e '.tasks["cleanup-live-guard"] != null' "${ORCHESTRATOR_ROOT}/state.json" >/dev/null \
+  && printf '%s\n' "${cleanup_live_output}" | grep -F "cleanup refused for 'cleanup-live-guard'" >/dev/null \
+  && printf '%s\n' "${cleanup_live_output}" | grep -F "registered git worktree" >/dev/null \
+  && printf '%s\n' "${cleanup_live_output}" | grep -F "zmx start_dir=${LIVE_GUARD_WORKTREE}" >/dev/null; then
+  ok "cleanup refuses live worktree removal until the caller explicitly forces it"
+else
+  bad "cleanup did not block a live registered worktree"
+  printf '%s\n' "${cleanup_live_output}" | sed 's/^/    /'
+  jq . "${ORCHESTRATOR_ROOT}/state.json" 2>/dev/null | sed 's/^/    /'
+fi
+git -C "${REPO_DIR}" worktree remove --force "${LIVE_GUARD_WORKTREE}" >/dev/null 2>&1 || rm -rf "${LIVE_GUARD_WORKTREE}" >/dev/null 2>&1 || true
+git -C "${REPO_DIR}" branch -D "${LIVE_GUARD_BRANCH}" >/dev/null 2>&1 || true
+remove_zmx_stub
 
 # T34 — guard hook allows installed orchestrator lifecycle wrapper
 section "T34 guard hook allows installed orchestrator lifecycle wrapper"

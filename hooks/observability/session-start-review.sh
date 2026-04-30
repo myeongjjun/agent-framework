@@ -12,15 +12,47 @@ set -uo pipefail
 
 input=$(cat)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-EXTRACT_SCRIPT="${REPO_ROOT}/scripts/extract-traces.sh"
 TRACE_AGENT="claude"
+
+find_repo_root() {
+  local candidate=""
+  local probe=""
+
+  if command -v git >/dev/null 2>&1; then
+    candidate="$(git -C "${PWD}" rev-parse --show-toplevel 2>/dev/null || true)"
+    if [[ -n "$candidate" && -x "${candidate}/scripts/extract-traces.sh" ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  fi
+
+  probe="${PWD}"
+  while [[ -n "$probe" && "$probe" != "/" ]]; do
+    if [[ -x "${probe}/scripts/extract-traces.sh" ]]; then
+      printf '%s\n' "$probe"
+      return 0
+    fi
+    probe="$(dirname "$probe")"
+  done
+
+  candidate="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+  if [[ -x "${candidate}/scripts/extract-traces.sh" ]]; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+
+  return 1
+}
 
 case "$SCRIPT_DIR" in
   "${HOME}/.codex/hooks"*)
     TRACE_AGENT="codex"
     ;;
 esac
+
+REPO_ROOT="$(find_repo_root 2>/dev/null || true)"
+[[ -n "$REPO_ROOT" ]] || exit 0
+EXTRACT_SCRIPT="${REPO_ROOT}/scripts/extract-traces.sh"
 
 emit_message() {
   local message="$1"
@@ -114,7 +146,7 @@ if [[ "$has_alert" == true ]]; then
 fi
 
 # Check for recent handoff entry — suggest /takeover if found
-LATEST_MD="${PWD}/.agent/LATEST.md"
+LATEST_MD="${REPO_ROOT}/.agent/LATEST.md"
 if [ -f "$LATEST_MD" ]; then
   if [[ "$(uname)" == "Darwin" ]]; then
     latest_mtime=$(stat -f '%m' "$LATEST_MD")
