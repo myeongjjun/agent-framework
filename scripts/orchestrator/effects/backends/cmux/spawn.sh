@@ -88,9 +88,9 @@ elif [[ "${agent_cmd}" == "claude" && "${slot_name}" != "claude-orchestrator-glo
   fi
 elif [[ "${agent_cmd}" == "codex" ]]; then
   if [[ "${resume_flag}" == "true" && -n "${task_slug}" ]]; then
-    agent_cmd="codex resume ${task_slug} -s workspace-write -a never"
+    agent_cmd="codex resume ${task_slug} --full-auto"
   else
-    agent_cmd="codex -s workspace-write -a never"
+    agent_cmd="codex --full-auto"
   fi
   # codex has no -n flag; thread name is set post-spawn via /rename injection.
 fi
