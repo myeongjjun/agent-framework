@@ -1,9 +1,17 @@
 #!/bin/bash
-# ensure-agent-team-shape.sh — keep the `agent-team` cmux workspace at its
-# canonical shape: exactly two panes, left=daemon-log, right=approver-log.
+# ensure-agent-team-shape.sh — keep the PINNED `agent-team` cmux workspace at
+# its canonical shape: at least one daemon-log + one approver-log pane.
 #
-# Idempotent. Safe to run on every daemon poll tick. Fixes drift caused by
-# pane closure, daemon restarts, or stale registry surface_ids.
+# Targets ONLY the workspace where pinned=true AND title="agent-team", queried
+# via `cmux rpc workspace.list` (authoritative). Never auto-creates a new
+# workspace — if no pinned agent-team exists, the keeper silently exits and
+# the user must pin one via the cmux UI. This avoids the prior failure mode
+# where `cmux tree --all` ghost/orphan parsing led to repeated new-workspace
+# calls accumulating duplicate workspaces.
+#
+# Idempotent and additive only. Safe to run on every daemon poll tick.
+# Does NOT close or dedupe existing panes — duplicate cleanup is the user's
+# responsibility (consistent with the non-destructive auto-tidy policy).
 #
 # Why this exists separately from health.sh recover_surfaces:
 #   - health.sh recover_surfaces is only triggered by manual `health.sh --all`
@@ -26,17 +34,28 @@ SCAN_LOG="${APPROVER_ROOT}/loop.log"
 WS_NAME="agent-team"
 
 command -v cmux >/dev/null 2>&1 || exit 0
+command -v python3 >/dev/null 2>&1 || exit 0
 
-# Locate or create the workspace.
-ws_id="$(cmux tree --all 2>/dev/null \
-  | grep -E "workspace workspace:[0-9]+ \"${WS_NAME}\"" \
-  | grep -oE 'workspace:[0-9]+' | head -1 || true)"
+# Find the workspace where pinned=true AND title=agent-team.
+# rpc workspace.list returns only workspaces actually attached to a window
+# (orphan/ghost workspaces from prior keeper bugs are excluded), with the
+# authoritative `pinned` flag.
+ws_id="$(cmux rpc workspace.list 2>/dev/null | python3 -c '
+import json, sys, os
+target = os.environ.get("WS_NAME", "agent-team")
+try:
+    data = json.load(sys.stdin)
+    for ws in data.get("workspaces", []):
+        if ws.get("pinned") and ws.get("title") == target:
+            print(ws["ref"])
+            break
+except Exception:
+    pass
+' 2>/dev/null || true)"
 
-if [[ -z "${ws_id}" ]]; then
-  out="$(cmux new-workspace --name "${WS_NAME}" 2>&1)" || exit 0
-  ws_id="$(grep -oE 'workspace:[0-9]+' <<<"${out}" | head -1)"
-  [[ -n "${ws_id}" ]] || exit 0
-fi
+# Silent exit if no pinned agent-team workspace exists. User must pin one via
+# the cmux UI; the keeper never auto-creates.
+[[ -n "${ws_id}" ]] || exit 0
 
 ws_tree="$(cmux tree --workspace "${ws_id}" 2>/dev/null || true)"
 

@@ -113,9 +113,10 @@ codex exec -s workspace-write \
 | Flag | Interactive `codex` | `codex exec` | Alternative for exec |
 |------|---------------------|--------------|---------------------|
 | `--search` | ✅ Available | ❌ NOT available | `--enable web_search_request` |
-| `-a/--ask-for-approval` | ✅ Available | ❌ NOT available | `--full-auto` or `-c approval_policy=...` |
+| `-a/--ask-for-approval` | ✅ Available | ✅ Available | N/A |
+| `-s/--sandbox` | ✅ Available | ✅ Available | N/A |
 | `--add-dir` | ✅ Available | ✅ Available | N/A |
-| `--full-auto` | ✅ Available | ✅ Available | N/A |
+| `--full-auto` | ❌ REMOVED in 0.129.0 | ❌ REMOVED in 0.129.0 | `-s workspace-write -a never` |
 
 **For web search in exec mode**:
 ```bash
@@ -126,14 +127,16 @@ codex exec --enable web_search_request "research topic"
 codex --search "research topic"
 ```
 
-**For approval control in exec mode**:
+**For non-interactive runs (replaces old `--full-auto`)**:
 ```bash
-# CORRECT - works in codex exec
-codex exec --full-auto "task"
-codex exec -c approval_policy=on-request "task"
+# CORRECT - workspace-write sandbox, no approval prompts
+codex exec -s workspace-write -a never "task"
 
-# WRONG - -a only works in interactive mode
-codex -a on-request "task"
+# Equivalent to old --full-auto semantics for orchestrator-spawned workers
+# (worker writes to workspace, never blocks on user approval).
+
+# WRONG - --full-auto was removed in codex 0.129.0
+codex exec --full-auto "task"  # errors: unexpected argument '--full-auto'
 ```
 
 ---
@@ -945,7 +948,7 @@ All Codex invocations use these defaults unless user specifies otherwise:
 | `--disable` | feature name | Disable a feature |
 | `-i, --image` | file path(s) | Attach image(s) to initial prompt |
 | `--add-dir` | directory path | Additional writable directory (repeatable) |
-| `--full-auto` | flag | Convenience for workspace-write sandbox with on-request approval |
+| `--full-auto` | flag | **REMOVED in 0.129.0**. Use `-s workspace-write -a never` instead |
 | `--oss` | flag | Use local open source model provider |
 | `--local-provider` | `lmstudio`, `ollama` | Specify local provider (with --oss) |
 | `--skip-git-repo-check` | flag | Allow running outside Git repository |
@@ -1330,11 +1333,13 @@ Add writable directories beyond the primary workspace:
 codex exec --add-dir /shared/libs --add-dir /config "task"
 ```
 
-### Full Auto Mode (`--full-auto`)
-Convenience flag for low-friction execution:
+### Non-interactive Auto Mode (replaces removed `--full-auto`)
+For orchestrator-spawned workers and other unattended runs:
 ```bash
-codex exec --full-auto "task"
-# Equivalent to: -s workspace-write with on-request approval
+codex exec -s workspace-write -a never "task"
+# `-s workspace-write`: sandboxed write access to the workspace
+# `-a never`: no approval prompts (failures returned to model)
+# Old `--full-auto` was removed in 0.129.0; this is the closest non-interactive equivalent.
 ```
 
 ### Non-Git Environments (`--skip-git-repo-check`)
