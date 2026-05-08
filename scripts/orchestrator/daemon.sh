@@ -640,7 +640,7 @@ handle_rotate() {
       )"
       [[ -n "${entry_session_id}" && "${entry_session_id}" != "N/A" ]] \
         || { printf 'entry session id is required for codex-origin rotate: %s\n' "${entry_path}"; return 1; }
-      ghost_extra_args="resume ${entry_session_id} --full-auto"
+      ghost_extra_args="resume ${entry_session_id} -s workspace-write -a never"
       ;;
   esac
 
@@ -662,7 +662,7 @@ handle_rotate() {
 
   case "${target_agent}" in
     claude) attach_cmd="zmx attach ${target_zmx} claude --dangerously-skip-permissions" ;;
-    codex) attach_cmd="zmx attach ${target_zmx} codex --full-auto" ;;
+    codex) attach_cmd="zmx attach ${target_zmx} codex -s workspace-write -a never" ;;
   esac
 
   case "${target_agent}" in

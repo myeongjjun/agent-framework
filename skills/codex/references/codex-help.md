@@ -9,9 +9,10 @@ Some flags are ONLY available in interactive `codex` mode, NOT in `codex exec`:
 | Flag | Interactive `codex` | `codex exec` |
 |------|---------------------|--------------|
 | `--search` | ✅ Available | ❌ NOT available |
-| `-a/--ask-for-approval` | ✅ Available | ❌ NOT available |
+| `-a/--ask-for-approval` | ✅ Available | ✅ Available (codex 0.129.0+) |
+| `-s/--sandbox` | ✅ Available | ✅ Available |
 | `--add-dir` | ✅ Available | ✅ Available |
-| `--full-auto` | ✅ Available | ✅ Available |
+| `--full-auto` | ❌ REMOVED in 0.129.0 | ❌ REMOVED in 0.129.0 |
 
 ## Main Command: `codex --help`
 
@@ -97,8 +98,9 @@ Options:
             the model
 
       --full-auto
-          Convenience alias for low-friction sandboxed automatic execution (-a on-request, --sandbox
-          workspace-write)
+          REMOVED in codex 0.129.0. Use `-s workspace-write -a never` for non-interactive
+          equivalents, or `--dangerously-bypass-approvals-and-sandbox` for unrestricted runs.
+          (Historical: was a convenience alias for `-a on-request --sandbox workspace-write`.)
 
       --dangerously-bypass-approvals-and-sandbox
           Skip all confirmation prompts and execute commands without sandboxing. EXTREMELY
@@ -179,8 +181,9 @@ Options:
           Configuration profile from config.toml to specify default options
 
       --full-auto
-          Convenience alias for low-friction sandboxed automatic execution (-a on-request, --sandbox
-          workspace-write)
+          REMOVED in codex 0.129.0. Use `-s workspace-write -a never` for non-interactive
+          equivalents, or `--dangerously-bypass-approvals-and-sandbox` for unrestricted runs.
+          (Historical: was a convenience alias for `-a on-request --sandbox workspace-write`.)
 
       --dangerously-bypass-approvals-and-sandbox
           Skip all confirmation prompts and execute commands without sandboxing. EXTREMELY

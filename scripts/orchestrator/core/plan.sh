@@ -228,8 +228,12 @@ fi
 
 # Worker agents run non-interactively; skip permission prompts.
 # --name tags the session with the task slug for later resume.
+# Codex 0.129.0 removed --full-auto; equivalent for non-interactive workers
+# is `-s workspace-write -a never` (sandboxed write, never prompt).
 if [[ "${agent_family}" == "claude" ]]; then
   attach_command="cd ${agent_cwd} && zmx attach ${slot_name} claude --dangerously-skip-permissions --name ${task_slug}"
+elif [[ "${agent_family}" == "codex" ]]; then
+  attach_command="cd ${agent_cwd} && zmx attach ${slot_name} codex -s workspace-write -a never"
 else
   attach_command="cd ${agent_cwd} && zmx attach ${slot_name} ${agent_family}"
 fi

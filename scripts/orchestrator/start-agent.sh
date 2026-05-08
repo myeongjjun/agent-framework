@@ -335,9 +335,9 @@ case "${agent_family}" in
     ;;
   codex)
     if [[ -n "${model}" ]]; then
-      printf -v agent_cmd 'codex --full-auto -m %q' "${model}"
+      printf -v agent_cmd 'codex -s workspace-write -a never -m %q' "${model}"
     else
-      agent_cmd='codex --full-auto'
+      agent_cmd='codex -s workspace-write -a never'
     fi
     ;;
   *)

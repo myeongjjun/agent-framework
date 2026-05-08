@@ -403,15 +403,18 @@ update_codex_hooks() {
   echo -e "${GREEN}✓ Updated ${CODEX_HOOKS_FILE}${NC}"
 }
 
-enable_codex_hooks_feature() {
+enable_hooks_feature() {
+  # codex 0.129.0 deprecated `[features].codex_hooks` in favor of `[features].hooks`.
+  # This writer emits the new key and migrates any legacy `codex_hooks = ...` line
+  # under [features] to `hooks = true`.
   mkdir -p "$(dirname "$CODEX_CONFIG_FILE")"
 
   if [[ ! -f "$CODEX_CONFIG_FILE" ]]; then
     cat > "$CODEX_CONFIG_FILE" <<EOF
 [features]
-codex_hooks = true
+hooks = true
 EOF
-    echo -e "${GREEN}✓ Created ${CODEX_CONFIG_FILE} with codex_hooks enabled${NC}"
+    echo -e "${GREEN}✓ Created ${CODEX_CONFIG_FILE} with [features].hooks enabled${NC}"
     return
   fi
 
@@ -421,7 +424,7 @@ EOF
     BEGIN {
       in_features = 0
       saw_features = 0
-      saw_codex_hooks = 0
+      saw_hooks = 0
     }
     /^\[features\][[:space:]]*$/ {
       print
@@ -430,34 +433,37 @@ EOF
       next
     }
     /^\[[^]]+\][[:space:]]*$/ {
-      if (in_features && !saw_codex_hooks) {
-        print "codex_hooks = true"
-        saw_codex_hooks = 1
+      if (in_features && !saw_hooks) {
+        print "hooks = true"
+        saw_hooks = 1
       }
       in_features = 0
       print
       next
     }
     {
-      if (in_features && $0 ~ /^[[:space:]]*codex_hooks[[:space:]]*=/) {
-        print "codex_hooks = true"
-        saw_codex_hooks = 1
+      # Migrate legacy `codex_hooks` and write canonical `hooks`.
+      if (in_features && $0 ~ /^[[:space:]]*(codex_hooks|hooks)[[:space:]]*=/) {
+        if (!saw_hooks) {
+          print "hooks = true"
+          saw_hooks = 1
+        }
         next
       }
       print
     }
     END {
-      if (in_features && !saw_codex_hooks) {
-        print "codex_hooks = true"
+      if (in_features && !saw_hooks) {
+        print "hooks = true"
       } else if (!saw_features) {
         print ""
         print "[features]"
-        print "codex_hooks = true"
+        print "hooks = true"
       }
     }
   ' "$CODEX_CONFIG_FILE" > "$tmp"
   mv "$tmp" "$CODEX_CONFIG_FILE"
-  echo -e "${GREEN}✓ Enabled codex_hooks in ${CODEX_CONFIG_FILE}${NC}"
+  echo -e "${GREEN}✓ Enabled [features].hooks in ${CODEX_CONFIG_FILE}${NC}"
 }
 
 show_target_status() {
@@ -618,7 +624,7 @@ push_target() {
       echo -e "${DIM}(dry-run) Would update ${CLAUDE_SETTINGS_FILE} hooks section${NC}"
     else
       echo -e "${DIM}(dry-run) Would update ${CODEX_HOOKS_FILE}${NC}"
-      echo -e "${DIM}(dry-run) Would enable codex_hooks in ${CODEX_CONFIG_FILE}${NC}"
+      echo -e "${DIM}(dry-run) Would enable [features].hooks in ${CODEX_CONFIG_FILE}${NC}"
     fi
     echo -e "${DIM}(dry-run) Would write profile to ${active_profile_file}${NC}"
   else
@@ -626,7 +632,7 @@ push_target() {
       update_claude_settings "$active_cats"
     else
       update_codex_hooks "$active_cats"
-      enable_codex_hooks_feature
+      enable_hooks_feature
     fi
 
     if [[ -n "$PROFILE" ]]; then
