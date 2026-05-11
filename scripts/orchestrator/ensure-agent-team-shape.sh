@@ -1,17 +1,24 @@
 #!/bin/bash
 # ensure-agent-team-shape.sh — keep the PINNED `agent-team` cmux workspace at
-# its canonical shape: at least one daemon-log + one approver-log pane.
+# its canonical shape: exactly one daemon-log + one approver-log pane.
 #
 # Targets ONLY the workspace where pinned=true AND title="agent-team", queried
 # via `cmux rpc workspace.list` (authoritative). Never auto-creates a new
 # workspace — if no pinned agent-team exists, the keeper silently exits and
-# the user must pin one via the cmux UI. This avoids the prior failure mode
-# where `cmux tree --all` ghost/orphan parsing led to repeated new-workspace
-# calls accumulating duplicate workspaces.
+# the user must pin one via the cmux UI.
 #
-# Idempotent and additive only. Safe to run on every daemon poll tick.
-# Does NOT close or dedupe existing panes — duplicate cleanup is the user's
-# responsibility (consistent with the non-destructive auto-tidy policy).
+# Surface resolution prefers the canonical surface_id stored at
+# ${ORCH_ROOT}/agents/<role>/surface_id (written by attach_* helpers).
+# Title-based grep is a fallback when the canonical surface no longer
+# exists in the workspace. This avoids the prior failure mode where a
+# `tail -f` exit reverted the pane title to its cwd (e.g. `~/.approver`),
+# causing the title-only grep to miss and the keeper to create a fresh
+# duplicate pane on the next tick.
+#
+# Dedup: panes whose title matches `daemon-log`/`approver-log` but whose
+# surface_id is NOT the canonical one get closed. This is the only
+# destructive action and is narrowly scoped to our own titles, never
+# unrelated panes.
 #
 # Why this exists separately from health.sh recover_surfaces:
 #   - health.sh recover_surfaces is only triggered by manual `health.sh --all`
@@ -58,12 +65,42 @@ except Exception:
 [[ -n "${ws_id}" ]] || exit 0
 
 ws_tree="$(cmux tree --workspace "${ws_id}" 2>/dev/null || true)"
+# Guard: an empty tree query (cmux hiccup) must NOT trigger pane creation.
+# Without this, every tree-fetch failure would spawn a new daemon-log +
+# approver-log pair, accumulating duplicates over time.
+[[ -n "${ws_tree}" ]] || exit 0
 
-# Locate existing log surfaces by title.
-daemon_surface="$(grep -oE 'surface:[0-9]+ \[terminal\] "daemon-log"' <<<"${ws_tree}" \
-  | grep -oE 'surface:[0-9]+' | head -1 || true)"
-approver_surface="$(grep -oE 'surface:[0-9]+ \[terminal\] "approver-log"' <<<"${ws_tree}" \
-  | grep -oE 'surface:[0-9]+' | head -1 || true)"
+# Helper: does surface_id exist in the current workspace tree?
+surface_in_tree() {
+  local sid="$1"
+  [[ -n "${sid}" ]] || return 1
+  grep -qE "surface:${sid#surface:}\b" <<<"${ws_tree}"
+}
+
+# Helper: list all surface_ids matching a given pane title.
+surfaces_with_title() {
+  local title="$1"
+  grep -oE "surface:[0-9]+ \[terminal\] \"${title}\"" <<<"${ws_tree}" \
+    | grep -oE 'surface:[0-9]+'
+}
+
+# Resolve a role to its canonical surface_id, preferring the stored ID
+# (re-attaches survive `tail -f` death) and falling back to title match.
+resolve_role_surface() {
+  local role="$1" title="$2"
+  local stored_path="${ORCH_ROOT}/agents/${role}/surface_id"
+  local stored=""
+  [[ -f "${stored_path}" ]] && stored="$(<"${stored_path}")"
+  if [[ -n "${stored}" ]] && surface_in_tree "${stored}"; then
+    printf '%s\n' "${stored}"
+    return 0
+  fi
+  # Stored canonical missing or stale — fall back to title match.
+  surfaces_with_title "${title}" | head -1
+}
+
+daemon_surface="$(resolve_role_surface orchestrator daemon-log)"
+approver_surface="$(resolve_role_surface approver approver-log)"
 
 attach_daemon_log() {
   local surface_id="$1"
@@ -122,6 +159,28 @@ fi
 if [[ -z "${approver_surface}" ]]; then
   sid="$(new_pane)" || true
   [[ -n "${sid}" ]] && attach_approver_log "${sid}"
+fi
+
+# Dedup: close panes that match our titles but aren't the canonical surface.
+# Narrowly scoped destructive action — only touches "daemon-log"/"approver-log"
+# titles, never unrelated panes. This handles the case where a tail death
+# briefly hid the original pane and a duplicate got created before the next
+# tick rediscovered the canonical surface_id.
+dedup_role() {
+  local canonical="$1" title="$2"
+  [[ -n "${canonical}" ]] || return 0
+  while read -r dup; do
+    [[ -z "${dup}" ]] && continue
+    [[ "${dup}" == "${canonical}" ]] && continue
+    cmux close-surface --surface "${dup}" --workspace "${ws_id}" >/dev/null 2>&1 || true
+  done < <(surfaces_with_title "${title}")
+}
+
+# Re-fetch tree so newly-created panes are visible to the dedup pass.
+ws_tree="$(cmux tree --workspace "${ws_id}" 2>/dev/null || true)"
+if [[ -n "${ws_tree}" ]]; then
+  dedup_role "${daemon_surface}" daemon-log
+  dedup_role "${approver_surface}" approver-log
 fi
 
 exit 0
