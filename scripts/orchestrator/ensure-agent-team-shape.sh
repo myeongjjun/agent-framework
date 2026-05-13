@@ -161,26 +161,33 @@ if [[ -z "${approver_surface}" ]]; then
   [[ -n "${sid}" ]] && attach_approver_log "${sid}"
 fi
 
-# Dedup: close panes that match our titles but aren't the canonical surface.
-# Narrowly scoped destructive action — only touches "daemon-log"/"approver-log"
-# titles, never unrelated panes. This handles the case where a tail death
-# briefly hid the original pane and a duplicate got created before the next
-# tick rediscovered the canonical surface_id.
-dedup_role() {
-  local canonical="$1" title="$2"
-  [[ -n "${canonical}" ]] || return 0
-  while read -r dup; do
-    [[ -z "${dup}" ]] && continue
-    [[ "${dup}" == "${canonical}" ]] && continue
-    cmux close-surface --surface "${dup}" --workspace "${ws_id}" >/dev/null 2>&1 || true
-  done < <(surfaces_with_title "${title}")
-}
+# Strict 2-pane invariant: the pinned agent-team workspace is keeper-owned
+# and must contain exactly the canonical daemon-log + approver-log surfaces,
+# nothing else. Any other pane is closed — including panes whose title has
+# been mangled by tail death (e.g. `~/.approver`, `~`, shell-prompt strings)
+# and any user-opened pane mistakenly added to this workspace.
+#
+# Safety rationale:
+#   - The workspace is identified by pinned=true AND title="agent-team",
+#     so we're certain this is the keeper's dedicated workspace.
+#   - Real work belongs in other workspaces; agent-team is for monitoring
+#     daemon + approver only. If the user wants a third pane for something,
+#     a different workspace is the right home.
+#
+# Previously the keeper only closed panes matching "daemon-log"/"approver-log"
+# titles, which left stale post-tail-death panes (like `~/.approver`)
+# behind forever. The user's frustration was that "fix" claims kept landing
+# while the leftover panes accumulated. This strict invariant closes that gap.
 
-# Re-fetch tree so newly-created panes are visible to the dedup pass.
+# Re-fetch tree so newly-created panes are visible to the cleanup pass.
 ws_tree="$(cmux tree --workspace "${ws_id}" 2>/dev/null || true)"
 if [[ -n "${ws_tree}" ]]; then
-  dedup_role "${daemon_surface}" daemon-log
-  dedup_role "${approver_surface}" approver-log
+  while read -r surface; do
+    [[ -z "${surface}" ]] && continue
+    [[ "${surface}" == "${daemon_surface}" ]] && continue
+    [[ "${surface}" == "${approver_surface}" ]] && continue
+    cmux close-surface --surface "${surface}" --workspace "${ws_id}" >/dev/null 2>&1 || true
+  done < <(grep -oE 'surface:[0-9]+' <<<"${ws_tree}" | sort -u)
 fi
 
 exit 0

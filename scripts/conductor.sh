@@ -505,6 +505,8 @@ render_work_item_markdown() {
   local executor_tier="${5:-default}"
   local keep_alive="${6:-false}"
   local is_collab_pair="${7:-false}"
+  local worktree_path="${8:-}"
+  local worktree_branch="${9:-}"
   local completion_prefix='/'
 
   if [[ "${agent_family}" == "codex" ]]; then
@@ -521,13 +523,30 @@ render_work_item_markdown() {
   The orchestrator daemon will detect the dead session within ~30s and clean up the worktree, branch, and state entry automatically.'
   fi
 
+  local workspace_section=""
+  if [[ -n "${worktree_path}" ]]; then
+    workspace_section="
+## Workspace (ADR-032)
+
+- **Worktree path**: ${worktree_path}
+- **Branch**: ${worktree_branch}
+- **Spawn cwd**: ${PWD} (main repo — claude session JSONL is anchored here so the session survives any worktree lifecycle event)
+
+**FIRST ACTION**: \`cd ${worktree_path}\` before doing any work.
+
+- Do all git operations and file edits inside the worktree.
+- Do NOT run \`git\` mutations in the main repo cwd (\`${PWD}\`). If you accidentally start there, just \`cd\` to the worktree.
+- If you must reference files outside the worktree, use absolute paths.
+"
+  fi
+
   cat <<EOF
 # Work Item: ${slug}
 
 - **Status**: in-progress
 - **Created**: $(timestamp_utc)
 - **Project Root**: ${PWD}
-
+${workspace_section}
 ## Goal
 
 ${description}
@@ -947,7 +966,7 @@ dispatch_command() {
     return 0
   fi
 
-  atomic_write "${work_item_path}" "$(render_work_item_markdown "${slug}" "${description}" "${agent_family}" "${advisor_mode}" "${executor_tier}" "${keep_alive}" "${is_collab_pair}")"
+  atomic_write "${work_item_path}" "$(render_work_item_markdown "${slug}" "${description}" "${agent_family}" "${advisor_mode}" "${executor_tier}" "${keep_alive}" "${is_collab_pair}" "${worktree_path}" "${worktree_branch}")"
   now="$(timestamp_utc)"
   _acquire_state_lock
   state="$(state_json)"

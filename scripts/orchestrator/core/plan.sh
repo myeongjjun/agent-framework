@@ -211,20 +211,24 @@ state_path="${orchestrator_root}/state.json"
 activity_path="${orchestrator_root}/activity.jsonl"
 locks_dir="${orchestrator_root}/locks"
 
-# Worktree planning. The agent's working directory and attach command are
-# relative to whichever path the agent will actually live in: the worktree
-# (default) or the project root (--no-worktree escape hatch).
+# Worktree planning. Per ADR-032, the agent's working directory is ALWAYS
+# the main repo path — never the worktree path — so that the claude
+# session JSONL stays keyed to a stable cwd that survives any worktree
+# lifecycle event. The worker is told to `cd <worktree>` as its first
+# action via the work-item brief, but cwd-encoded session storage is
+# anchored to the main repo regardless.
 if (( worktree_required == 1 )); then
   worktree_path="${cwd}/.worktrees/dispatch-${task_slug}-${agent_family}-${slot_index}"
   worktree_branch="dispatch/${task_slug}-${agent_family}-${slot_index}"
-  agent_cwd="${worktree_path}"
   worktree_reason="default — concurrent dispatches must not collide on git state, mirroring the /collab same-task pattern"
 else
   worktree_path=""
   worktree_branch=""
-  agent_cwd="${cwd}"
   worktree_reason="--no-worktree escape: caller asserts the task is read-only or doc-only and will not mutate git state"
 fi
+# ADR-032: agent_cwd is the main repo path in BOTH cases. Worktree is
+# delivered to the worker via the brief; never as the spawn cwd.
+agent_cwd="${cwd}"
 
 # Worker agents run non-interactively; skip permission prompts.
 # --name tags the session with the task slug for later resume.
