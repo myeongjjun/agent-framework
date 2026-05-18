@@ -122,8 +122,124 @@ Usage:
   team.sh status                        # overview of all agents
   team.sh list                          # list available agent definitions
   team.sh card <agent-name>             # show A2A-style agent card
+  team.sh alias list                    # list registered project aliases (ADR-033)
+  team.sh alias add <cwd> <short>       # register alias with validation
+  team.sh alias rm <cwd>                # remove alias
+  team.sh alias check <cwd>             # preview what _resolve_project_alias returns
 EOF
   exit 0
+}
+
+# --- Project alias management (ADR-033) ---------------------------------------
+
+ALIASES_FILE="${ORCHESTRATOR_ROOT:-${HOME}/.orchestrator}/project-aliases.json"
+
+_aliases_load() {
+  if [[ -f "${ALIASES_FILE}" ]]; then
+    cat "${ALIASES_FILE}"
+  else
+    printf '{}\n'
+  fi
+}
+
+_aliases_save() {
+  local content="$1" tmp
+  mkdir -p "$(dirname "${ALIASES_FILE}")"
+  tmp="$(mktemp "${ALIASES_FILE}.XXXXXX")"
+  printf '%s\n' "${content}" | jq '.' > "${tmp}" || { rm -f "${tmp}"; die "alias save: jq formatting failed"; }
+  mv "${tmp}" "${ALIASES_FILE}"
+}
+
+_alias_validate_format() {
+  local alias="$1"
+  [[ "${alias}" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] || die "alias must be lowercase kebab-case (got '${alias}')"
+  (( ${#alias} <= 25 )) || die "alias must be 25 characters or fewer (got ${#alias})"
+  (( ${#alias} >= 2 )) || die "alias must be at least 2 characters (got ${#alias})"
+}
+
+team_alias_list() {
+  local data
+  data="$(_aliases_load)"
+  local count
+  count="$(jq -r 'length' <<<"${data}")"
+  if [[ "${count}" == "0" ]]; then
+    echo -e "${DIM}(no aliases registered — see team.sh alias add)${NC}"
+    return 0
+  fi
+  echo -e "${BOLD}Project aliases (${count})${NC}"
+  jq -r 'to_entries | sort_by(.value)[] | "\(.value)\t\(.key)"' <<<"${data}" \
+    | while IFS=$'\t' read -r alias cwd; do
+        printf '  %b%-22s%b ← %s\n' "${BLUE}" "${alias}" "${NC}" "${cwd}"
+      done
+}
+
+team_alias_add() {
+  local cwd="${1:?alias add requires <cwd>}"
+  local alias="${2:?alias add requires <short>}"
+
+  _alias_validate_format "${alias}"
+
+  # Optional but recommended: warn if cwd doesn't exist (don't block; users
+  # may register aliases for repos they haven't cloned yet on this machine).
+  if [[ ! -d "${cwd}" ]]; then
+    echo -e "${YELLOW}warning${NC}: cwd '${cwd}' is not an existing directory (registering anyway)" >&2
+  fi
+
+  local data existing
+  data="$(_aliases_load)"
+
+  existing="$(jq -r --arg p "${cwd}" '.[$p] // empty' <<<"${data}")"
+  if [[ -n "${existing}" ]]; then
+    if [[ "${existing}" == "${alias}" ]]; then
+      echo -e "${DIM}alias already registered: ${cwd} → ${alias} (no change)${NC}"
+      return 0
+    fi
+    die "cwd '${cwd}' already maps to '${existing}'; remove first with: team.sh alias rm '${cwd}'"
+  fi
+
+  # Reject if alias is in use by a different cwd (would collide in slot_name).
+  local collision
+  collision="$(jq -r --arg a "${alias}" 'to_entries[] | select(.value == $a) | .key' <<<"${data}" | head -1)"
+  if [[ -n "${collision}" ]]; then
+    die "alias '${alias}' already used by '${collision}' — pick a different short name"
+  fi
+
+  local updated
+  updated="$(jq --arg p "${cwd}" --arg a "${alias}" '. + {($p): $a}' <<<"${data}")"
+  _aliases_save "${updated}"
+  echo -e "${GREEN}✓ registered${NC} ${cwd} → ${alias}"
+}
+
+team_alias_rm() {
+  local cwd="${1:?alias rm requires <cwd>}"
+  local data existing
+  data="$(_aliases_load)"
+  existing="$(jq -r --arg p "${cwd}" '.[$p] // empty' <<<"${data}")"
+  if [[ -z "${existing}" ]]; then
+    echo -e "${DIM}no alias for ${cwd} (nothing to remove)${NC}"
+    return 0
+  fi
+  local updated
+  updated="$(jq --arg p "${cwd}" 'del(.[$p])' <<<"${data}")"
+  _aliases_save "${updated}"
+  echo -e "${GREEN}✓ removed${NC} ${cwd} → ${existing}"
+}
+
+team_alias_check() {
+  local cwd="${1:?alias check requires <cwd>}"
+  local data existing
+  data="$(_aliases_load)"
+  existing="$(jq -r --arg p "${cwd}" '.[$p] // empty' <<<"${data}")"
+  if [[ -n "${existing}" ]]; then
+    echo -e "${GREEN}alias hit${NC}: ${cwd} → ${existing}"
+  else
+    local fallback
+    fallback="$(basename "${cwd}")"
+    echo -e "${YELLOW}no alias${NC}: ${cwd} → fallback basename '${fallback}'"
+    if (( ${#fallback} >= 27 )); then
+      echo -e "  ${RED}warning${NC}: basename is ${#fallback} chars — slot will hit hash fallback (ADR-033 Tier 2)" >&2
+    fi
+  fi
 }
 
 # --- Agent Card (A2A-inspired) ------------------------------------------------
@@ -319,6 +435,18 @@ case "${cmd}" in
         echo -e "${RED}failed${NC} ${local_sf} (${local_ws})"
       fi
     done
+    ;;
+
+  alias)
+    sub="${1:-list}"
+    shift || true
+    case "${sub}" in
+      list)  team_alias_list "$@" ;;
+      add)   team_alias_add "$@" ;;
+      rm|remove|delete) team_alias_rm "$@" ;;
+      check) team_alias_check "$@" ;;
+      *)     die "unknown alias subcommand: ${sub} (use list|add|rm|check)" ;;
+    esac
     ;;
 
   help|--help|-h)
