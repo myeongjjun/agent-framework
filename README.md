@@ -139,6 +139,57 @@ Autonomous improvement cycle: observe agent behavior, diagnose issues, propose c
 ./scripts/agent-release.sh current               # Show current version
 ```
 
+## Project Aliases (ADR-033)
+
+The orchestrator's zmx session names follow the format
+`{family}-{project_slug}-{task_slug}-{index}` and must fit within
+zmx's 44-char limit. Projects whose directory basename is **27 or
+more characters** (e.g. `clickhouse-upgrade-framework`) overflow
+this limit because the project portion alone consumes the entire
+budget left for the task slug.
+
+The orchestrator handles this with a two-layer mechanism:
+
+1. **Explicit alias (preferred)** — register a short name for the
+   project in `~/.orchestrator/project-aliases.json`. The
+   orchestrator substitutes the alias for the long basename when
+   constructing the slot.
+2. **Hash safety net** — if no alias is registered and the slot
+   would overflow, the orchestrator falls back to
+   `{family}-{6-char-hash}-{index}`. The slot loses zmx-grep
+   readability but never fails; the original task name is still
+   visible in `claude --name` and `state.json`.
+
+### Managing aliases
+
+```bash
+# List registered aliases
+team.sh alias list
+
+# Register a new alias (validated: kebab-case, 2–25 chars, no collisions)
+team.sh alias add /path/to/your-very-long-project-dir my-proj
+
+# Preview what an alias lookup returns for a given cwd
+team.sh alias check /path/to/your-very-long-project-dir
+
+# Remove an alias
+team.sh alias rm /path/to/your-very-long-project-dir
+```
+
+`check` additionally warns when an unaliased cwd has a basename
+of 27+ chars (the threshold beyond which the hash fallback fires).
+The alias file is stored at `~/.orchestrator/project-aliases.json`
+and is per-user/per-machine local — fork adopters seed their own.
+
+### What aliases don't change
+
+- `cwd`, `task_slug`, `worktree_path`, `claude --name`, and
+  `state.json` task keys are all preserved verbatim regardless of
+  alias resolution.
+- Only the zmx session identifier (`slot_name`) is affected.
+- `claude --resume <session-id>` continues to work as normal —
+  session storage is keyed by cwd, not by slot name.
+
 ## Prerequisites
 
 | Requirement | Version | Notes |
