@@ -142,8 +142,12 @@ else
 fi
 
 # Build slot name: {family}-{project_slug}-{task_slug}-{index}
-# If it exceeds the zmx limit, truncate task_slug and append a 4-char hash
-# to preserve uniqueness. The original task_slug is kept in state.json.
+# Slot naming policy is documented in ADR-033 (Orchestrator Identifier
+# Scheme and Project Alias for Slot-Name Fit). If the slot exceeds the
+# zmx limit, Tier 1 truncates task_slug + 4-char hash; Tier 2 (when
+# project_slug is so long that Tier 1 cannot satisfy _available ≥ 8)
+# falls back to a hash-only slot. Original task_slug is always preserved
+# in claude `--name` and state.json `tasks[]`.
 slot_prefix="${agent_family}-${project_slug}-${task_slug}-"
 
 slot_index="$(
@@ -171,6 +175,7 @@ fi
 slot_name="${slot_prefix}${slot_index}"
 
 if (( ${#slot_name} > _zmx_max_name )); then
+  # Tier 1 — try truncating task_slug only (preserves project_slug readability).
   # Fixed parts: {family}-{project_slug}-{trunc_slug}-{index}
   # The trailing dash between trunc_slug and index is part of the overhead.
   _fixed_prefix="${agent_family}-${project_slug}-"
@@ -178,32 +183,51 @@ if (( ${#slot_name} > _zmx_max_name )); then
   _overhead=1                      # trailing dash after trunc_slug
   _available=$(( _zmx_max_name - ${#_fixed_prefix} - ${#_fixed_suffix} - _overhead ))
 
-  if (( _available < 8 )); then
-    echo "plan.sh: slot name '${slot_name}' exceeds zmx limit (${_zmx_max_name}) and cannot be truncated (project slug too long)" >&2
-    exit 1
+  if (( _available >= 8 )); then
+    # Truncate task_slug, append 4-char hash for uniqueness
+    _hash="$(printf '%s' "${task_slug}" | shasum | cut -c1-4)"
+    _trunc_len=$(( _available - 5 ))  # 4 hash chars + 1 dash
+    _trunc_slug="${task_slug:0:${_trunc_len}}-${_hash}"
+
+    # Recompute slot_prefix and index with truncated slug
+    slot_prefix="${_fixed_prefix}${_trunc_slug}-"
+    slot_index="$(
+      jq -r --arg prefix "${slot_prefix}" '
+        [
+          (.agents // {})
+          | keys[]?
+          | select(startswith($prefix))
+          | (($prefix | length) as $offset | .[$offset:])
+          | select(test("^[0-9]+$"))
+          | tonumber
+        ]
+        | if length == 0 then 1 else (max + 1) end
+      ' <<<"${state_json}"
+    )"
+    slot_name="${slot_prefix}${slot_index}"
+  else
+    # Tier 2 (ADR-033) — project_slug is too long for Tier 1 to fit any task_slug.
+    # Fall back to a hash-only slot. Readable identification lives in
+    # `claude --name <task_slug>` and state.json `tasks[task_slug]` — slot_name
+    # is just the zmx session identifier here.
+    # Format: {family}-{hash6}-{index}   (always ≤ 17 chars)
+    _hash6="$(printf '%s' "${agent_family}-${project_slug}-${task_slug}" | shasum | cut -c1-6)"
+    slot_prefix="${agent_family}-${_hash6}-"
+    slot_index="$(
+      jq -r --arg prefix "${slot_prefix}" '
+        [
+          (.agents // {})
+          | keys[]?
+          | select(startswith($prefix))
+          | (($prefix | length) as $offset | .[$offset:])
+          | select(test("^[0-9]+$"))
+          | tonumber
+        ]
+        | if length == 0 then 1 else (max + 1) end
+      ' <<<"${state_json}"
+    )"
+    slot_name="${slot_prefix}${slot_index}"
   fi
-
-  # Truncate task_slug, append 4-char hash for uniqueness
-  _hash="$(printf '%s' "${task_slug}" | shasum | cut -c1-4)"
-  _trunc_len=$(( _available - 5 ))  # 4 hash chars + 1 dash
-  _trunc_slug="${task_slug:0:${_trunc_len}}-${_hash}"
-
-  # Recompute slot_prefix and index with truncated slug
-  slot_prefix="${_fixed_prefix}${_trunc_slug}-"
-  slot_index="$(
-    jq -r --arg prefix "${slot_prefix}" '
-      [
-        (.agents // {})
-        | keys[]?
-        | select(startswith($prefix))
-        | (($prefix | length) as $offset | .[$offset:])
-        | select(test("^[0-9]+$"))
-        | tonumber
-      ]
-      | if length == 0 then 1 else (max + 1) end
-    ' <<<"${state_json}"
-  )"
-  slot_name="${slot_prefix}${slot_index}"
 fi
 work_item_path="${orchestrator_root}/tasks/${task_slug}.md"
 done_report_path="${orchestrator_root}/done/${task_slug}.md"

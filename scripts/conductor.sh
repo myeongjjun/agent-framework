@@ -76,6 +76,26 @@ derive_agent_family() {
   esac
 }
 
+# Per ADR-033: resolve a cwd to its short project alias if registered in
+# ~/.orchestrator/project-aliases.json, else fall back to basename(cwd).
+# Aliases solve the slot-name fit problem for projects whose basename is
+# 27+ chars (clickhouse-upgrade-framework etc) by letting the user choose
+# a readable short name (clickhouse → ch, framework → fw, etc).
+# Output is what gets passed as --project-name to plan.sh.
+_resolve_project_alias() {
+  local cwd="$1"
+  local aliases_file="${ORCHESTRATOR_ROOT}/project-aliases.json"
+  if [[ -f "${aliases_file}" ]]; then
+    local alias
+    alias="$(jq -r --arg p "${cwd}" '.[$p] // empty' "${aliases_file}" 2>/dev/null || true)"
+    if [[ -n "${alias}" ]]; then
+      printf '%s\n' "${alias}"
+      return 0
+    fi
+  fi
+  basename "${cwd}"
+}
+
 # Wait until a spawned agent is ready to accept input.
 # Uses cmux read-screen to detect prompt indicators instead of fixed sleep.
 # Usage: await_agent_ready <surface_id> <agent_family> [max_seconds] [workspace_id]
@@ -915,7 +935,7 @@ dispatch_command() {
     --slug "${slug}"
     --description "${description}"
     --cwd "${project_path}"
-    --project-name "$(basename "${project_path}")"
+    --project-name "$(_resolve_project_alias "${project_path}")"
     --agent "${agent_family}"
     --advisor-mode "${advisor_mode}"
     --executor-tier "${executor_tier}"
@@ -1737,7 +1757,7 @@ resume_command() {
     --slug "${slug}"
     --description "${description}"
     --cwd "${project_path}"
-    --project-name "$(basename "${project_path}")"
+    --project-name "$(_resolve_project_alias "${project_path}")"
     --agent "${agent_family}"
     --no-worktree
   )

@@ -86,6 +86,8 @@ surfaces_with_title() {
 
 # Resolve a role to its canonical surface_id, preferring the stored ID
 # (re-attaches survive `tail -f` death) and falling back to title match.
+# When the fallback path produces a different surface than stored, heal
+# the stored file so the next tick can skip the fallback grep.
 resolve_role_surface() {
   local role="$1" title="$2"
   local stored_path="${ORCH_ROOT}/agents/${role}/surface_id"
@@ -96,7 +98,14 @@ resolve_role_surface() {
     return 0
   fi
   # Stored canonical missing or stale — fall back to title match.
-  surfaces_with_title "${title}" | head -1
+  local fallback
+  fallback="$(surfaces_with_title "${title}" | head -1)"
+  if [[ -n "${fallback}" && "${fallback}" != "${stored}" ]]; then
+    mkdir -p "$(dirname "${stored_path}")"
+    printf '%s\n' "${fallback}" > "${stored_path}.tmp"
+    mv "${stored_path}.tmp" "${stored_path}"
+  fi
+  printf '%s\n' "${fallback}"
 }
 
 daemon_surface="$(resolve_role_surface orchestrator daemon-log)"
@@ -153,12 +162,18 @@ fi
 
 if [[ -z "${daemon_surface}" ]]; then
   sid="$(new_pane)" || true
-  [[ -n "${sid}" ]] && attach_daemon_log "${sid}"
+  if [[ -n "${sid}" ]]; then
+    attach_daemon_log "${sid}"
+    daemon_surface="${sid}"  # update local var so the strict-invariant pass below preserves this fresh surface
+  fi
 fi
 
 if [[ -z "${approver_surface}" ]]; then
   sid="$(new_pane)" || true
-  [[ -n "${sid}" ]] && attach_approver_log "${sid}"
+  if [[ -n "${sid}" ]]; then
+    attach_approver_log "${sid}"
+    approver_surface="${sid}"  # same: preserve the surface we just created
+  fi
 fi
 
 # Strict 2-pane invariant: the pinned agent-team workspace is keeper-owned
