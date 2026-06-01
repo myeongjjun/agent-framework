@@ -701,7 +701,10 @@ build_dispatch_payload() {
   [[ -n "${description}" ]] || { printf 'build_dispatch_payload: --description required\n' >&2; return 1; }
 
   printf -- '- slug: %s\n' "${slug}"
-  printf -- '- description: %s\n' "${description}"
+  printf -- '- description: |\n'
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    printf '  %s\n' "${line}"
+  done <<<"${description}"
   [[ -n "${worker_family}" ]] && printf -- '- worker_family: %s\n' "${worker_family}" || true
   [[ "${dry_run}" == "true" ]] && printf -- '- dry_run: true\n' || true
   [[ "${no_worktree}" == "true" ]] && printf -- '- no_worktree: true\n' || true
@@ -709,6 +712,35 @@ build_dispatch_payload() {
   [[ -n "${executor_tier}" ]] && printf -- '- executor_tier: %s\n' "${executor_tier}" || true
   [[ "${keep_alive}" == "true" ]] && printf -- '- keep_alive: true\n' || true
   [[ "${resume}" == "true" ]] && printf -- '- resume: true\n' || true
+}
+
+build_collab_payload() {
+  local slug='' description='' dry_run='false' no_worktree='false'
+  local advisor_mode='' executor_tier=''
+  while (($# > 0)); do
+    case "$1" in
+      --slug)           shift; slug="$1" ;;
+      --description)    shift; description="$1" ;;
+      --dry-run)        dry_run='true' ;;
+      --no-worktree)    no_worktree='true' ;;
+      --advisor-mode)   shift; advisor_mode="$1" ;;
+      --executor-tier)  shift; executor_tier="$1" ;;
+      *) printf 'build_collab_payload: unknown arg: %s\n' "$1" >&2; return 1 ;;
+    esac
+    shift
+  done
+  [[ -n "${slug}" ]] || { printf 'build_collab_payload: --slug required\n' >&2; return 1; }
+  [[ -n "${description}" ]] || { printf 'build_collab_payload: --description required\n' >&2; return 1; }
+
+  printf -- '- slug: %s\n' "${slug}"
+  printf -- '- description: |\n'
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    printf '  %s\n' "${line}"
+  done <<<"${description}"
+  [[ "${dry_run}" == "true" ]] && printf -- '- dry_run: true\n' || printf -- '- dry_run: false\n'
+  [[ "${no_worktree}" == "true" ]] && printf -- '- no_worktree: true\n' || printf -- '- no_worktree: false\n'
+  [[ -n "${advisor_mode}" ]] && printf -- '- advisor_mode: %s\n' "${advisor_mode}" || true
+  [[ -n "${executor_tier}" ]] && printf -- '- executor_tier: %s\n' "${executor_tier}" || true
 }
 
 build_tidy_payload() {

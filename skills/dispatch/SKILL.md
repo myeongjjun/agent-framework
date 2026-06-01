@@ -29,6 +29,14 @@ deterministically, and **asks the user to pick the execution mode**
 (fire-and-forget vs interactive). The mode answer doubles as the go
 signal — the skill executes immediately via `orchestrator_request --type
 dispatch`. There is no dry-run round trip and no separate y/n confirmation.
+
+**Invocation model**: This skill is **agent-invoked only**. There is no
+user-runnable CLI form of `/dispatch` — when the user types `/dispatch X`
+in chat or mentions "/dispatch" mid-conversation, the active agent
+executes the skill. Treat any sentence implying "the user will dispatch
+separately" (e.g., elided-subject Korean like "/dispatch 해서 별도로
+진행") as a request for the agent to invoke the skill now, not as a
+delegation to a non-existent user-side path.
 Worktree is **always created** — dispatch execute mandates an isolated
 worktree (see `scripts/conductor.sh:781`); the only exception is `ghost-*`
 session archives, which this skill does not produce.
@@ -54,10 +62,15 @@ Do not use this skill for:
 - Slug must be lowercase kebab-case, max 32 characters, not a reserved name
   (`base`, `main`, `master`, `head`, `origin`). If the skill auto-generates
   a slug from the description, the same rules apply.
-- **Mode is always asked, never inferred** — the skill presents the
-  derived slug + worker as fixed, then asks the user to pick mode
-  (fire-and-forget or interactive). The mode answer is the go signal;
-  no separate y/n confirmation follows.
+- **Mode is asked only when not derivable from user input** — if the
+  user's request already encodes the mode, skip the prompt and execute
+  immediately with a one-line status update ("Proceeding fire-and-forget
+  per `keep_alive: false`"). Derivation triggers:
+  - `keep_alive: false` / "fire-and-forget" / "ff" / "FF" → mode=FF
+  - `keep_alive: true` / "interactive" / "keep alive" / "keep-alive" → mode=interactive
+  When no mode signal is present, fall back to the explicit prompt below
+  (presents derived slug + worker as fixed, asks the user to pick mode).
+  The mode answer is the go signal; no separate y/n confirmation follows.
 - **Worker is inferred, not asked** — defaults to `claude`; chosen as
   `codex` only when the description explicitly names codex. The user can
   override inline (e.g., "codex로") in the same mode-selection reply.
@@ -99,7 +112,7 @@ bash ~/.orchestrator/scripts/orchestrator/start-agent.sh --execute
 Do not auto-start the orchestrator from this skill. Starting the orchestrator
 is a user-visible event.
 
-### Step 3 — Derive slug + worker, then ask for mode
+### Step 3 — Derive slug + worker, then ask for mode (if needed)
 
 **Worker inference** (deterministic, not asked) — `claude` by default.
 Pick `codex` only when the description **explicitly mentions codex**
@@ -111,9 +124,30 @@ description, lowercase, kebab-joined, trimmed to 32 chars. If the result
 is ambiguous or collides with reserved names, surface it in the prompt
 so the user can override.
 
-**Mode selection prompt** (Korean) — show the derived values and ask
-for mode. The mode answer is the execute go signal; do NOT require a
-separate "y" afterward.
+**Mode derivation (before prompting)** — scan the user's request for
+mode signals before deciding whether to ask:
+
+| Signal in user input | Mode |
+|---|---|
+| `keep_alive: false` / "fire-and-forget" / "ff" / "FF" | fire-and-forget |
+| `keep_alive: true` / "interactive" / "keep alive" / "keep-alive" | interactive |
+| No mode signal | ask the user (prompt below) |
+
+When mode is derived, **skip the prompt entirely** and execute
+immediately with a one-line status update before the request:
+
+```
+Proceeding fire-and-forget per `keep_alive: false`.
+- Slug: {slug}
+- Worker: {claude|codex}
+```
+
+The user can still abort by interrupting the run; this is faster than a
+mandatory prompt when the request was already explicit.
+
+**Mode selection prompt** (Korean, only when not derived) — show the
+derived values and ask for mode. The mode answer is the execute go
+signal; do NOT require a separate "y" afterward.
 
 ```
 Dispatch 준비 완료 — 모드 선택 시 즉시 실행됩니다.
@@ -140,21 +174,30 @@ Parse the reply:
 
 ### Step 4 — Execute on approval
 
-Source `protocol.sh` in a bash subshell and send the dispatch request with
-`dry_run: false`:
+Source `protocol.sh` in a bash subshell and use `build_dispatch_payload`
+to construct the payload. The builder emits the `description` as a YAML
+block scalar, which the conductor's `parse_request_file` reassembles
+back into the original multi-line text — never substitute a multi-line
+`<description>` into a raw `- description: %s` template, as that path
+truncates to the first line.
 
 ```bash
 bash -c '
   . ~/.orchestrator/scripts/orchestrator/protocol.sh
+  payload="$(build_dispatch_payload \
+    --slug "<slug>" \
+    --description "<description>" \
+    --worker-family "<claude|codex>" \
+    <optional: --keep-alive>)"
   orchestrator_request --type dispatch --slug "<slug>" --timeout 180 --payload "## Payload
-- slug: <slug>
-- description: <description>
-- worker_family: <claude|codex>
-- dry_run: false
-- keep_alive: <true|false>
+${payload}
 "
 '
 ```
+
+Pass `--keep-alive` only when mode=interactive. The builder omits
+optional flags whose values are unset and always emits `dry_run: false`
+implicitly (omits the field; conductor defaults to execute).
 
 Omit `no_worktree` from the payload entirely — conductor defaults to
 creating a worktree, and passing `no_worktree: true` would be rejected
@@ -220,6 +263,35 @@ On execute success:
 - 작업 파일: {work_item_path}
 - Done: sibling 종료 시 EXIT trap이 surface/zmx 자동 정리. worktree는 보존되며 `conductor.sh tidy`로 정리
 ```
+
+### Promote when done
+
+After the sibling commits its work (the `turn-end-wip-commit.sh` Stop
+hook auto-commits each turn as `wip(<slug>): ...`), integrate the worker
+branch into the base session's current branch:
+
+```bash
+./scripts/agent-promote.sh <slug>
+```
+
+Defaults: `--squash` merge into the current branch with `wip(<slug>)`
+commits collapsed, a risk scan over changed files (`.env`, `*.key`,
+`id_rsa*`, `*.log`, `.DS_Store`, files > 1 MB), and refusal when the
+base working tree is dirty.
+
+Common flags:
+
+- `--dry-run` — preview the plan; no mutations
+- `--cleanup` — delete the worker branch and worktree after the merge
+- `--no-ff` — preserve worker history instead of squashing
+- `--branch <name>` — disambiguate when the slug matches multiple
+  worker branches (e.g., a `/collab` slug producing both
+  `dispatch/<slug>-claude-1` and `dispatch/<slug>-codex-1`)
+
+Cherry-pick is **not** the routine path — `guard-cherry-pick.sh` emits a
+warning on bare `git cherry-pick`. Use `agent-promote.sh` for ordinary
+dispatch integration; reserve cherry-pick for `/collab` synthesis,
+selective hotfix, or recovery (`--abort` / `--continue` / `--skip`).
 
 On orchestrator error:
 

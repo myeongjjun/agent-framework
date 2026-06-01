@@ -332,5 +332,15 @@ t=6  user verifies the new session
 - **Early warning**: At 80% usage, start drafting but don't write until triggered
 - **No secrets**: Always redact API keys, tokens, passwords
 - **Compact**: Prefer tables and bullet points over prose
-- **Rotation is optional**: Never auto-rotate. Always surface it as a
-  choice in the response. The user must decide.
+- **Rotation is optional, but honor explicit intent**:
+  - If the user's invocation **already specified rotation** (e.g.
+    "/handoff and rotate", "handoff 후 rotate", "rotate 도 같이"),
+    proceed to `bash ~/.claude/scripts/handoff-rotate.sh` immediately
+    after writing the entry. **Do NOT re-ask.** Re-asking on explicit
+    intent wastes the user's time and breaks the contract.
+  - If the user invoked **only `/handoff`** (no rotation mention),
+    finish by surfacing the A/B option block and let the user decide.
+    Do not auto-rotate without explicit signal.
+  - Detection rule: scan the original user message that triggered
+    this skill for the literal tokens `rotate`, `rotation`, `압축`
+    near `handoff`. If present → proceed with rotation. Else → ask.

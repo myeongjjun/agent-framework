@@ -126,16 +126,34 @@ bash ~/.orchestrator/scripts/orchestrator/health.sh
 If the exit code is non-zero, stop and tell the user to start the orchestrator
 with `bash ~/.orchestrator/scripts/orchestrator/start-agent.sh --execute`. Do not auto-start.
 
-**Step 2b — Dry-run preview**:
+**Step 2b — Dry-run preview (conditional)**:
+
+Run dry-run **only when the user requested a preview** or the task
+carries explicit risk signals. Otherwise skip directly to Step 2c.
+
+| Trigger | Action |
+|---|---|
+| User said "dry-run" / "preview" / "plan 먼저" / "확인하고" / "검토 먼저" | run dry-run, then ask `Proceed with --execute? (y/n)` |
+| User wrote a plan and asked the agent to review it before launching | run dry-run, then ask |
+| User gave full /collab spec (slug + description, or a brief file) and said "진행" / "수행해" / "바로" / "execute" / "go" | **skip 2b, go straight to 2c** |
+| User invoked /collab after a prior planning turn the agent already echoed back | **skip 2b** (plan was already reviewed) |
+| Ambiguous — first-time pattern, large blast radius, unclear acceptance criteria | run dry-run, then ask |
+
+When running dry-run, use `build_collab_payload` to construct the payload.
+The builder emits `description` as a YAML block scalar so multi-line task
+descriptions survive the request → work-item path intact. Never substitute
+a multi-line `<task description>` into a raw `- description: %s` template,
+as that truncates to the first line.
 
 ```bash
 bash -c '
   . ~/.orchestrator/scripts/orchestrator/protocol.sh
+  payload="$(build_collab_payload \
+    --slug "<base_slug>" \
+    --description "<task description>" \
+    --dry-run)"
   orchestrator_request --type collab --slug "<base_slug>" --timeout 120 --payload "## Payload
-- slug: <base_slug>
-- description: <task description>
-- dry_run: true
-- no_worktree: false
+${payload}
 "
 '
 ```
@@ -149,19 +167,20 @@ Orchestrator returned the paired dispatch plan above.
 Proceed with --execute? (y/n)
 ```
 
-**Step 2c — Execute on approval**:
+**Step 2c — Execute** (default path when 2b skipped; or after y on 2b):
 
-Re-submit with `dry_run: false` and a longer timeout (both dispatches run
-sequentially, each with a ~10s post-spawn wait):
+Re-submit using `build_collab_payload` without `--dry-run`, with a
+longer timeout (both dispatches run sequentially, each with a ~10s
+post-spawn wait):
 
 ```bash
 bash -c '
   . ~/.orchestrator/scripts/orchestrator/protocol.sh
+  payload="$(build_collab_payload \
+    --slug "<base_slug>" \
+    --description "<task description>")"
   orchestrator_request --type collab --slug "<base_slug>" --timeout 300 --payload "## Payload
-- slug: <base_slug>
-- description: <task description>
-- dry_run: false
-- no_worktree: false
+${payload}
 "
 '
 ```
@@ -322,12 +341,35 @@ plan, then decide: merge vs re-dispatch.
 
 **Code production merge**:
 
+Use `./scripts/agent-promote.sh` for both worker branches. It squashes
+each worker's `wip(<slug>)` commits, runs a risk scan, and squash-merges
+into the current branch.
+
+When one worker is clearly best (synthesis chose its diff wholesale):
+
 ```bash
-git checkout main
-git merge --no-ff <claude_worker_branch>
-# Optionally layer cherry-picks from the other worker
-git cherry-pick <commit-from-codex_worker_branch>
+./scripts/agent-promote.sh <base_slug>-claude --cleanup
+# or:
+./scripts/agent-promote.sh <base_slug>-codex --cleanup
 ```
+
+When synthesis blends both — promote the chosen "base" worker first,
+then layer the second worker's specific commits via cherry-pick. This is
+the legitimate cherry-pick use case the guard hook still allows; prefix
+with `CHERRY_PICK_OK=1` to silence the warning:
+
+```bash
+./scripts/agent-promote.sh <base_slug>-claude
+CHERRY_PICK_OK=1 git cherry-pick <commit-from-codex-branch>
+./scripts/agent-promote.sh <base_slug>-codex --cleanup   # optional, only
+                                                          # if anything else
+                                                          # in that branch is
+                                                          # worth landing
+```
+
+To preserve the worker's commit history instead of squashing, pass
+`--no-ff` to `agent-promote.sh`. The merge commit's message embeds the
+worker branch name for provenance.
 
 **Review task merge**: apply synthesized fixes directly to main files, then
 commit with collab provenance.

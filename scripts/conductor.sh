@@ -309,10 +309,35 @@ parse_request_file() {
   [[ -f "${req_file}" ]] || { echo "echo 'request file not found: ${req_file}' >&2; return 1"; return; }
 
   awk '
-    BEGIN { in_fm=0; in_payload=0 }
+    BEGIN { in_fm=0; in_payload=0; capture_var=""; capture_value="" }
+    function emit_var(name, value, escaped) {
+      escaped = value
+      gsub(/'\''/, "'\''\\'\'''\''", escaped)
+      printf "%s='\''%s'\''\n", name, escaped
+    }
+    function flush_capture() {
+      if (capture_var == "") {
+        return
+      }
+      sub(/\n$/, "", capture_value)
+      emit_var(capture_var, capture_value)
+      capture_var = ""
+      capture_value = ""
+    }
     /^---$/ {
+      flush_capture()
       if (!in_fm) { in_fm=1; next }
       else { in_fm=0; next }
+    }
+    capture_var != "" {
+      if ($0 ~ /^- [A-Za-z0-9_]+:/ || $0 ~ /^## /) {
+        flush_capture()
+      } else {
+        line = $0
+        sub(/^  /, "", line)
+        capture_value = capture_value line "\n"
+        next
+      }
     }
     in_fm && /^  project:/ { sub(/^  project: */, ""); gsub(/'\''/, "'\''\\'\'''\''"); printf "REQ_PROJECT='\''%s'\''\n", $0 }
     in_fm && /^  cmux_workspace_id:/ { sub(/^  cmux_workspace_id: */, ""); gsub(/'\''/, "'\''\\'\'''\''"); printf "REQ_WORKSPACE_ID='\''%s'\''\n", $0 }
@@ -321,7 +346,16 @@ parse_request_file() {
     in_fm && /^slug:/ { sub(/^slug: */, ""); printf "REQ_SLUG='\''%s'\''\n", $0 }
     /^## Payload/ { in_payload=1; next }
     in_payload && /^- slug:/ { sub(/^- slug: */, ""); gsub(/'\''/, "'\''\\'\'''\''"); printf "REQ_PAYLOAD_SLUG='\''%s'\''\n", $0 }
-    in_payload && /^- description:/ { sub(/^- description: */, ""); gsub(/'\''/, "'\''\\'\'''\''"); printf "REQ_PAYLOAD_DESCRIPTION='\''%s'\''\n", $0 }
+    in_payload && /^- description:/ {
+      sub(/^- description: */, "")
+      if ($0 == "|") {
+        capture_var = "REQ_PAYLOAD_DESCRIPTION"
+        capture_value = ""
+        next
+      }
+      emit_var("REQ_PAYLOAD_DESCRIPTION", $0)
+      next
+    }
     in_payload && /^- worker_family:/ { sub(/^- worker_family: */, ""); printf "REQ_PAYLOAD_WORKER_FAMILY='\''%s'\''\n", $0 }
     in_payload && /^- advisor_mode:/ { sub(/^- advisor_mode: */, ""); printf "REQ_PAYLOAD_ADVISOR_MODE='\''%s'\''\n", $0 }
     in_payload && /^- executor_tier:/ { sub(/^- executor_tier: */, ""); printf "REQ_PAYLOAD_EXECUTOR_TIER='\''%s'\''\n", $0 }
@@ -329,6 +363,7 @@ parse_request_file() {
     in_payload && /^- no_worktree:/ { sub(/^- no_worktree: */, ""); printf "REQ_PAYLOAD_NO_WORKTREE='\''%s'\''\n", $0 }
     in_payload && /^- keep_alive:/ { sub(/^- keep_alive: */, ""); printf "REQ_PAYLOAD_KEEP_ALIVE='\''%s'\''\n", $0 }
     in_payload && /^- resume:/ { sub(/^- resume: */, ""); printf "REQ_PAYLOAD_RESUME='\''%s'\''\n", $0 }
+    END { flush_capture() }
   ' "${req_file}"
 }
 
@@ -2456,4 +2491,6 @@ main() {
   esac
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

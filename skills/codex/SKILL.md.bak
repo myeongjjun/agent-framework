@@ -435,7 +435,7 @@ When creating a handoff entry for Codex, ensure these sections are complete:
 |-----|-------|
 | ID | abc-123-def |
 | Agent | Claude Code 1.0.0 |
-| Project | /path/to/myapp |
+| Project | /home/user/myapp |
 | Git | feature/auth@a3b7c9d |
 | Duration | ~50 messages, started 12:00 |
 | Tokens | 45000/100000 (45%) |
@@ -583,7 +583,7 @@ cat > .agent/entry-20251223-152000-KST.md <<'EOF'
 |-----|-------|
 | ID | N/A |
 | Agent | Codex 0.80.0 |
-| Project | /path/to/myapp |
+| Project | /home/user/myapp |
 | Git | feature/auth@b4c8d0e |
 | Trigger | work_done |
 
