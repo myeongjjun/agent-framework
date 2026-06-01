@@ -59,6 +59,7 @@
 - Agent-to-agent communication may use English or the most efficient language for the context.
 - Preserve code, commands, logs, JQL, issue keys, file paths, API names, and exact error messages in their original form.
 
+
 ## Project Info
 
 **Name**: Agent Framework

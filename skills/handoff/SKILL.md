@@ -149,6 +149,26 @@ Create/overwrite `.agent/LATEST.md`:
 - **Next**: {immediate next step}
 ```
 
+### 5) Research index freshness check (informational, non-blocking)
+
+If `~/research/scripts/generate_index.py` exists, run a freshness check after writing the handoff. Surface staleness or pending inbox items in the handoff output, but do not block.
+
+```bash
+if [[ -x "$HOME/research/scripts/generate_index.py" ]] || [[ -f "$HOME/research/scripts/generate_index.py" ]]; then
+  python3 "$HOME/research/scripts/generate_index.py" --check 2>/dev/null
+  _rc=$?
+  if (( _rc != 0 )); then
+    echo "ℹ research INDEX may be stale — run \`python3 ~/research/scripts/generate_index.py\` when convenient"
+  fi
+  # Inbox to-do surfacing
+  if [[ -d "$HOME/research/_inbox" ]] && find "$HOME/research/_inbox" -mindepth 1 -maxdepth 1 -type d -print -quit | grep -q .; then
+    echo "ℹ ~/research/_inbox/ has pending items — archivist triage needed"
+  fi
+fi
+```
+
+Silent skip when research repo is absent. Failures do not block the handoff.
+
 ## Handoff Entry Format (6 Sections)
 
 ```markdown
