@@ -133,10 +133,24 @@ if [[ -z "${_resolved_surf}" ]]; then
     | awk -v n="${ORIG_ZMX}" '$0 ~ "name=" n "\t" {
         for (i=1; i<=NF; i++) if ($i ~ /^pid=/) { sub(/^pid=/, "", $i); print $i; exit }
       }' || true)"
+
+  # The cmux-side tty is the tty of the LIVE `zmx attach <slot>` client,
+  # not claude's own tty (claude sits on the zmx-internal PTY slave that
+  # cmux never sees). Prefer the live attach client; fall back to claude
+  # for non-zmx-host launches.
   _claude_tty=""
-  if [[ -n "${_claude_pid}" ]]; then
+  while read -r _attach_pid; do
+    [[ -n "${_attach_pid}" ]] || continue
+    _t="$(ps -o tty= -p "${_attach_pid}" 2>/dev/null | tr -d ' ' || true)"
+    if [[ -n "${_t}" && "${_t}" != "?" && "${_t}" != "??" ]]; then
+      _claude_tty="${_t}"
+      break
+    fi
+  done < <(pgrep -f "^zmx attach ${ORIG_ZMX}( |$)" 2>/dev/null || true)
+  if [[ -z "${_claude_tty}" && -n "${_claude_pid}" ]]; then
     _claude_tty="$(ps -o tty= -p "${_claude_pid}" 2>/dev/null | tr -d ' ' || true)"
   fi
+
   if [[ -n "${_claude_tty}" && "${_claude_tty}" != "?" ]]; then
     _resolved_surf="$(cmux tree --all 2>/dev/null \
       | awk -v tty="tty=${_claude_tty}" '
