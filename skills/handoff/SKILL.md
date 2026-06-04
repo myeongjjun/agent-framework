@@ -149,7 +149,26 @@ Create/overwrite `.agent/LATEST.md`:
 - **Next**: {immediate next step}
 ```
 
-### 5) Research index freshness check (informational, non-blocking)
+### 5a) Inbox check (informational, non-blocking)
+
+After writing the handoff entry, surface any unresolved cross-session reports in `~/agent-framework/.agent/inbox/` so the next session sees them.
+
+```bash
+INBOX="$HOME/agent-framework/.agent/inbox"
+if [[ -d "$INBOX" ]]; then
+  _new_count=$(find "$INBOX" -maxdepth 1 -name '*.md' -type f \
+    -exec awk '/^status:[[:space:]]*new$/{print FILENAME; exit}' {} \; 2>/dev/null | wc -l | tr -d ' ')
+  _wip_count=$(find "$INBOX" -maxdepth 1 -name '*.md' -type f \
+    -exec awk '/^status:[[:space:]]*in-progress$/{print FILENAME; exit}' {} \; 2>/dev/null | wc -l | tr -d ' ')
+  if (( _new_count > 0 )) || (( _wip_count > 0 )); then
+    echo "ℹ inbox: ${_new_count} new, ${_wip_count} in-progress — run \`/inbox process\` when convenient"
+  fi
+fi
+```
+
+Skip silently when inbox is empty or directory absent. Non-blocking.
+
+### 5b) Research index freshness check (informational, non-blocking)
 
 If `~/research/scripts/generate_index.py` exists, run a freshness check after writing the handoff. Surface staleness or pending inbox items in the handoff output, but do not block.
 
