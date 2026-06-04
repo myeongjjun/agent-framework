@@ -129,10 +129,20 @@ fi
 cmux send --surface "${surface_id}" ${ws_args[@]+"${ws_args[@]}"} "${inject_command}" >/dev/null
 cmux send-key --surface "${surface_id}" ${ws_args[@]+"${ws_args[@]}"} enter >/dev/null
 
-# Codex occasionally renders the prompt text before the first Enter is
-# consumed during fresh-surface bootstrap. A second submit pulse is
+# Fresh-surface bootstrap (verify=1) frequently has the first Enter
+# consumed by the agent TUI's paste-handling, leaving the prompt
+# rendered but unsubmitted in the input box. A second submit pulse is
 # cheaper than re-sending the text and avoids duplicating the payload.
-if (( verify == 1 )) && (( as_prompt == 1 )) && [[ "${family}" == "codex" ]]; then
+#
+# Observed in:
+#   - Codex literal-mode inject (original case, 2026-04~)
+#   - Claude work-item dispatch (2026-06-04: BUG-collab-first-inject-missing-enter.md
+#     — claude worker stuck with prompt in input box; empty-prompt inject
+#     workaround functioned as second enter)
+#
+# Gating only on verify==1 covers fresh-spawn dispatches (the bug
+# scenario) without affecting steady-state inject calls.
+if (( verify == 1 )); then
   sleep 0.5
   cmux send-key --surface "${surface_id}" ${ws_args[@]+"${ws_args[@]}"} enter >/dev/null
 fi
