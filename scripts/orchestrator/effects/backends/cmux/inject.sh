@@ -87,6 +87,40 @@ command -v cmux >/dev/null 2>&1 || { echo "backends/cmux/inject.sh: cmux not fou
 ws_args=()
 [[ -n "${target_workspace}" ]] && ws_args=(--workspace "${target_workspace}")
 
+# Claude /exit translation (cmux paste-mode bug workaround).
+#
+# Claude Code TUI routes paste-mode input (which `cmux send` uses) to the
+# user-message buffer, NOT the slash-command parser. So a paste-then-Enter
+# of "/exit" becomes a user message — the agent responds textually with
+# "I'll exit" but the CLI does not terminate.
+#
+# Codex CLI does not have this split; "/exit" via paste-then-Enter exits.
+#
+# Workaround: when the caller injects exactly "/exit" against a Claude
+# worker, translate to a Ctrl+D (EOF) key send. Claude Code reliably
+# handles EOF as quit. No-op for any other text or for non-Claude family.
+#
+# Documented in feedback_inject_exit_claude_noop.md.
+if [[ "${as_prompt}" == "1" ]] && [[ "${family}" == "claude" ]] \
+   && [[ "${prompt_text:-}" == "/exit" ]]; then
+  cmux send-key --surface "${surface_id}" ${ws_args[@]+"${ws_args[@]}"} ctrl-d >/dev/null
+  jq -n \
+    --arg surface_id "${surface_id}" \
+    --arg inject_action "${inject_action}" \
+    --arg prompt_preview "${prompt_preview}" \
+    '{
+      action: $inject_action,
+      backend: "cmux",
+      mode: "execute",
+      surface_id: $surface_id,
+      prompt_mode: "exit-translation",
+      prompt_source: null,
+      prompt_preview: $prompt_preview,
+      command: "cmux send-key ctrl-d (claude /exit translation)"
+    }'
+  exit 0
+fi
+
 # Single send by default. Opt-in --verify for cases where the target is
 # a booting agent (dispatch) that may drop the first prompt. Never use
 # verify for shell-command inject (rotate's attach_cmd) — the shell
