@@ -36,12 +36,28 @@ unset _canonical_dir _canonical _current_dir
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 export ORCHESTRATOR_CALLER_TOKEN="start-agent:$$"
+
+# cmux 0.64+ changed default socket path to ~/.local/state/cmux/cmux.sock
+export CMUX_SOCKET_PATH="${CMUX_SOCKET_PATH:-${HOME}/.local/state/cmux/cmux.sock}"
 SPAWN_EFFECT="${SCRIPT_DIR}/effects/spawn-surface.sh"
 INJECT_EFFECT="${SCRIPT_DIR}/effects/inject-takeover.sh"
 # shellcheck source=/dev/null
 . "${SCRIPT_DIR}/protocol.sh"
 
 die() { printf 'start-agent.sh: %s\n' "$*" >&2; exit 1; }
+
+running_inside_codex_sandbox() {
+  [[ -n "${CODEX_SANDBOX:-}" || -n "${CODEX_SANDBOX_NETWORK_DISABLED:-}" ]]
+}
+
+refuse_codex_sandbox_daemon_start() {
+  running_inside_codex_sandbox || return 0
+  cat >&2 <<'EOF'
+start-agent.sh: REFUSED: orchestrator daemon must not be started from inside a Codex sandbox.
+  Start it from the external orchestrator/shell context instead.
+EOF
+  exit 2
+}
 
 read_metadata() {
   local key="$1"
@@ -99,6 +115,9 @@ case "${agent_type}" in
 esac
 if [[ "${agent_type}" == "daemon" && "${agent_name}" != "orchestrator" ]]; then
   die "daemon type is only supported for agent-name=orchestrator"
+fi
+if [[ "${agent_type}" == "daemon" && "${mode}" == "execute" ]]; then
+  refuse_codex_sandbox_daemon_start
 fi
 
 if [[ "${agent_type}" == "llm-agent" ]]; then

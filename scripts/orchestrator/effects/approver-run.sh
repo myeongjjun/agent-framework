@@ -6,6 +6,9 @@ IFS=$'\n\t'
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 LOOP_LOG="${SCRIPT_DIR}/loop.log"
 
+# cmux 0.64+ changed default socket path to ~/.local/state/cmux/cmux.sock
+export CMUX_SOCKET_PATH="${CMUX_SOCKET_PATH:-${HOME}/.local/state/cmux/cmux.sock}"
+
 timestamp_utc() {
   date -u +"%Y-%m-%dT%H:%M:%SZ"
 }

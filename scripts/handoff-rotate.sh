@@ -10,14 +10,23 @@
 #   bash main (inside Y4)
 #     1. preflight (env, handoff entry, orchestrator reachability)
 #     2. send a file-backed `type: rotate` request to the orchestrator
-#     3. return immediately so the current session can be SIGQUITed safely
+#     3. return immediately; the orchestrator drives the rotation
 #
-#   orchestrator session
-#     1. resolve original pid from requester slot
-#     2. spawn ghost split first (`claude --continue` or `codex resume <session>`)
-#     3. kill -QUIT original pid and wait for death
-#     4. inject fresh `zmx attach <orig> <target-agent>` into the base surface
-#     5. inject `/takeover` or `$takeover`
+#   orchestrator session (4-way: cl→cl, cl→cx, cx→cl, cx→cx)
+#     same-family (cl→cl, cx→cx):
+#       1. resolve original pid from requester slot
+#       2. spawn ghost split (`claude --continue -n <slug>` or `codex resume <id>`)
+#       3. ghost stability check
+#       4. raw zmx `/clear` to origin slot → keep origin pid
+#       5. wait_agent_ready
+#       6. raw zmx `/takeover` (claude) or `$takeover` (codex)
+#     cross-family (cl→cx, cx→cl):
+#       1. resolve original pid from requester slot
+#       2. spawn-surface fresh target in a new slot/surface (no ghost —
+#          origin process stays alive and is itself the lossless archive)
+#       3. wait_agent_ready on fresh target
+#       4. raw zmx `/takeover` (claude) or `$takeover` (codex)
+#       5. user closes the origin pane manually when ready
 #
 # References: ADR-026, ADR-028, skills/handoff/SKILL.md ## Rotation
 
@@ -77,7 +86,13 @@ ORIG_ZMX="$ZMX_SESSION"
 ORIG_SURF="$CMUX_SURFACE_ID"
 ORIG_WS="$CMUX_WORKSPACE_ID"
 PROJECT_DIR="$PWD"
-PROTOCOL_SH="${HOME}/.orchestrator/scripts/orchestrator/protocol.sh"
+PROTOCOL_SH="${ORCHESTRATOR_PROTOCOL_SH:-${HOME}/.orchestrator/scripts/orchestrator/protocol.sh}"
+
+# Ghost session guard: ghost slots end in -ghost-N. Rotating from a ghost
+# would chain-spawn another ghost and corrupt the archive lineage.
+case "$ORIG_ZMX" in
+  *-ghost-*) err "rotate refused: $ORIG_ZMX looks like a ghost archive slot. Run rotate from the base session, not an archive." ;;
+esac
 
 # Origin family detection. Rotate keeps the ghost/archive in the same
 # family as the requester so session continuity uses the family's native
@@ -88,11 +103,28 @@ case "$ORIG_ZMX" in
   *)        err "ZMX_SESSION='$ORIG_ZMX' is neither claude-* nor codex-*" ;;
 esac
 
+# Codex often runs inside a filesystem/process sandbox. In that environment,
+# requester-side probes such as kill -0, ps, zmx list, and cmux tree can fail
+# even though the host-side orchestrator can handle the rotate. Keep Claude's
+# historical strict behavior, but default Codex to minimal client preflight.
+ROTATE_PREFLIGHT="${ORCHESTRATOR_ROTATE_PREFLIGHT:-}"
+if [[ -z "${ROTATE_PREFLIGHT}" ]]; then
+  if [[ "${ORIG_AGENT}" == "codex" ]]; then
+    ROTATE_PREFLIGHT="minimal"
+  else
+    ROTATE_PREFLIGHT="strict"
+  fi
+fi
+case "${ROTATE_PREFLIGHT}" in
+  strict|minimal) ;;
+  *) err "invalid ORCHESTRATOR_ROTATE_PREFLIGHT='${ROTATE_PREFLIGHT}' (must be strict or minimal)" ;;
+esac
+
 # Target family resolution: default to origin, validate claude|codex.
 [[ -z "$TARGET_AGENT" ]] && TARGET_AGENT="$ORIG_AGENT"
 case "$TARGET_AGENT" in
   claude|codex) : ;;
-  *) err "invalid --target: '$TARGET_AGENT' (must be claude or codex)" ;;
+  *)            err "invalid --target: '$TARGET_AGENT' (must be claude or codex)" ;;
 esac
 
 # --- 2. Preflight: handoff entry on disk -------------------------------------
@@ -119,7 +151,39 @@ ok "handoff entry: $LATEST_ENTRY"
 # workspace is a reasonable target for rotate since the user is looking
 # at it right now.
 export ORCHESTRATOR_ALLOW_SELECTED_WS_FALLBACK=1
-orchestrator_alive || err "orchestrator not running — start it with: bash ~/.orchestrator/scripts/orchestrator/start-agent.sh --execute"
+if ! orchestrator_alive; then
+  if [[ "${ROTATE_PREFLIGHT}" == "minimal" ]]; then
+    info "orchestrator alive probe failed in minimal preflight; attempting request enqueue anyway"
+    export ORCHESTRATOR_REQUEST_SKIP_ALIVE=1
+  else
+    err "orchestrator not running — start it with: bash ~/.orchestrator/scripts/orchestrator/start-agent.sh --execute"
+  fi
+fi
+
+# --- 3.5 Base-session guard (rotate refused on worker slots) -----------------
+# rotate is base-session only. Workers (dispatch/collab) must not rotate
+# themselves — their lifecycle is owned by the caller. We probe state.json
+# via the canonical reader (concurrent-write safe) for either:
+#   - tasks[*].agents[] containing this slot
+#   - agents[<slot>].task non-empty
+# Either match → worker → refuse.
+STATE_READ="${HOME}/.orchestrator/scripts/orchestrator/core/state-read.sh"
+if [[ -x "$STATE_READ" ]]; then
+  _state_json="$("$STATE_READ" 2>/dev/null || true)"
+  if [[ -n "$_state_json" ]]; then
+    _is_worker="$(jq -re --arg slot "$ORIG_ZMX" '
+      (.tasks // {} | to_entries[]? | select((.value.agents // []) | index($slot)) | .key) //
+      (.agents // {} | .[$slot] // {} | .task // empty)
+    ' <<<"$_state_json" 2>/dev/null | head -1 || true)"
+    [[ -z "$_is_worker" ]] || err "rotate refused: $ORIG_ZMX is registered as a worker (task=$_is_worker). rotate is base-session only."
+  else
+    if [[ "${ROTATE_PREFLIGHT}" == "minimal" ]]; then
+      info "cannot read orchestrator state in minimal preflight; continuing to request enqueue"
+    else
+      err "rotate refused: cannot read orchestrator state — investigate before retrying"
+    fi
+  fi
+fi
 
 # --- 3a. Surface UUID validation + tty fallback -------------------------------
 # If CMUX_SURFACE_ID is a stale UUID (cmux restarted since session start),
@@ -159,41 +223,71 @@ if [[ -z "${_resolved_surf}" ]]; then
             if (RSTART > 0) { print substr($0, RSTART, RLENGTH); exit }
           }' || true)"
   fi
-  [[ -n "${_resolved_surf}" ]] \
-    || err "CMUX_SURFACE_ID stale and tty fallback failed (claude_pid=${_claude_pid:-?} tty=${_claude_tty:-?})"
-  info "resolved stale CMUX_SURFACE_ID via tty → ${_resolved_surf}"
-  ORIG_SURF="${_resolved_surf}"
+  if [[ -n "${_resolved_surf}" ]]; then
+    info "resolved stale CMUX_SURFACE_ID via tty → ${_resolved_surf}"
+    ORIG_SURF="${_resolved_surf}"
+  elif [[ "${ROTATE_PREFLIGHT}" == "minimal" ]]; then
+    info "CMUX_SURFACE_ID could not be verified in minimal preflight; passing original env value to daemon"
+  else
+    err "CMUX_SURFACE_ID stale and tty fallback failed (claude_pid=${_claude_pid:-?} tty=${_claude_tty:-?})"
+  fi
 fi
 
 ENTRY_PATH="$PROJECT_DIR/$LATEST_ENTRY"
+
+# For codex-origin rotates, codex exports CODEX_THREAD_ID into agent-spawned
+# shells. This env var is the only authoritative source for the calling
+# thread's UUID. If absent, abort — no fallback to heuristics. Hard fail makes
+# regressions easy to pinpoint ("codex CLI removed/renamed CODEX_THREAD_ID").
+if [[ "${ORIG_AGENT}" == "codex" ]]; then
+  if [[ -z "${CODEX_THREAD_ID:-}" ]]; then
+    err "CODEX_THREAD_ID env var is empty.
+  /handoff must run inside a shell spawned by the codex agent (which exports CODEX_THREAD_ID).
+  If this is a current codex session, the env var may have been removed in a codex CLI update —
+  check the codex shell environment and update handoff-rotate.sh to the new identifier."
+  fi
+  info "codex session id from CODEX_THREAD_ID: ${CODEX_THREAD_ID}"
+fi
+
 PAYLOAD=$(cat <<EOF
 - entry_path: $ENTRY_PATH
 - surface_id: $ORIG_SURF
 - target_agent: $TARGET_AGENT
 - dry_run: $( [[ $DRY_RUN -eq 1 ]] && printf 'true' || printf 'false' )
+$( [[ -n "${CODEX_THREAD_ID:-}" ]] && printf -- '- codex_session_id: %s' "${CODEX_THREAD_ID}" )
 EOF
 )
 
 if [[ $DRY_RUN -eq 1 ]]; then
   info "[dry-run] requesting rotate plan from orchestrator"
-  orchestrator_request \
+  set +e
+  _dry_run_output="$(orchestrator_request \
     --type rotate \
     --slug "rotate-${ORIG_ZMX}" \
     --timeout 120 \
-    --payload "$PAYLOAD"
-  exit $?
+    --payload "$PAYLOAD" 2>&1)"
+  _dry_run_rc=$?
+  set -e
+  printf '%s\n' "${_dry_run_output}"
+  exit "${_dry_run_rc}"
 fi
 
-# Execute is fire-and-forget: the requester must return before the
-# orchestrator SIGQUITs the current session.
+# Execute is fire-and-forget: the requester returns immediately so the
+# orchestrator can drive the rotation without blocking on this surface.
+set +e
 REQUEST_ID="$(
   orchestrator_request \
     --type rotate \
     --slug "rotate-${ORIG_ZMX}" \
     --timeout 120 \
     --no-wait \
-    --payload "$PAYLOAD"
+    --payload "$PAYLOAD" 2>&1
 )"
+REQUEST_RC=$?
+set -e
+if (( REQUEST_RC != 0 )); then
+  err "orchestrator request enqueue failed (rc=${REQUEST_RC}): ${REQUEST_ID:-no output}"
+fi
 
 [[ -n "$REQUEST_ID" ]] || err "orchestrator accepted no request id for rotate"
 ok "rotation request queued: $REQUEST_ID"
@@ -206,10 +300,25 @@ cat <<EOF
   agent:   $ORIG_AGENT → $TARGET_AGENT
 
 The orchestrator will:
-  1. spawn a ghost split with '$ORIG_AGENT --continue' (archive of current session)
-  2. SIGQUIT the current $ORIG_AGENT pid
-  3. reattach a fresh '$TARGET_AGENT' in $ORIG_SURF
-  4. inject /takeover
+EOF
+
+if [[ "$ORIG_AGENT" == "$TARGET_AGENT" ]]; then
+  cat <<EOF
+  1. spawn a ghost split with '$ORIG_AGENT' archive (--continue or resume)
+  2. raw inject '/clear' to origin slot $ORIG_ZMX (origin pid kept)
+  3. wait for the fresh agent to be input-ready
+  4. raw inject takeover command
+EOF
+else
+  cat <<EOF
+  1. spawn-surface fresh '$TARGET_AGENT' in a new slot (no ghost — origin
+     pane stays alive as the archive; close it manually when done)
+  2. wait for the fresh agent to be input-ready
+  3. raw inject takeover command
+EOF
+fi
+
+cat <<EOF
 
 Inspect response later: ~/.orchestrator/outbox/res-${REQUEST_ID#req-}.md
 EOF

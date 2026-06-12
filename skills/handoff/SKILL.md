@@ -76,23 +76,25 @@ Create a concise, **conversation-focused** handoff entry so another agent can co
 
 ## Actions (Mandatory Sequence)
 
+### 0) Base session guard (MUST run first, before any file writes)
+
+**YOU MUST call the Bash tool and run this exact command. Do NOT evaluate it in your head or use context from earlier in the conversation.**
+
+```bash
+echo "ZMX_SESSION=${ZMX_SESSION}"
+```
+
+If the output contains `-ghost-`, respond only with:
+`❌ handoff/rotate not available from a ghost session (${ZMX_SESSION})`
+and stop. Do NOT write any files or proceed further.
+
 ### 1) Identify current session
 
 ```bash
-# Detect agent type and find session file
-if [ -n "$CODEX_HOME" ] || command -v codex &>/dev/null; then
+if [ -n "$CODEX_THREAD_ID" ]; then
   AGENT_TYPE="Codex"
-  CODEX_SESSION_DIR="$HOME/.codex/sessions/$(date +%Y/%m/%d)"
-  SESSION_FILE=$(ls -t "$CODEX_SESSION_DIR"/rollout-*.jsonl 2>/dev/null | head -1)
-  if [ -n "$SESSION_FILE" ]; then
-    SESSION_ID=$(head -1 "$SESSION_FILE" | jq -r '.payload.id // empty')
-    SESSION_START=$(head -1 "$SESSION_FILE" | jq -r '.payload.timestamp // empty')
-    GIT_BRANCH=$(head -1 "$SESSION_FILE" | jq -r '.payload.git.branch // empty')
-    GIT_SHA=$(head -1 "$SESSION_FILE" | jq -r '.payload.git.commit_hash // empty' | cut -c1-7)
-    CLI_VERSION=$(head -1 "$SESSION_FILE" | jq -r '.payload.cli_version // empty')
-    # Get token info from last token_count event
-    TOKEN_INFO=$(grep '"type":"token_count"' "$SESSION_FILE" | tail -1 | jq -r '.payload.info // empty')
-  fi
+  SESSION_ID="$CODEX_THREAD_ID"
+  CLI_VERSION=$(codex --version 2>/dev/null | head -1 || echo "")
 else
   AGENT_TYPE="Claude Code"
   PROJECT_ENCODED=$(echo "$PWD" | tr '/' '-' | sed 's/^-//')
@@ -100,7 +102,6 @@ else
   SESSION_FILE=$(ls -t "$CLAUDE_SESSION_DIR"/*.jsonl 2>/dev/null | head -1)
   if [ -n "$SESSION_FILE" ]; then
     SESSION_ID=$(basename "$SESSION_FILE" .jsonl)
-    # Claude stores version in messages
     CLI_VERSION=$(grep -m1 '"version"' "$SESSION_FILE" 2>/dev/null | jq -r '.version // empty')
     GIT_BRANCH=$(grep -m1 '"gitBranch"' "$SESSION_FILE" 2>/dev/null | jq -r '.gitBranch // empty')
   fi
@@ -275,7 +276,7 @@ See `## Rotation` in SKILL.md for the orchestrator-mediated workflow and caveats
 ## Section Guidelines
 
 ### Session (from session file)
-- **ID**: Extract from session file, or "N/A" if unavailable
+- **ID**: Extract from session file, or "N/A" if unavailable. Write the raw UUID only — NO backticks, NO markdown formatting.
 - **Agent**: Include version (e.g., "Claude Code 2.1.7", "Codex 0.79.0")
 - **Git**: Format as `branch@sha` or "N/A" - no detailed status needed
 - **Tokens**: If available from session file, include usage percentage
@@ -324,26 +325,74 @@ Rotation archives the heavy session as a lossless `.jsonl` file you can
 `claude --resume <uuid>` later, while starting a fresh session that loads
 only the handoff entry.
 
-### Rotation flow (Option 2 — cmux path via orchestrator)
+### Rotation flow (Option 2 — cmux path via orchestrator, 4-way)
+
+`handoff-rotate.sh [--target claude|codex]` supports all four
+combinations of origin family × target family:
+
+| # | Origin → Target | Origin slot | Origin process | Archive | Action sequence |
+|---|---|---|---|---|---|
+| 1 | cl → cl | `claude-<W>` (kept) | kept (`/clear`) | ghost: `claude --continue -n <slug>` | spawn ghost → `/clear` origin → wait_ready → `/takeover` |
+| 2 | cl → cx | `claude-<W>` (kept) + new `codex-<W>` | kept (left alive) | origin pane itself | spawn fresh codex surface → wait_ready → `$takeover` |
+| 3 | cx → cl | `codex-<W>` (kept) + new `claude-<W>` | kept (left alive) | origin pane itself | spawn fresh claude surface → wait_ready → `/takeover` |
+| 4 | cx → cx | `codex-<W>` (kept) | kept (`/clear`) | ghost: `codex resume <session_id>` | spawn ghost → `/clear` origin → wait_ready → `$takeover` |
+
+Per-case timelines:
 
 ```
-t=0  /handoff writes .agent/entry-*.md   ← you are here
-t=1  ~/.claude/scripts/handoff-rotate.sh           ← thin client submits type: rotate
-t=2  orchestrator: spawn ghost `claude --continue`
-t=3  orchestrator: kill -QUIT <orig_pid> ← original session exits
-t=4  orchestrator: inject `zmx attach <orig> claude`
-t=5  orchestrator: inject `/takeover`    ← fresh session loads handoff entry
-t=6  user verifies the new session
+Same-family (cl→cl, cx→cx):
+  t=0  /handoff writes .agent/entry-*.md
+  t=1  ~/.claude/scripts/handoff-rotate.sh [--target <same>]
+  t=2  orchestrator: spawn ghost split (<family> --continue|resume)
+  t=3  orchestrator: ghost stability check (3s pid liveness)
+  t=4  orchestrator: raw zmx send "/clear" + CR to origin slot
+  t=5  orchestrator: wait_agent_ready on origin surface
+  t=6  orchestrator: raw zmx send "/takeover" (cl) | "$takeover" (cx) + CR
+  t=7  user verifies fresh conversation; archive ghost split alongside
+
+Cross-family (cl→cx, cx→cl):
+  t=0  /handoff writes .agent/entry-*.md
+  t=1  ~/.claude/scripts/handoff-rotate.sh --target <other>
+  t=2  orchestrator: spawn-surface fresh <target> in a new slot
+       (NO ghost: origin process stays alive and is itself the archive)
+  t=3  orchestrator: wait_agent_ready on fresh slot's surface
+  t=4  orchestrator: raw zmx send takeover command + CR
+  t=5  user verifies fresh conversation; closes origin pane when ready
 ```
+
+**Branching key**: two values decide the path —
+- `origin_action`: `"new"` (same-family, in-place `/clear`) or
+  `"leave-alive"` (cross-family, origin untouched).
+- `target_agent`: drives the takeover command (`/takeover` for claude,
+  `$takeover` for codex). Cross-family uses spawn-surface for the
+  fresh target rather than a paste-mode `zmx attach …` inject.
+
+Cross-family rotate has **no ghost** because the origin process stays
+alive and serves as the lossless archive on its own. Spawning a ghost
+that points at the same `claude --continue` / `codex resume <id>`
+session would just duplicate the origin and burn ~10s of orchestrator
+work, an extra slot, and an extra cleanup command for the user. Same-
+family still needs a ghost because `/clear` mutates the origin in-place
+and would otherwise lose history.
 
 **Critical empirical findings (do NOT regress):**
 - ✅ `claude --continue` brief co-ownership of a session file (~30s) is
   safe — no jsonl corruption observed.
-- ✅ The orchestrator now owns the cmux session lifecycle (ghost spawn,
-  SIGQUIT, fresh reattach, `/takeover`). `handoff-rotate.sh` must stay a
-  thin requester, not a second control plane.
-- ✅ Direct `kill -QUIT <pid>` remains mandatory; tty keystrokes are not a
-  valid substitute for session flush/shutdown.
+- ✅ The orchestrator now owns the cmux session lifecycle (ghost spawn
+  on same-family; spawn-surface on cross-family; takeover inject in
+  both). `handoff-rotate.sh` must stay a thin requester, not a second
+  control plane.
+- ✅ Slash commands (`/clear`, `/takeover`, `$takeover`) MUST go through
+  `raw_zmx_submit` (zmx PTY input) — paste-mode (`cmux send`) routes
+  them to the user-message buffer where the slash parser never sees
+  them. Verified 2026-06-09 across claude and codex CLIs.
+- ✅ Submit key is **CR (`\r`)**, never LF. `\n` enters the multi-line
+  buffer instead of submitting.
+- ✅ Cross-family fresh-target spawn uses `spawn-surface.sh` directly
+  (commit 7517460). Earlier attempts to send `/exit` to the origin and
+  reuse its surface failed because (a) the claude TUI routes `/exit` as
+  a user message and (b) cmux auto-restarts the agent on process exit,
+  so the surface never frees.
 
 **Operational prerequisite:**
 - The Global Session Orchestrator must already be running. If

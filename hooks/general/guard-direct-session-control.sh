@@ -171,12 +171,12 @@ if echo "$command" | grep -qE '(scripts/orchestrator/effects/approver-send-key\.
   exit 0
 fi
 
-# cmux send-key — approver role only
+# cmux send-key — approver or orchestrator role only
 if echo "$command" | grep -qE 'cmux\s+send-key'; then
-  if [[ "${CALLER_ROLE}" == "approver" ]]; then
+  if [[ "${CALLER_ROLE}" == "approver" || "${CALLER_ROLE}" == "orchestrator" ]]; then
     exit 0
   fi
-  echo "BLOCKED: cmux send-key requires role=approver (got role=${CALLER_ROLE})." >&2
+  echo "BLOCKED: cmux send-key requires role=approver or orchestrator (got role=${CALLER_ROLE})." >&2
   echo "  Direct key injection bypasses approval logging and policy analysis." >&2
   exit 2
 fi
@@ -194,6 +194,21 @@ fi
 # Direct process kill on zmx/claude/codex
 if echo "$command" | grep -qE 'kill\s+(-9\s+)?(zmx|claude|codex)'; then
   echo "BLOCKED: direct process kill bypasses orchestrator. Use: orchestrator_request --type gc --force" >&2
+  exit 2
+fi
+
+# Direct daemon.sh execution — must go through start-agent.sh.
+# Match only when daemon.sh is being executed (preceded by bash/exec/nohup or
+# at the start of a command), not when its path appears in grep/cat/echo.
+if echo "$command" | grep -qE '(^|[;&|]|\bnohup\s+|\bexec\s+|\bbash\s+)([^|;&]*\s)?(orchestrator/daemon\.sh|\.orchestrator/scripts/orchestrator/daemon\.sh)([[:space:]]|$)'; then
+  if echo "$command" | grep -qvE 'orchestrator/(start-agent|stop-agent|team)\.sh'; then
+    echo "BLOCKED: direct invocation of daemon.sh skips sentinel/registry setup." >&2
+    echo "  Use: bash ~/.orchestrator/scripts/orchestrator/start-agent.sh --execute" >&2
+    exit 2
+  fi
+fi
+if echo "$command" | grep -qE '(pkill|killall)\s+.*(daemon\.sh|orchestrator|approver)'; then
+  echo "BLOCKED: pkill/killall on orchestrator/approver bypasses lifecycle. Use stop-agent.sh." >&2
   exit 2
 fi
 

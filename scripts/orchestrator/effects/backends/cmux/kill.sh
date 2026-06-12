@@ -41,10 +41,16 @@ if [[ "${mode}" == 'dry-run' ]]; then
 fi
 
 command -v zmx >/dev/null 2>&1 || { echo "backends/cmux/kill.sh: zmx not found" >&2; exit 1; }
-zmx kill "${slot_name}" || true
+# Close the cmux pane FIRST so cmux cannot auto-restart the process into the
+# same slot before zmx kill removes the registration. Reversing the order
+# (zmx kill then close-surface) caused a race: zmx kill terminates the
+# process, cmux detects exit and immediately relaunches it in the same pane,
+# the new process re-registers the zmx slot, then close-surface closes the
+# pane — leaving a fresh zmx slot that wait_zmx_gone never sees disappear.
 if [[ -n "${surface_id}" ]] && command -v cmux >/dev/null 2>&1; then
   cmux close-surface --surface "${surface_id}" || true
 fi
+zmx kill "${slot_name}" || true
 
 jq -n \
   --arg slot "${slot_name}" \

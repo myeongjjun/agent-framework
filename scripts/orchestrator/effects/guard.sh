@@ -31,6 +31,16 @@ _guard_check_ancestor() {
   return 1
 }
 
+_guard_check_registered_daemon_token() {
+  local token="${ORCHESTRATOR_CALLER_TOKEN:-}" token_pid pid_file recorded_pid
+  [[ "${token}" =~ ^daemon:([0-9]+)$ ]] || return 1
+  token_pid="${BASH_REMATCH[1]}"
+  pid_file="${ORCHESTRATOR_ROOT:-${HOME}/.orchestrator}/agents/orchestrator/pid"
+  [[ -f "${pid_file}" ]] || return 1
+  recorded_pid="$(tr -d '[:space:]' < "${pid_file}" 2>/dev/null || true)"
+  [[ "${recorded_pid}" == "${token_pid}" ]]
+}
+
 require_caller_token() {
   if [[ -z "${ORCHESTRATOR_CALLER_TOKEN:-}" ]]; then
     echo "REFUSED: $(basename "${BASH_SOURCE[1]:-$0}") must be called through conductor.sh or the orchestrator pipeline, not directly." >&2
@@ -38,7 +48,7 @@ require_caller_token() {
     exit 2
   fi
 
-  if ! _guard_check_ancestor; then
+  if ! _guard_check_ancestor && ! _guard_check_registered_daemon_token; then
     echo "REFUSED: $(basename "${BASH_SOURCE[1]:-$0}") caller chain does not include conductor.sh/daemon.sh/start-agent.sh." >&2
     echo "  ORCHESTRATOR_CALLER_TOKEN is set but the process tree does not show a valid orchestrator caller." >&2
     exit 2

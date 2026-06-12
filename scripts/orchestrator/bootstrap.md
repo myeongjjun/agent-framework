@@ -444,6 +444,15 @@ Notes on scope:
 
 ## Handler: rotate
 
+> **Superseded by the bash daemon.** The authoritative runtime for rotate
+> is `scripts/orchestrator/daemon.sh` (`handle_rotate`). The procedure
+> below is the historical LLM-agent spec for Stage 0.2 and is preserved
+> only as background. Notably, since commit `7517460`, cross-family
+> rotate spawns the fresh target via `spawn-surface.sh` and **does not
+> spawn a ghost**; the origin pane stays alive and acts as the archive.
+> Same-family still uses a ghost + in-place `/clear`. See
+> `skills/handoff/SKILL.md` for the live 4-way matrix.
+
 Purpose:
 
 - Replace the caller's current **cmux/zmx Claude base slot** with a fresh

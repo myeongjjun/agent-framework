@@ -4,6 +4,9 @@ IFS=$'\n\t'
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 RUNTIME_DIR="${APPROVER_ROOT:-${SCRIPT_DIR}}"
+
+# cmux 0.64+ changed default socket path to ~/.local/state/cmux/cmux.sock
+export CMUX_SOCKET_PATH="${CMUX_SOCKET_PATH:-${HOME}/.local/state/cmux/cmux.sock}"
 SELF_WORKSPACE_FILE="${RUNTIME_DIR}/workspace_id"
 SELF_SURFACE_FILE="${RUNTIME_DIR}/surface_id"
 DECISIONS_FILE="${RUNTIME_DIR}/decisions.jsonl"
@@ -260,7 +263,7 @@ approve_surface() {
     # approving would grant persistent tool permission for this session.
     # Don't auto-grant — let the human pick. The slow-path approver still
     # records that it observed the prompt.
-    if printf '%s\n' "${screen}" | rg -qE '^[[:space:]]*[›❯][[:space:]]+Allow always'; then
+    if printf '%s\n' "${screen}" | rg -q -e '^[[:space:]]*[›❯][[:space:]]+Allow always'; then
       log_decision "${workspace_id}" "${surface_id}" "${title}" "${kind}" "${summary}" "skipped" "allow_always_requires_human" "${approvals}"
       return 0
     fi

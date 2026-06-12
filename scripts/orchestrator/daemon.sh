@@ -25,6 +25,9 @@ unset _canonical_dir _canonical _current_dir
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_SCRIPTS_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+
+# cmux 0.64+ changed default socket path to ~/.local/state/cmux/cmux.sock
+export CMUX_SOCKET_PATH="${CMUX_SOCKET_PATH:-${HOME}/.local/state/cmux/cmux.sock}"
 CONDUCTOR_SH="${REPO_SCRIPTS_DIR}/conductor.sh"
 STATE_READ="${SCRIPT_DIR}/core/state-read.sh"
 INJECT_EFFECT="${SCRIPT_DIR}/effects/inject-takeover.sh"
@@ -72,6 +75,19 @@ runtime_started=0
 die() {
   printf 'daemon.sh: %s\n' "$*" >&2
   exit 1
+}
+
+running_inside_codex_sandbox() {
+  [[ -n "${CODEX_SANDBOX:-}" || -n "${CODEX_SANDBOX_NETWORK_DISABLED:-}" ]]
+}
+
+refuse_codex_sandbox_runtime() {
+  running_inside_codex_sandbox || return 0
+  cat >&2 <<'EOF'
+daemon.sh: REFUSED: orchestrator daemon must not run inside a Codex sandbox.
+  Start it from the external orchestrator/shell context instead.
+EOF
+  exit 2
 }
 
 iso8601() {
@@ -434,12 +450,49 @@ handle_inject() {
       prompt_length:$prompt_length, injected_at:$injected_at, effect:$effect}' | jq '.'
 }
 
+raw_zmx_submit() {
+  # zmx send $'\r' does not trigger Enter in codex TUI — use cmux send-key enter.
+  # For codex: typing $takeover or /clear triggers an autocomplete popup.
+  # Sending Tab dismisses/confirms the suggestion, then Enter submits.
+  # Args: slot text [family [surface [workspace]]]
+  local slot="$1" text="$2" family="${3:-}" surface="${4:-}" workspace="${5:-}"
+  zmx send "$slot" "$text" >/dev/null 2>&1 || return 1
+
+  # Wait until the text actually appears in the input line before further keys.
+  if [[ -n "${surface}" && -n "${workspace}" ]]; then
+    local _esc _scr _attempts
+    _esc="$(printf '%s' "${text}" | sed 's/[][\.|$()*+?{}^]/\\&/g')"
+    for _attempts in 1 2 3 4 5 6; do
+      sleep 0.5
+      _scr="$(cmux read-screen --surface "${surface}" --workspace "${workspace}" --lines 5 2>/dev/null || true)"
+      if printf '%s' "${_scr}" | grep -qE "${_esc}"; then
+        break
+      fi
+    done
+    # Codex: send Tab to dismiss autocomplete popup before Enter.
+    if [[ "${family}" == "codex" ]]; then
+      zmx send "$slot" $'\t' >/dev/null 2>&1 || true
+      sleep 0.3
+    fi
+    cmux send-key --surface "${surface}" --workspace "${workspace}" enter >/dev/null 2>&1 || \
+      { zmx send "$slot" $'\r' >/dev/null 2>&1 || return 1; }
+  else
+    sleep 0.5
+    zmx send "$slot" $'\r' >/dev/null 2>&1 || return 1
+  fi
+}
+
 zmx_pid_for() {
   local slot="$1"
   # Require whitespace directly after ${slot} so prefix-matching doesn't
   # pick up sibling slots (e.g. `claude-agent-framework` must NOT match
   # the running `claude-agent-framework-2` or `...-ghost-*` lines).
   zmx list 2>/dev/null | sed -n "s/.*name=${slot}[[:space:]].*pid=\\([0-9][0-9]*\\).*/\\1/p" | head -1
+}
+
+zmx_slot_exists() {
+  local slot="$1"
+  zmx list 2>/dev/null | grep -qE "(^|[[:space:]])name=${slot}([[:space:]]|$)"
 }
 
 wait_zmx_pid() {
@@ -450,15 +503,10 @@ wait_zmx_pid() {
       printf '%s\n' "${pid}"
       return 0
     fi
-    sleep 1
-  done
-  return 1
-}
-
-wait_pid_gone() {
-  local pid="$1" max_loops="${2:-10}"
-  for _ in $(seq 1 "${max_loops}"); do
-    kill -0 "${pid}" 2>/dev/null || return 0
+    if [[ -z "${old_pid}" ]] && zmx_slot_exists "${slot}"; then
+      printf 'slot-only\n'
+      return 0
+    fi
     sleep 1
   done
   return 1
@@ -467,7 +515,7 @@ wait_pid_gone() {
 wait_zmx_gone() {
   local slot="$1" max_loops="${2:-5}"
   for _ in $(seq 1 "${max_loops}"); do
-    if ! zmx list 2>/dev/null | grep -q "name=${slot}"; then
+    if ! zmx_slot_exists "${slot}"; then
       return 0
     fi
     sleep 1
@@ -481,30 +529,82 @@ wait_zmx_gone() {
 # gets buffered, enter gets dropped, prompt appears but doesn't submit.
 #
 # Polls the screen for agent-specific "ready" markers:
-#   claude: "bypass permissions on" footer indicates input box wired up
-#   codex:  gpt-<model> or "high fast" hint line appears when ready
+#   claude: "bypass permissions on" / "accept edits on" / "auto-accept" footer
+#           OR welcome-screen markers (╭ box / "What would you") — either
+#           signals TUI is up. accept-edits mode is the default after shift+tab
+#           toggle; older builds said auto-accept, both kept for compatibility.
+#   codex:  gpt-<model> / "high fast" / sandbox / Codex hint when ready.
+# Marker set kept in sync with inject.sh:143-151 and start-agent.sh:414-423
+# so all readiness gates share the same vocabulary across Claude Code TUI
+# revisions. Case-insensitive — footer wording has shifted across versions.
 wait_agent_ready() {
+  # Idle = no busy indicator on screen.
+  # Busy indicators (any one ⇒ busy):
+  #   - "Working (Ns • esc to interrupt)" — codex agent in-flight
+  #   - Spinner glyphs ✻⏺⠋⠙... — claude/codex turn rendering
+  # `›` prompt glyph is NOT a reliable idle signal — it persists during
+  # busy too (placeholder render).
   local surface_id="$1" workspace="${2:-}" family="${3:-claude}" max_loops="${4:-30}"
-  local ws_args=() _screen
+  local ws_args=() _screen _last_screen=""
   [[ -n "${workspace}" ]] && ws_args=(--workspace "${workspace}")
   for _ in $(seq 1 "${max_loops}"); do
-    _screen="$(cmux read-screen --surface "${surface_id}" "${ws_args[@]}" --lines 15 2>/dev/null || true)"
+    _screen="$(cmux read-screen --surface "${surface_id}" "${ws_args[@]}" --lines 30 2>/dev/null || true)"
     if [[ -n "${_screen}" ]]; then
-      case "${family}" in
-        claude)
-          if printf '%s' "${_screen}" | grep -qE 'bypass permissions on'; then
-            return 0
-          fi
-          ;;
-        codex)
-          if printf '%s' "${_screen}" | grep -qE 'gpt-[0-9]|high fast'; then
-            return 0
-          fi
-          ;;
-      esac
+      _last_screen="${_screen}"
+      if printf '%s' "${_screen}" | grep -qE 'Working \([0-9hms ]+•'; then
+        sleep 1
+        continue
+      fi
+      if printf '%s' "${_screen}" | grep -qE '(✻|⏺|✶|✢|⏹|✽|✿|✾|⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏)'; then
+        sleep 1
+        continue
+      fi
+      return 0
     fi
     sleep 1
   done
+  if [[ -n "${_last_screen}" ]]; then
+    printf 'wait_agent_ready %s timeout — last screen:\n%s\n' \
+      "${family}" "${_last_screen:0:500}" >&2
+  else
+    printf 'wait_agent_ready %s timeout — surface %s unreadable\n' \
+      "${family}" "${surface_id}" >&2
+  fi
+  return 1
+}
+
+wait_surface_idle_for_new() {
+  local surface_id="$1" workspace="${2:-}" family="${3:-codex}" max_loops="${4:-30}"
+  local ws_args=() _screen _last_screen=""
+  [[ -n "${workspace}" ]] && ws_args=(--workspace "${workspace}")
+  for _ in $(seq 1 "${max_loops}"); do
+    _screen="$(cmux read-screen --surface "${surface_id}" "${ws_args[@]}" --lines 40 2>/dev/null || true)"
+    if [[ -n "${_screen}" ]]; then
+      _last_screen="${_screen}"
+      # Check busy/disabled only in the last 5 lines — earlier lines are stale output
+      if printf '%s' "${_screen}" | tail -5 | grep -qiE "('/new' is disabled while a task is in progress|disabled while a task is in progress)"; then
+        sleep 1
+        continue
+      fi
+      # Spinner = busy
+      if printf '%s' "${_screen}" | grep -qE '(✻|⏺|✶|✢|⏹|✽|✿|✾|⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏)'; then
+        sleep 1
+        continue
+      fi
+      # › prompt without spinner = idle (claude and codex both use this)
+      if printf '%s' "${_screen}" | grep -qE '^[[:space:]]*[›❯]'; then
+        return 0
+      fi
+    fi
+    sleep 1
+  done
+  if [[ -n "${_last_screen}" ]]; then
+    printf 'wait_surface_idle_for_new %s timeout — last screen (first 500 chars):\n%s\n' \
+      "${family}" "${_last_screen:0:500}" >&2
+  else
+    printf 'wait_surface_idle_for_new %s timeout — surface %s read-screen returned empty\n' \
+      "${family}" "${surface_id}" >&2
+  fi
   return 1
 }
 
@@ -548,9 +648,11 @@ derive_ghost_slug() {
 
 handle_rotate() {
   local req_file="$1" entry_path surface_id dry_run target_agent orig_zmx orig_workspace project_dir
-  local orig_pid ghost_slug mode_flag ghost_desc ghost_output ghost_rc ghost_zmx attach_cmd attach_output takeover_output takeover_cmd
-  local fresh_pid orig_family base_target target_zmx _n entry_session_id ghost_agent ghost_extra_args
-  local _canonical_base _orig_suffix
+  local orig_pid attach_output takeover_output takeover_cmd
+  local fresh_pid orig_family base_target target_zmx _n entry_session_id
+  # Ghost-related (same-family only).
+  local ghost_slug="" ghost_zmx="" ghost_output="null" cleanup_command=""
+  local ghost_agent ghost_extra_args ghost_slot ghost_agent_cmd ghost_rc
 
   entry_path="$(payload_field "${req_file}" entry_path)"
   surface_id="$(payload_field "${req_file}" surface_id)"
@@ -569,6 +671,27 @@ handle_rotate() {
   [[ -n "${project_dir}" && "${project_dir}" = /* ]] || { printf 'requester.project must be absolute\n'; return 1; }
   [[ -n "${orig_workspace}" && "${orig_workspace}" != "-" ]] || { printf 'requester.cmux_workspace_id is required\n'; return 1; }
   [[ -n "${surface_id}" ]] || { printf 'surface_id is required\n'; return 1; }
+
+  # If surface_id is a UUID (stale from codex minimal-preflight), re-resolve
+  # via zmx slot tty → cmux tree. Daemon is host-side so cmux tree is accessible.
+  if [[ "${surface_id}" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]]; then
+    _resolved=""
+    _zmx_pid="$(zmx list 2>/dev/null | awk -v n="${orig_zmx}" '$0 ~ "name=" n "\t" { for(i=1;i<=NF;i++) if($i~/^pid=/) {sub(/^pid=/,"",$i); print $i; exit} }' || true)"
+    if [[ -n "${_zmx_pid}" ]]; then
+      _attach_pid="$(pgrep -f "^zmx attach ${orig_zmx}( |$)" 2>/dev/null | head -1 || true)"
+      _tty="$(ps -o tty= -p "${_attach_pid:-$_zmx_pid}" 2>/dev/null | tr -d ' ' || true)"
+      if [[ -n "${_tty}" && "${_tty}" != "?" && "${_tty}" != "??" ]]; then
+        _resolved="$(cmux tree --all 2>/dev/null \
+          | awk -v tty="tty=${_tty}" 'index($0,tty){match($0,/surface:[0-9]+/); if(RSTART>0){print substr($0,RSTART,RLENGTH); exit}}' || true)"
+      fi
+    fi
+    if [[ -n "${_resolved}" ]]; then
+      printf 'daemon: resolved stale surface UUID %s → %s via tty for %s\n' "${surface_id}" "${_resolved}" "${orig_zmx}" >&2
+      surface_id="${_resolved}"
+    else
+      printf 'daemon: surface_id is UUID and tty resolve failed for %s — proceeding with original\n' "${orig_zmx}" >&2
+    fi
+  fi
   [[ -n "${entry_path}" ]] || { printf 'entry_path is required\n'; return 1; }
   [[ "${entry_path}" = /* ]] || entry_path="${project_dir}/${entry_path}"
   [[ -f "${entry_path}" ]] || { printf 'entry_path not found: %s\n' "${entry_path}"; return 1; }
@@ -577,6 +700,8 @@ handle_rotate() {
   if [[ -z "${orig_pid}" ]]; then
     if [[ "${dry_run}" == "true" ]]; then
       orig_pid='DRY-RUN-PID'
+    elif zmx_slot_exists "${orig_zmx}"; then
+      orig_pid='slot-only'
     else
       printf 'could not resolve pid for requester slot: %s\n' "${orig_zmx}"
       return 1
@@ -592,78 +717,80 @@ handle_rotate() {
     *) printf 'unrecognized family prefix in orig_zmx: %s\n' "${orig_zmx}"; return 1 ;;
   esac
   if [[ "${orig_family}" == "${target_agent}" ]]; then
-    # Same-family rotate: prefer migrating back to the canonical
-    # (unnumbered) base slot when it's free. A numbered slot like
-    # `claude-agent-framework-2` usually came from a past cross-family
-    # collision bump; without this migration, every subsequent rotate
-    # keeps the drift forever. Ghost slug still records the origin's
-    # numbered form (e.g. `agent-framework-2-ghost-1`), preserving
-    # the lineage for later lookup.
-    _orig_suffix="${orig_zmx##*-}"
-    _canonical_base="${orig_zmx%-*}"
-    if [[ "${_orig_suffix}" =~ ^[0-9]+$ ]] \
-        && [[ "${_canonical_base}" != "${orig_zmx}" ]] \
-        && [[ -z "$(zmx_pid_for "${_canonical_base}")" ]]; then
-      target_zmx="${_canonical_base}"
-    else
-      target_zmx="${orig_zmx}"
-    fi
+    target_zmx="${orig_zmx}"
   else
     target_zmx="${base_target}"
     _n=2
-    while [[ -n "$(zmx_pid_for "${target_zmx}")" ]]; do
+    while zmx_slot_exists "${target_zmx}"; do
       target_zmx="${base_target}-${_n}"
       _n=$(( _n + 1 ))
       (( _n > 99 )) && { printf 'too many collisions for base slot: %s\n' "${base_target}"; return 1; }
     done
   fi
 
-  ghost_slug="$(derive_ghost_slug "${orig_zmx}")"
-  ghost_agent="${orig_family}"
-  case "${orig_family}" in
-    claude)
-      # -n <slug> sets the display name so a later `claude --resume <slug>`
-      # can locate this continued session via the /resume picker's
-      # name-match path. Without it the continuation inherits no stable
-      # identifier and is unrecoverable by slug.
-      ghost_extra_args="--continue -n ${ghost_slug}"
-      ;;
-    codex)
-      entry_session_id="$(
-        awk -F'|' '
-          /^\| ID \|/ {
-            gsub(/^[ \t]+|[ \t]+$/, "", $3)
-            print $3
-            exit
-          }
-        ' "${entry_path}"
+  # codex_session_id (if present) propagates through to the response for
+  # observability and is required only for codex same-family ghost spawn.
+  entry_session_id="$(payload_field "${req_file}" codex_session_id)"
+  [[ "${entry_session_id}" == "N/A" || "${entry_session_id}" == "-" ]] && entry_session_id=""
+
+  # Ghost spawn is same-family only. Cross-family rotation leaves the
+  # origin process alive (commit 7517460), so the origin itself acts as
+  # the lossless archive — a separate ghost would only duplicate it and
+  # add spawn cost + slot pressure + an extra cleanup step for the user.
+  if [[ "${orig_family}" == "${target_agent}" ]]; then
+    ghost_slug="$(derive_ghost_slug "${orig_zmx}")"
+    cleanup_command="bash ~/.orchestrator/scripts/conductor.sh cleanup ${ghost_slug} --execute"
+    ghost_agent="${orig_family}"
+    case "${orig_family}" in
+      claude)
+        # -n <slug> sets the display name so a later `claude --resume <slug>`
+        # can locate this continued session via the /resume picker's
+        # name-match path. Without it the continuation inherits no stable
+        # identifier and is unrecoverable by slug.
+        ghost_extra_args="--continue -n ${ghost_slug}"
+        ;;
+      codex)
+        # codex_session_id is sourced from CODEX_THREAD_ID env var by
+        # handoff-rotate.sh (the only authoritative source — codex itself
+        # sets it). No fallback to entry | ID | row or sqlite: those are
+        # heuristics and silently misroute to sibling/stale threads.
+        if [[ -z "${entry_session_id}" ]]; then
+          printf 'codex_session_id missing in rotate payload — handoff-rotate.sh must propagate CODEX_THREAD_ID\n'
+          return 1
+        fi
+        ghost_extra_args="resume '${entry_session_id}' -s workspace-write -a never"
+        ;;
+    esac
+
+    # spawn-surface.sh requires slot name to start with claude- or codex-.
+    # ghost_slug is bare (e.g. "agent-framework-ghost-1"); prefix it.
+    ghost_slot="${ghost_agent}-${ghost_slug}"
+    case "${ghost_agent}" in
+      claude) ghost_agent_cmd="claude ${ghost_extra_args}" ;;
+      codex)  ghost_agent_cmd="codex ${ghost_extra_args}" ;;
+    esac
+    if [[ "${dry_run}" == "true" ]]; then
+      ghost_output="$(jq -n \
+        --arg slot "${ghost_slot}" \
+        --arg cmd "${ghost_agent_cmd}" \
+        --arg workspace "${orig_workspace}" \
+        '{plan:{agents:[{slot:$slot,cmd:$cmd}]},spawn:{action:"spawn-surface",mode:"dry-run",workspace:$workspace}}')"
+      ghost_zmx="${ghost_slot}"
+    else
+      set +e
+      ghost_output="$(
+        ORCHESTRATOR_BACKEND=cmux \
+        ORCHESTRATOR_CALLER_TOKEN="${ORCHESTRATOR_CALLER_TOKEN:-daemon:$$}" \
+        ORCHESTRATOR_TARGET_WORKSPACE_ID="${orig_workspace}" \
+        ORCHESTRATOR_AGENT_EXTRA_ARGS="${ghost_extra_args}" \
+        "${SCRIPT_DIR}/effects/spawn-surface.sh" --execute "${ghost_slot}" "${project_dir}" 2>&1
       )"
-      [[ -n "${entry_session_id}" && "${entry_session_id}" != "N/A" ]] \
-        || { printf 'entry session id is required for codex-origin rotate: %s\n' "${entry_path}"; return 1; }
-      ghost_extra_args="resume ${entry_session_id} -s workspace-write -a never"
-      ;;
-  esac
-
-  mode_flag='--execute'
-  [[ "${dry_run}" == "true" ]] && mode_flag='--dry-run'
-  ghost_desc="Ghost archive for rotation of ${orig_zmx}. Stay alive as a passive session archive. Do NOT self-cleanup or mark done. The user will inspect and clean up manually."
-
-  set +e
-  ghost_output="$(
-    cd "${project_dir}" && \
-      ORCHESTRATOR_TARGET_WORKSPACE_ID="${orig_workspace}" \
-      ORCHESTRATOR_AGENT_EXTRA_ARGS="${ghost_extra_args}" \
-      "${CONDUCTOR_SH}" dispatch "${ghost_slug}" "${ghost_desc}" "${mode_flag}" --agent "${ghost_agent}" --no-worktree --keep-alive 2>&1
-  )"
-  ghost_rc=$?
-  set -e
-  (( ghost_rc == 0 )) || { printf 'ghost dispatch failed\n\n%s\n' "${ghost_output}"; return "${ghost_rc}"; }
-  ghost_zmx="$(jq -r '.plan.agents[0].slot // empty' <<<"${ghost_output}" 2>/dev/null || true)"
-
-  case "${target_agent}" in
-    claude) attach_cmd="zmx attach ${target_zmx} claude --dangerously-skip-permissions" ;;
-    codex) attach_cmd="zmx attach ${target_zmx} codex -s workspace-write -a never" ;;
-  esac
+      ghost_rc=$?
+      set -e
+      (( ghost_rc == 0 )) || { printf 'ghost spawn failed\n\n%s\n' "${ghost_output}"; return "${ghost_rc}"; }
+      ghost_zmx="$(jq -r '.slot // empty' <<<"${ghost_output}" 2>/dev/null || true)"
+    fi
+  fi
 
   case "${target_agent}" in
     claude) takeover_cmd="/takeover" ;;
@@ -671,10 +798,20 @@ handle_rotate() {
   esac
 
   if [[ "${dry_run}" == "true" ]]; then
-    attach_output="$(ORCHESTRATOR_BACKEND=cmux "${INJECT_EFFECT}" --dry-run --as-prompt --family "${target_agent}" --workspace "${orig_workspace}" "${surface_id}" "${attach_cmd}")"
-    takeover_output="$(ORCHESTRATOR_BACKEND=cmux "${INJECT_EFFECT}" --dry-run --as-prompt --family "${target_agent}" --workspace "${orig_workspace}" "${surface_id}" "${takeover_cmd}")"
+    if [[ "${orig_family}" == "${target_agent}" ]]; then
+      attach_output='{"action":"attach-skipped","reason":"same-family"}'
+    else
+      # Cross-family dry-run: spawn-surface preview (no ghost path).
+      attach_output="$(jq -n \
+        --arg slot "${target_zmx}" \
+        --arg workspace "${orig_workspace}" \
+        --arg cwd "${project_dir}" \
+        '{action:"spawn-surface",mode:"dry-run",slot:$slot,target_workspace:$workspace,cwd:$cwd}')"
+    fi
+    takeover_output="$(jq -n --arg cmd "${takeover_cmd}" '{action:"raw_zmx_submit",cmd:$cmd,dry_run:true}')"
     jq -n \
       --arg orig_zmx "${orig_zmx}" \
+      --arg orig_family "${orig_family}" \
       --arg orig_surface "${surface_id}" \
       --arg orig_workspace "${orig_workspace}" \
       --arg orig_pid "${orig_pid}" \
@@ -683,72 +820,174 @@ handle_rotate() {
       --arg entry_path "${entry_path}" \
       --arg target_agent "${target_agent}" \
       --arg target_slot "${target_zmx}" \
+      --arg cleanup_command "${cleanup_command}" \
       --argjson ghost_dispatch "${ghost_output}" \
       --argjson base_attach "${attach_output}" \
       --argjson takeover_inject "${takeover_output}" \
-      '{rotate:{requester_slot:$orig_zmx, requester_surface:$orig_surface, requester_workspace:$orig_workspace,
-        requester_pid:$orig_pid, ghost_slug:$ghost_slug, ghost_slot:$ghost_zmx, entry_path:$entry_path,
-        target_agent:$target_agent, target_slot:$target_slot, kill_step:("kill -QUIT " + $orig_pid)},
-        ghost_dispatch:$ghost_dispatch, base_attach:$base_attach, takeover_inject:$takeover_inject}' | jq '.'
+      '{rotate:({requester_slot:$orig_zmx, requester_surface:$orig_surface, requester_workspace:$orig_workspace,
+        requester_pid:$orig_pid, origin_slot:$orig_zmx, origin_family:$orig_family,
+        origin_action:(if $orig_family == $target_agent then "new" else "leave-alive" end),
+        entry_path:$entry_path,
+        target_agent:$target_agent, target_family:$target_agent, target_slot:$target_slot,
+        attach_skipped:($orig_family == $target_agent)}
+        + (if $orig_family == $target_agent
+            then {ghost_slug:$ghost_slug, ghost_slot:$ghost_zmx, cleanup_command:$cleanup_command}
+            else {} end)),
+        base_attach:$base_attach, takeover_inject:$takeover_inject}
+        + (if $orig_family == $target_agent then {ghost_dispatch:$ghost_dispatch} else {} end)' | jq '.'
     return 0
   fi
 
-  [[ -n "${ghost_zmx}" ]] || { printf 'ghost dispatch did not return a slot\n'; return 1; }
-  local ghost_pid
-  ghost_pid="$(wait_zmx_pid "${ghost_zmx}" "" 20)" \
-    || { printf 'ghost session did not become ready within 20s\n'; return 1; }
+  if [[ "${orig_family}" == "${target_agent}" ]]; then
+    [[ -n "${ghost_zmx}" ]] || { printf 'ghost dispatch did not return a slot\n'; return 1; }
+    local ghost_pid
+    ghost_pid="$(wait_zmx_pid "${ghost_zmx}" "" 20)" \
+      || { printf 'ghost session did not become ready within 20s\n'; return 1; }
 
-  # H12: verify the ghost is stable before killing the original. A zmx
-  # session can have a pid entry the moment `zmx run` fires, but the
-  # inner process may still be in the bootstrap window where stdin isn't
-  # hooked up and no JSONL has been written yet. SIGQUIT'ing orig in that
-  # window would strand the ghost without the archive it's about to read.
-  # Poll the pid for 3 consecutive seconds of liveness before proceeding.
-  local _stable=0
-  for _ in 1 2 3; do
-    if kill -0 "${ghost_pid}" 2>/dev/null; then
-      _stable=$(( _stable + 1 ))
+    # H12: verify the ghost is stable before mutating the original. A zmx
+    # session can have a pid entry the moment `zmx run` fires, but the
+    # inner process may still be in the bootstrap window where stdin isn't
+    # hooked up and no JSONL has been written yet. Mutating orig in that
+    # window could strand the ghost without the archive it's about to read.
+    # Poll the pid for 3 consecutive seconds of liveness before proceeding.
+    local _stable=0
+    if [[ "${ghost_pid}" =~ ^[0-9]+$ ]]; then
+      for _ in 1 2 3; do
+        if kill -0 "${ghost_pid}" 2>/dev/null; then
+          _stable=$(( _stable + 1 ))
+        else
+          _stable=0
+        fi
+        sleep 1
+      done
+      if (( _stable < 3 )); then
+        printf 'ghost pid %s was not stable for 3s — aborting rotation\n' "${ghost_pid}"
+        return 1
+      fi
     else
-      _stable=0
-    fi
-    sleep 1
-  done
-  if (( _stable < 3 )); then
-    printf 'ghost pid %s was not stable for 3s — aborting rotation\n' "${ghost_pid}"
-    return 1
-  fi
-
-  kill -QUIT "${orig_pid}" 2>/dev/null || true
-  if ! wait_pid_gone "${orig_pid}" 10; then
-    kill -TERM "${orig_pid}" 2>/dev/null || true
-    if ! wait_pid_gone "${orig_pid}" 2; then
-      # Final escalation: SIGKILL rather than aborting half-rotation.
-      # A stuck original would otherwise leave the fresh surface blocked
-      # from attaching (zmx slot still occupied) and the ghost dangling.
-      kill -KILL "${orig_pid}" 2>/dev/null || true
-      wait_pid_gone "${orig_pid}" 2 || { printf 'original pid did not exit even after SIGKILL: %s\n' "${orig_pid}"; return 1; }
+      sleep 3
+      zmx_slot_exists "${ghost_zmx}" \
+        || { printf 'ghost slot %s disappeared during stability check\n' "${ghost_zmx}"; return 1; }
     fi
   fi
-  wait_zmx_gone "${orig_zmx}" 5 || true
 
-  # Attach inject: target is shell → command execution. No verify (shell
-  # alternate-screens to agent UI, fingerprint disappears, retry would
-  # re-send into the newly-booted agent as a user prompt).
-  attach_output="$(ORCHESTRATOR_BACKEND=cmux "${INJECT_EFFECT}" --execute --as-prompt --family "${target_agent}" --workspace "${orig_workspace}" "${surface_id}" "${attach_cmd}" 2>&1)"
-  local _exclude_pid=""
-  [[ "${target_zmx}" == "${orig_zmx}" ]] && _exclude_pid="${orig_pid}"
-  fresh_pid="$(wait_zmx_pid "${target_zmx}" "${_exclude_pid}" 20)" || { printf 'fresh %s did not boot within 20s in slot %s\n' "${target_agent}" "${target_zmx}"; return 1; }
-  # Wait for the fresh agent's input to be actually live (screen shows
-  # agent-specific ready marker). Replaces a blind sleep — proceed only
-  # when Claude/Codex has wired up stdin.
-  wait_agent_ready "${surface_id}" "${orig_workspace}" "${target_agent}" 30 \
-    || { printf 'fresh %s did not reach input-ready state within 30s\n' "${target_agent}"; return 1; }
-  # /takeover inject: --verify as belt-and-suspenders retry if the first
-  # send+enter still raced with stdin.
-  takeover_output="$(ORCHESTRATOR_BACKEND=cmux "${INJECT_EFFECT}" --execute --verify --as-prompt --family "${target_agent}" --workspace "${orig_workspace}" "${surface_id}" "${takeover_cmd}" 2>&1)"
+  if [[ "${orig_family}" == "${target_agent}" ]]; then
+    target_zmx="${orig_zmx}"
+    fresh_pid="${orig_pid}"
+
+    # Claude: detect /new via new jsonl file. Codex: /new does NOT create a new
+    # session file (it only clears the conversation in-place), so fall back to
+    # idle re-detect after a single /new submit.
+    local _new_jsonl_found=0 _new_started=${SECONDS} _new_elapsed=0 _new_next_submit=0 _new_attempts=0
+
+    if [[ "${orig_family}" == "claude" ]]; then
+      local _proj_enc _jsonl_dir _before_jsonls
+      _proj_enc="$(printf '%s' "${project_dir}" | sed 's|/|-|g')"
+      _jsonl_dir="${HOME}/.claude/projects/${_proj_enc}"
+      _before_jsonls="$(ls "${_jsonl_dir}"/*.jsonl 2>/dev/null | sort || true)"
+
+      while (( _new_elapsed < 180 )); do
+        _new_elapsed=$(( SECONDS - _new_started ))
+        if (( _new_elapsed >= _new_next_submit )); then
+          if ! wait_surface_idle_for_new "${surface_id}" "${orig_workspace}" "${orig_family}" 30; then
+            _new_elapsed=$(( SECONDS - _new_started ))
+            _new_next_submit=$(( _new_elapsed + 5 ))
+            continue
+          fi
+          raw_zmx_submit "${orig_zmx}" "/clear" "${orig_family}" "${surface_id}" "${orig_workspace}" \
+            || { printf 'raw_zmx_submit /clear failed for %s\n' "${orig_zmx}"; return 1; }
+          _new_attempts=$(( _new_attempts + 1 ))
+          _new_next_submit=$(( _new_elapsed + 5 ))
+        fi
+        local _after_jsonls
+        _after_jsonls="$(ls "${_jsonl_dir}"/*.jsonl 2>/dev/null | sort || true)"
+        if [[ "${_after_jsonls}" != "${_before_jsonls}" ]]; then
+          _new_jsonl_found=1
+          break
+        fi
+        sleep 1
+      done
+      if (( _new_jsonl_found == 0 )); then
+        printf 'fresh claude did not create a new session file within 180s after %s /new attempts\n' "${_new_attempts}"
+        return 1
+      fi
+    else
+      # Codex: wait for idle first, then send /clear and retry if rejected.
+      wait_agent_ready "${surface_id}" "${orig_workspace}" "${orig_family}" 120 \
+        || { printf 'codex not idle before /clear within 120s\n'; return 1; }
+      local _new_started_cx=${SECONDS} _new_elapsed_cx=0
+      while (( _new_elapsed_cx < 120 )); do
+        raw_zmx_submit "${orig_zmx}" "/clear" "${orig_family}" "${surface_id}" "${orig_workspace}" \
+          || { printf 'raw_zmx_submit /clear failed for %s\n' "${orig_zmx}"; return 1; }
+        _new_attempts=$(( _new_attempts + 1 ))
+        sleep 2
+        _new_elapsed_cx=$(( SECONDS - _new_started_cx ))
+        # Check if /clear was rejected
+        local _cx_screen
+        _cx_screen="$(cmux read-screen --surface "${surface_id}" ${orig_workspace:+--workspace "${orig_workspace}"} --lines 5 2>/dev/null || true)"
+        if printf '%s' "${_cx_screen}" | grep -qi "disabled while a task is in progress\|is disabled"; then
+          sleep 3
+          continue
+        fi
+        # Accepted — wait briefly for TUI to settle
+        sleep 1
+        break
+      done
+      if (( _new_attempts == 0 )); then
+        printf 'codex /clear never accepted within 120s\n'
+        return 1
+      fi
+      _new_jsonl_found=1
+    fi
+
+    # Brief pause for TUI to finish rendering the fresh prompt before inject.
+    sleep 1.5
+    attach_output="$(jq -n \
+      --arg action "attach-skipped" \
+      --arg reason "same-family" \
+      --arg attempts "${_new_attempts}" \
+      '{action:$action,reason:$reason,new_attempts:($attempts|tonumber)}')"
+  else
+    # Cross-family: spawn fresh target agent in a new surface directly via
+    # spawn-surface.sh. Do NOT try to reuse/inject the origin surface — cmux
+    # auto-restarts the origin process on exit, making origin-surface-reuse
+    # unreliable. The origin is left alive; user manually closes it if desired.
+    local fresh_agent_cmd
+    case "${target_agent}" in
+      claude) fresh_agent_cmd="claude --dangerously-skip-permissions" ;;
+      codex)  fresh_agent_cmd="codex -s full -a never" ;;
+    esac
+    local fresh_spawn_output fresh_spawn_rc
+    set +e
+    fresh_spawn_output="$(
+      ORCHESTRATOR_BACKEND=cmux \
+      ORCHESTRATOR_CALLER_TOKEN="${ORCHESTRATOR_CALLER_TOKEN:-daemon:$$}" \
+      ORCHESTRATOR_TARGET_WORKSPACE_ID="${orig_workspace}" \
+      ORCHESTRATOR_AGENT_EXTRA_ARGS="" \
+      "${SCRIPT_DIR}/effects/spawn-surface.sh" --execute "${target_zmx}" "${project_dir}" 2>&1
+    )"
+    fresh_spawn_rc=$?
+    set -e
+    (( fresh_spawn_rc == 0 )) || { printf 'fresh %s spawn failed\n\n%s\n' "${target_agent}" "${fresh_spawn_output}"; return "${fresh_spawn_rc}"; }
+    local fresh_surface_id
+    fresh_surface_id="$(jq -r '.surface_id // empty' <<<"${fresh_spawn_output}" 2>/dev/null || true)"
+    attach_output="${fresh_spawn_output}"
+    fresh_pid="$(wait_zmx_pid "${target_zmx}" "" 20)" || { printf 'fresh %s did not boot within 20s in slot %s\n' "${target_agent}" "${target_zmx}"; return 1; }
+    # Use the fresh surface for wait_agent_ready and takeover inject
+    [[ -n "${fresh_surface_id}" ]] && surface_id="${fresh_surface_id}"
+  fi
+
+  # Wait for agent to be idle before injecting takeover (both same- and cross-family).
+  wait_agent_ready "${surface_id}" "${orig_workspace}" "${target_agent}" 60 \
+    || { printf 'fresh %s did not reach input-ready state within 60s\n' "${target_agent}"; return 1; }
+
+  raw_zmx_submit "${target_zmx}" "${takeover_cmd}" "${target_agent}" "${surface_id}" "${orig_workspace}" \
+    || { printf 'raw_zmx_submit takeover failed for %s\n' "${target_zmx}"; return 1; }
+  takeover_output="$(jq -n --arg cmd "${takeover_cmd}" '{action:"raw_zmx_submit",cmd:$cmd}')"
 
   jq -n \
     --arg orig_zmx "${orig_zmx}" \
+    --arg orig_family "${orig_family}" \
     --arg orig_surface "${surface_id}" \
     --arg orig_workspace "${orig_workspace}" \
     --arg orig_pid "${orig_pid}" \
@@ -758,14 +997,25 @@ handle_rotate() {
     --arg entry_path "${entry_path}" \
     --arg target_agent "${target_agent}" \
     --arg target_slot "${target_zmx}" \
+    --arg cleanup_command "${cleanup_command}" \
     --argjson ghost_dispatch "${ghost_output}" \
     --argjson base_attach "${attach_output}" \
     --argjson takeover_inject "${takeover_output}" \
-    '{rotate:{requester_slot:$orig_zmx, requester_surface:$orig_surface, requester_workspace:$orig_workspace,
-      requester_pid:$orig_pid, fresh_pid:$fresh_pid, ghost_slug:$ghost_slug, ghost_slot:$ghost_zmx,
-      entry_path:$entry_path, target_agent:$target_agent, target_slot:$target_slot},
-      ghost_dispatch:$ghost_dispatch, base_attach:$base_attach, takeover_inject:$takeover_inject,
-      user_commands:["zmx attach " + $ghost_zmx, "bash ~/.orchestrator/scripts/conductor.sh cleanup " + $ghost_slug + " --execute"]}' | jq '.'
+    '{rotate:({requester_slot:$orig_zmx, requester_surface:$orig_surface, requester_workspace:$orig_workspace,
+      requester_pid:$orig_pid, fresh_pid:$fresh_pid, origin_slot:$orig_zmx,
+      origin_family:$orig_family,
+      origin_action:(if $orig_family == $target_agent then "new" else "leave-alive" end),
+      entry_path:$entry_path,
+      target_agent:$target_agent, target_family:$target_agent, target_slot:$target_slot,
+      attach_skipped:($orig_family == $target_agent)}
+      + (if $orig_family == $target_agent
+          then {ghost_slug:$ghost_slug, ghost_slot:$ghost_zmx, cleanup_command:$cleanup_command}
+          else {} end)),
+      base_attach:$base_attach, takeover_inject:$takeover_inject}
+      + (if $orig_family == $target_agent
+          then {ghost_dispatch:$ghost_dispatch,
+                user_commands:["zmx attach " + $ghost_zmx, $cleanup_command]}
+          else {user_commands:["close origin pane " + $orig_zmx + " manually when ready"]} end)' | jq '.'
 }
 
 handle_shutdown() {
@@ -1032,6 +1282,7 @@ if [[ "${command_mode}" == "ensure-approver" ]]; then
   die "failed to reconcile approver runtime"
 fi
 
+refuse_codex_sandbox_runtime
 start_runtime
 ensure_approver_runtime >/dev/null 2>&1 || true
 

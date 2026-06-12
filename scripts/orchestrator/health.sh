@@ -21,6 +21,9 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 . "${SCRIPT_DIR}/protocol.sh"
 
+# cmux 0.64+ changed default socket path to ~/.local/state/cmux/cmux.sock
+export CMUX_SOCKET_PATH="${CMUX_SOCKET_PATH:-${HOME}/.local/state/cmux/cmux.sock}"
+
 usage() {
   cat <<'EOF'
 Usage:
@@ -30,6 +33,10 @@ EOF
 
 ORCH_ROOT="${ORCHESTRATOR_ROOT:-${HOME}/.orchestrator}"
 APPROVER_ROOT="${APPROVER_ROOT:-${HOME}/.approver}"
+
+running_inside_codex_sandbox() {
+  [[ -n "${CODEX_SANDBOX:-}" || -n "${CODEX_SANDBOX_NETWORK_DISABLED:-}" ]]
+}
 
 # Close duplicate daemon-log/approver-log surfaces in a workspace, keeping
 # the first one of each title. Fixes the case where stop/start-agent leaves
@@ -314,7 +321,16 @@ check_agent() {
   # on-disk file — writing stopped to local var regardless misled past
   # debugging sessions. Restricted + heartbeat-alive cases are skipped
   # intentionally: the daemon is likely healthy even if we can't see it.
-  if [[ "${status}" == 'dead' && "${reg_status}" == 'running' && "${pid_state}" == 'dead' ]]; then
+  if [[ "${status}" == 'dead' && "${name}" == 'orchestrator' ]] \
+     && running_inside_codex_sandbox \
+     && [[ "${reg_status}" == 'running' || -f "${running_file}" ]]; then
+    status='unknown'
+    alive_reason='sandbox-inaccessible'
+    last_error='Codex sandbox cannot prove external orchestrator liveness; registry was left unchanged'
+  fi
+
+  if [[ "${status}" == 'dead' && "${reg_status}" == 'running' && "${pid_state}" == 'dead' ]] \
+     && ! running_inside_codex_sandbox; then
     if _locked_registry_update "${registry_file}" \
          "$(printf '.agents["%s"].status = "stopped" | .agents["%s"].pid = null | .agents["%s"].last_health = "%s"' \
            "${name}" "${name}" "${name}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)")" >/dev/null 2>&1; then
@@ -354,10 +370,10 @@ check_agent() {
   printf 'heartbeat_age_s=%s\n' "${heartbeat_age_s}"
   printf 'registry_status=%s\n' "${reg_status}"
   printf 'registry_pid=%s\n' "${reg_pid}"
-  if [[ "${status}" == 'dead' ]]; then
+  if [[ "${status}" == 'dead' || "${status}" == 'unknown' ]]; then
     printf 'last_error=%s\n' "${last_error}"
   fi
-  [[ "${status}" == 'alive' ]]
+  [[ "${status}" == 'alive' || "${status}" == 'unknown' ]]
 }
 
 check_all=0

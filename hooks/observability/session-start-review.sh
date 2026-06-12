@@ -56,12 +56,7 @@ EXTRACT_SCRIPT="${REPO_ROOT}/scripts/extract-traces.sh"
 
 emit_message() {
   local message="$1"
-
-  if [[ "$TRACE_AGENT" == "codex" ]]; then
-    printf '%s\n' "$message"
-  else
-    printf '%s\n' "$message" >&2
-  fi
+  printf '%s\n' "$message" >&2
 }
 
 # Check yesterday's activity (not today — today just started)

@@ -410,6 +410,13 @@ _orchestrator_requester_workspace_ref() {
       printf '%s\n' "${resolved}"
       return 0
     fi
+    # Codex/macOS sandboxed tools may be unable to inspect cmux tree even
+    # though CMUX_WORKSPACE_ID is valid. The daemon accepts UUID workspace
+    # identifiers, so preserve the requester value instead of degrading to "-".
+    if [[ "${CMUX_WORKSPACE_ID}" =~ ^[0-9A-Fa-f-]{32,}$ ]]; then
+      printf '%s\n' "${CMUX_WORKSPACE_ID}"
+      return 0
+    fi
   fi
 
   # Fallback: derive workspace from surface ID
@@ -657,8 +664,8 @@ _orchestrator_requester_project() {
 _orchestrator_requester_session_id() {
   if [[ -n "${CLAUDE_SESSION_ID:-}" ]]; then
     printf '%s\n' "${CLAUDE_SESSION_ID}"
-  elif [[ -n "${CODEX_SESSION_ID:-}" ]]; then
-    printf '%s\n' "${CODEX_SESSION_ID}"
+  elif [[ -n "${CODEX_THREAD_ID:-}" ]]; then
+    printf '%s\n' "${CODEX_THREAD_ID}"
   else
     printf '%s\n' "-"
   fi
@@ -897,16 +904,20 @@ _orchestrator_write_request() {
     }
   else
     mkdir_lock="${locks_dir}/inbox.lock.d"
-    local acquired=0
+    local acquired=0 mkdir_error=""
     for _ in 1 2 3 4 5 6 7 8 9 10; do
-      if mkdir "${mkdir_lock}" 2>/dev/null; then
+      if mkdir_error="$(mkdir "${mkdir_lock}" 2>&1)"; then
         acquired=1
         break
       fi
       _clear_stale_lock_dir "${mkdir_lock}" 60 >/dev/null 2>&1 || true
       sleep 0.1
     done
-    (( acquired == 1 )) || return 4
+    if (( acquired != 1 )); then
+      printf 'error: cannot acquire orchestrator inbox lock at %s: %s\n' \
+        "${mkdir_lock}" "${mkdir_error:-unknown error}" >&2
+      return 4
+    fi
   fi
 
   temp_path="$(mktemp "${inbox_dir}/.req-${request_uuid}.XXXXXX")" || {
@@ -1084,7 +1095,9 @@ orchestrator_request() {
   if [[ -n "${request_slug}" ]] && [[ ! "${request_slug}" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
     return 4
   fi
-  orchestrator_alive || return 1
+  if [[ "${ORCHESTRATOR_REQUEST_SKIP_ALIVE:-0}" != "1" ]]; then
+    orchestrator_alive || return 1
+  fi
 
   request_uuid="$(_orchestrator_uuid)"
   payload_body="$(_orchestrator_payload_body "${payload_arg}")" || return 4
