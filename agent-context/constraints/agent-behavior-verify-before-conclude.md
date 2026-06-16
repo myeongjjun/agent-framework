@@ -1,5 +1,6 @@
 # Constraint: Verify Before Conclude
 
+- **Status**: Active
 - **Category**: agent-behavior
 - **Severity**: high
 - **Created**: 2026-04-02

@@ -1,8 +1,9 @@
 # Constraint: Agent must not bypass permission/hook denials
 
-## Status: Active
-## Severity: Critical
-## Scope: All personas (every agent that consumes this framework)
+- **Status**: Active
+- **Severity**: Critical
+- **Scope**: All personas (every agent that consumes this framework)
+- **Created**: 2026-06-16
 
 ## Rule
 

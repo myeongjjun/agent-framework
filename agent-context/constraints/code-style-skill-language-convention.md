@@ -1,5 +1,6 @@
 # Constraint: Skill Language Convention
 
+- **Status**: Active
 - **Category**: code-style
 - **Severity**: critical
 - **Created**: 2026-03-05

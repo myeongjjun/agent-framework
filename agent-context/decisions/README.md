@@ -20,9 +20,12 @@ Example: `2025-01-09-adopt-acp-standard.md`
 # ADR-NNN: Title
 
 - **Date**: YYYY-MM-DD
-- **Status**: proposed | accepted | deprecated | superseded
+- **Status**: Proposed | Accepted | Rejected | Deprecated | Superseded
 - **Deciders**: who made the decision
 - **Supersedes**: previous ADR if any
+- **Superseded by**: successor ADR if any
+- **Amends**: ADR partially amended
+- **Amended by**: successor that partially amended this
 
 ## Context
 
@@ -51,7 +54,7 @@ What is the change we're proposing/implementing?
 ## Required Fields
 
 - **Date**: When decision was made
-- **Status**: Current status (proposed/accepted/deprecated/superseded)
+- **Status**: Current status (Proposed/Accepted/Rejected/Deprecated/Superseded — AWS Well-Architected ADR convention)
 - **Context**: Why this decision was needed
 - **Decision**: What was decided
 - **Consequences**: Impact of the decision

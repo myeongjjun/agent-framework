@@ -25,6 +25,7 @@ Example: `security-no-secrets-in-code.md`
 ```markdown
 # Constraint: Name
 
+- **Status**: Active | Deprecated | Superseded
 - **Category**: security | api | code-style | architecture | other
 - **Severity**: critical | high | medium
 - **Created**: YYYY-MM-DD

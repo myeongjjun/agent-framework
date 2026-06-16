@@ -1,5 +1,6 @@
 # Constraint: Hook Source of Truth
 
+- **Status**: Active
 - **Severity**: High
 - **Category**: Architecture
 - **Scope**: `hooks/`, `~/.claude/hooks/`, `~/.claude/settings.json`
