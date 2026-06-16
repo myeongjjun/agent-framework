@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+# sib — spawn & manage interactive sibling agent sessions WITHOUT the orchestrator.
+#
+# Thin wrapper over cmux (panes) + git worktree only. No daemon, no zmx.
+# The agent runs directly in a cmux pane (closing the pane ends it). Run from
+# inside a cmux pane (uses $CMUX_WORKSPACE_ID).
+#
+# Subcommands:
+#   sib spawn <slug> [--codex] [--yolo] [--base <branch>] [--no-worktree] [--takeover] [-- <prompt...>]
+#   sib list
+#   sib send <slug> <text...>
+#   sib kill <slug> [--keep-worktree]
+#
+# Talk to a sibling by focusing its cmux pane and typing, or `sib send <slug> "..."`.
+# Trade-off vs zmx: no detached persistence — the agent lives only while its pane is open.
+set -euo pipefail
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+
+STATE_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/sib"
+WT_ROOT="${STATE_DIR}/worktrees"
+mkdir -p "${STATE_DIR}/state" "${WT_ROOT}"
+
+die() { echo "sib: $*" >&2; exit 1; }
+need_cmux() { [[ -n "${CMUX_WORKSPACE_ID:-}" ]] || die "not inside a cmux pane (CMUX_WORKSPACE_ID unset)"; }
+surface_alive() { cmux read-screen --surface "$1" --workspace "$2" --lines 1 >/dev/null 2>&1; }
+
+cmd="${1:-}"; shift || true
+
+case "${cmd}" in
+spawn)
+  slug="${1:?sib spawn <slug> ...}"; shift
+  [[ "${slug}" =~ ^[a-z0-9-]+$ ]] || die "slug must be lowercase-kebab"
+  need_cmux
+  # Default: normal permission gates (interactive sibling you supervise in the pane).
+  # --yolo opts into autonomous mode (skip gates) — only for unattended work.
+  agent="claude"; yolo=0
+  base="HEAD"; do_worktree=1; takeover=0; prompt=""
+  while (($#)); do case "$1" in
+    --codex)        agent="codex" ;;
+    --yolo)         yolo=1 ;;
+    --base)         shift; base="${1:?--base needs branch}" ;;
+    --no-worktree)  do_worktree=0 ;;
+    --takeover)     takeover=1 ;;
+    --)             shift; prompt="$*"; break ;;
+    *)              die "unknown spawn arg: $1" ;;
+  esac; shift || true; done
+  if [[ "${agent}" == "codex" ]]; then
+    agent_cmd="codex"; (( yolo )) && agent_cmd="codex --dangerously-bypass-approvals-and-sandbox"
+    ready_marker="›"
+  else
+    agent_cmd="claude"; (( yolo )) && agent_cmd="claude --dangerously-skip-permissions"
+    ready_marker="❯"
+  fi
+
+  [[ -f "${STATE_DIR}/state/${slug}.env" ]] && die "sib '${slug}' already exists (sib kill ${slug} first)"
+
+  # Isolated worktree from the current repo (unless --no-worktree).
+  start_dir="${PWD}"
+  if (( do_worktree )); then
+    git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "not in a git repo (use --no-worktree)"
+    repo="$(basename "$(git rev-parse --show-toplevel)")"
+    wt="${WT_ROOT}/${repo}-${slug}"
+    [[ -e "${wt}" ]] && die "worktree exists: ${wt}"
+    git worktree add -b "sib/${slug}" "${wt}" "${base}" >/dev/null
+    start_dir="${wt}"
+  fi
+
+  ws="${CMUX_WORKSPACE_ID}"
+  out="$(cmux new-pane --type terminal --direction right --workspace "${ws}")"
+  surface="$(grep -oE 'surface:[^[:space:]]+' <<<"${out}" | head -1)"
+  [[ -n "${surface}" ]] || { echo "${out}" >&2; die "failed to create pane"; }
+
+  # Launch the agent directly in the new pane (exec → closing pane ends it; no zmx).
+  cmux send --surface "${surface}" --workspace "${ws}" "cd $(printf %q "${start_dir}") && exec ${agent_cmd}"
+  cmux send-key --surface "${surface}" --workspace "${ws}" enter
+
+  # Persist state.
+  { echo "slug=${slug}"; echo "agent=${agent}";
+    echo "surface=${surface}"; echo "workspace=${ws}"; echo "worktree=${start_dir}";
+    echo "worktree_managed=${do_worktree}"; } > "${STATE_DIR}/state/${slug}.env"
+
+  # Wait for the agent's input prompt to appear, then optional initial input.
+  booted=0
+  for _ in $(seq 1 40); do
+    if cmux read-screen --surface "${surface}" --workspace "${ws}" --lines 60 2>/dev/null | grep -qF "${ready_marker}"; then
+      booted=1; break
+    fi
+    sleep 0.5
+  done
+  (( takeover )) && prompt="/takeover"
+  if [[ -n "${prompt}" ]]; then
+    (( booted )) || sleep 3
+    cmux send --surface "${surface}" --workspace "${ws}" "${prompt}"
+    cmux send-key --surface "${surface}" --workspace "${ws}" enter
+  fi
+
+  echo "✓ sib '${slug}' (${agent}) → surface ${surface} $([[ ${booted} == 1 ]] && echo '[booted]' || echo '[booting…]')"
+  echo "  worktree: ${start_dir}"
+  echo "  talk: focus the pane, or  sib send ${slug} \"...\""
+  ;;
+
+list)
+  shopt -s nullglob
+  printf '%-16s %-8s %-12s %s\n' SLUG AGENT SURFACE WORKTREE
+  for f in "${STATE_DIR}"/state/*.env; do
+    ( . "$f"; st=$(surface_alive "${surface}" "${workspace}" && echo up || echo dead)
+      printf '%-16s %-8s %-12s %s (%s)\n' "$slug" "$agent" "$surface" "$worktree" "$st" )
+  done
+  ;;
+
+send)
+  slug="${1:?sib send <slug> <text>}"; shift
+  f="${STATE_DIR}/state/${slug}.env"; [[ -f "$f" ]] || die "no such sib: ${slug}"
+  . "$f"
+  surface_alive "${surface}" "${workspace}" || die "sib '${slug}' pane is gone (sib kill ${slug} to clean up)"
+  cmux send --surface "${surface}" --workspace "${workspace}" "$*"
+  cmux send-key --surface "${surface}" --workspace "${workspace}" enter
+  echo "→ sent to ${slug}"
+  ;;
+
+kill)
+  slug="${1:?sib kill <slug>}"; shift
+  keep_wt=0; [[ "${1:-}" == "--keep-worktree" ]] && keep_wt=1
+  f="${STATE_DIR}/state/${slug}.env"; [[ -f "$f" ]] || die "no such sib: ${slug}"
+  . "$f"
+  # Closing the pane ends the agent process running in it (no zmx to kill).
+  cmux close-surface --surface "${surface}" --workspace "${workspace}" 2>/dev/null || true
+  if (( worktree_managed )) && (( ! keep_wt )); then
+    git worktree remove --force "${worktree}" 2>/dev/null || true
+    git branch -D "sib/${slug}" 2>/dev/null || true
+  fi
+  rm -f "$f"
+  echo "✓ killed ${slug}"
+  ;;
+
+*)
+  sed -n '2,18p' "$0" >&2; exit 1 ;;
+esac

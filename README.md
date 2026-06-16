@@ -1,207 +1,145 @@
-# Agent Framework
+# agent-framework
 
-An **opinionated agent-ops kit** for managing AI agent capabilities: skills, hooks, constraints, an autonomous improvement loop, **a long-lived orchestrator daemon, and an auto-approver agent pattern**. Supports **Claude Code** and **Codex CLI**.
+> **L1 — agent baseline.** This repo is the policy origin for every persona
+> (개인 + 사내 + 도메인) the maintainer operates. Skills, hooks, constraints,
+> and AGENTS.md baselines installed here are **enforced** on every machine
+> where the maintainer's agents run.
 
-## Scope
+This is **not** a public framework or fork target. It is one person's
+multi-persona agent baseline.
 
-agent-framework is deliberately opinionated. It bundles the specific primitives we have found effective for running AI agents over long sessions — not a minimal primitives library. Adopting agent-framework means adopting these opinions:
-
-- **Session backend**: [`cmux`](https://github.com/myeongjjun/cmux) + [`zmx`](https://github.com/myeongjjun/zmx) for persistent agent sessions. The orchestrator and conductor scripts assume these tools are available.
-- **Long-lived orchestrator daemon**: a single bash daemon at `~/.orchestrator/` mediates dispatch, rotation, cleanup, and health. Direct session mutations are blocked by `guard-direct-session-control.sh`; all changes go through `orchestrator_request --type <...>`.
-- **Auto-approver agent**: an approver agent watches permission prompts and auto-approves the safe subset, backed by a policy file and audit log.
-- **Worktree-isolated workers**: dispatched workers always run in their own git worktree (non-negotiable for execute mode).
-
-If you want pure skill/hook infrastructure without the orchestrator stack, the `skills/` and `hooks/` subtrees work standalone — the orchestrator scripts only activate when you deploy and start them.
-
-## Quick Start
-
-```bash
-# Clone
-git clone https://github.com/<your-username>/agent-framework.git
-cd agent-framework
-
-# Deploy all skills + hooks
-./scripts/sync-all.sh
-
-# Check status
-./sync-skills.sh --status
-```
-
-## What's Included
-
-This repo is the **opinionated agent-ops kit** — the specific primitives we run in production, not a generic primitives library. Add your own domain skills on top.
-
-### Skills (11)
-
-| Category | Skills | Purpose |
-|----------|--------|---------|
-| **ACP** | `acp-init`, `acp-decision`, `acp-constraint` | Agent Context Pack: decisions, constraints, project context |
-| **Collaboration** | `collab`, `codex`, `handoff`, `takeover`, `harness` | Multi-agent coordination, context handoff, meta-skill design |
-| **Observability** | `observe`, `improve` | Analyze agent activity, propose and apply improvements |
-| **Utility** | `quick-dashboard` | Instant Streamlit dashboard from any data source |
-
-### Hooks
-
-| Category | Hooks | Purpose |
-|----------|-------|---------|
-| `general` | `guard-prod-kubectl.sh` | Block kubectl writes on prod context |
-| `general` | `guard-acp-direct-edit.sh` | Enforce ACP skill usage for agent-context/ edits |
-| `general` | `guard-deployed-artifact-edit.sh` | Block direct edits of deployed runtime (~/.orchestrator/, ~/.approver/) |
-| `general` | `guard-direct-session-control.sh` | Role-based access: block direct session mutations, force orchestrator_request path |
-| `observability` | `session-start-review.sh` | Review previous session on start |
-
-### Scripts
-
-| Script | Purpose |
-|--------|---------|
-| `scripts/sync-all.sh` | Unified deploy: skills + hooks + agents + orchestrator |
-| `scripts/conductor.sh` | Dispatch + cleanup + tidy + gc lifecycle for sibling sessions |
-| `scripts/orchestrator/` | Long-lived daemon subtree — `daemon.sh`, `protocol.sh`, `health.sh`, `start-agent.sh`, `stop-agent.sh`, `team.sh`, `effects/`, `core/` |
-| `scripts/agent-release.sh` | Capability versioning (tag, rollback, diff) |
-| `scripts/extract-traces.py` | Unified Claude + Codex transcript extractor |
-| `scripts/analyze-activity.sh` | Activity analysis with per-agent breakdown |
-| `scripts/apply-proposal.sh` | Proposal lifecycle management |
-| `scripts/handoff-rotate.sh` | Session rotation via orchestrator (compress RAM without losing context) |
-| `scripts/test-conductor.sh` | End-to-end conductor test suite |
-
-### Agents
-
-| Agent | Role |
-|-------|------|
-| `agents/approver.md` | Monitors cmux surfaces for stuck workers, auto-approves safe operations, performs root-cause analysis on why approval was needed |
-
-## Architecture
+## Layering
 
 ```
-agent-framework/
-├── skills/                            # 11 framework skills
-├── hooks/                             # Guard + observability hooks
-│   ├── general/                       # Common guards
-│   └── observability/                 # Session review
-├── scripts/                           # Deploy, analyze, release, extract
-├── agent-context/                     # ACP: decisions + constraints
-│   ├── decisions/                     # Architecture Decision Records
-│   └── constraints/                   # Immutable project rules
-├── templates/                         # Skill, agent, plugin templates
-├── configs/                           # Claude, Codex, Cursor configs
-├── sync-skills.sh                     # Skill sync (Claude/Codex)
-├── sync-hooks.sh                      # Hook sync (category + profile)
-├── AGENTS.md                          # ACP guide for agents
-└── FORKING.md                         # Fork and customization guide
+L1  ── this repo  (~/personal/agent-framework)
+        Global baseline. Every persona inherits.
+        Contents: ACP skills, codex skill, sib, security guards,
+                  AGENTS.md base, critical constraints.
+
+L2  ── persona repos
+        ~/personal/dotfiles    (개인 페르소나)
+        ~/agent-workspace      (사내 페르소나)
+        Each persona = one repo, may run on N machines.
+        Inherits L1, adds persona-specific overlay.
+
+L3  ── domain packs
+        Live inside a project's root (not a separate repo)
+        Example: ~/o11y/ch-ops-pack
+        Inherits L2 from cwd, adds domain-specific overlay.
 ```
 
-## Adding Your Domain
+L1 → L2 → L3 is **single-direction**: lower layers can add but never
+delete or modify what higher layers install. If a persona needs to
+change L1 behaviour, it goes back to L1 (not a local override).
 
-1. **Fork** this repo
-2. **Add domain skills** as `skills/<domain>-<name>/` directories
-3. **Add domain hooks** under `hooks/<domain>/` and register in `hooks/HOOKS.md`
-4. **Deploy**: `./scripts/sync-all.sh`
-5. **Initialize ACP** in your project: `/acp-init`
+## What lives here (L1)
 
-See [FORKING.md](FORKING.md) for the full step-by-step guide.
+| Path | Purpose |
+|---|---|
+| `AGENTS.md` | Base AGENTS.md every persona starts from. Personas append; never delete. |
+| `agent-context/constraints/` | Critical constraints. Active in every persona. |
+| `agent-context/decisions/` | ADRs that justify L1 contents. |
+| `skills/acp-{constraint,decision,init}` | ACP standard skills. Required by every persona that uses ACP. |
+| `skills/codex` | Codex CLI integration. Used in every persona. |
+| `bin/sib` | cmux + worktree sibling-agent launcher. Used in every persona. |
+| `hooks/general/guard-acp-direct-edit.sh` | Block agent edits to `agent-context/`. Force ACP skill use. |
+| `hooks/general/guard-deployed-artifact-edit.sh` | Block agent edits to deployed runtime (~/.claude/skills, ~/.codex/skills, ...). |
+| `hooks/general/guard-permission-bypass.sh` | Block agent edits to `~/.claude/settings.json`, `hooks/**/*.sh`, `.claude.json`. |
+| `agents/approver.md` | cmux approval-prompt auto-approver agent (daemon). |
+| `scripts/install.sh` | Pull L1 contents into `~/.claude/`, `~/.codex/`, `~/.local/bin/`. Atomic, overwrite. |
+| `scripts/check-update.sh` | git fetch + detect changes + trigger install. Driven by cron. |
+| `scripts/verify.sh` | Drift verify (checksum). Called from SessionStart hook. |
 
-## Agent Observability Loop
-
-Autonomous improvement cycle: observe agent behavior, diagnose issues, propose changes, apply with human approval.
+## Install / update flow
 
 ```
-[Use agent normally] --> transcripts auto-recorded
-        |
-/observe --> analyze traces --> generate proposals
-        |
-/improve --> select proposal --> preview --> approve --> deploy
-        |
-/observe --> verify improvement --> next cycle
+Maintainer pushes L1 change → github.com/myeongjjun/agent-framework
+                                      ↓
+On every machine:
+   1. cron + SessionStart hook call check-update.sh
+   2. check-update.sh: git fetch → diff → if changed, run install.sh
+   3. install.sh: atomic pull into ~/.claude/, ~/.codex/, ~/.local/bin/
+   4. SessionStart hook calls verify.sh: checksum vs origin → alert on drift
 ```
 
-## Deployment
+L1 changes are **forced** within the next session-start (or cron interval),
+whichever comes first.
 
-```bash
-# Deploy everything (recommended)
-./scripts/sync-all.sh
+## ADR / constraint conventions
 
-# Skills only
-./sync-skills.sh --target both --push
+L1 uses [AWS Well-Architected ADR](https://docs.aws.amazon.com/wellarchitected/latest/operational-readiness-reviews/establish-a-process-for-architecture-decision-records-adrs.html) status terminology.
 
-# Hooks only (with profile)
-./sync-hooks.sh --push --profile myproject
+| Status | Meaning |
+|---|---|
+| **Proposed** | Decision drafted, not yet adopted. |
+| **Accepted** | Decision adopted and in effect. |
+| **Rejected** | Considered but not adopted (kept as record of "why we did NOT do this"). |
+| **Deprecated** | No longer recommended. No successor decision needed (just retired). |
+| **Superseded** | Replaced by another ADR. Body retained, points at successor. |
 
-# Preview changes
-./scripts/sync-all.sh --dry-run
-```
+Cross-references in ADR frontmatter:
 
-## Release Management
+| Field | Meaning |
+|---|---|
+| `Supersedes: ADR-XXX` | This ADR replaces ADR-XXX. |
+| `Superseded by: ADR-YYY` | This ADR was replaced by ADR-YYY. |
+| `Amends: ADR-XXX` | This ADR partially amends ADR-XXX (not full supersede). |
+| `Amended by: ADR-YYY` | This ADR was partially amended by ADR-YYY. |
 
-```bash
-./scripts/agent-release.sh tag "Description"    # Tag current state
-./scripts/agent-release.sh list                  # List releases
-./scripts/agent-release.sh rollback v1.0.3       # Rollback
-./scripts/agent-release.sh current               # Show current version
-```
+Constraints follow the same status set; treat severity (`critical / high /
+medium`) as orthogonal to status.
 
-## Project Aliases (ADR-033)
+References for the ADR pattern:
+- Michael Nygard, *Documenting Architecture Decisions* (2011)
+- AWS Well-Architected, *Establish a process for ADRs* (2022) — chosen status set
+- MADR (Markdown ADR), <https://adr.github.io/madr/>
 
-The orchestrator's zmx session names follow the format
-`{family}-{project_slug}-{task_slug}-{index}` and must fit within
-zmx's 44-char limit. Projects whose directory basename is **27 or
-more characters** (e.g. `clickhouse-upgrade-framework`) overflow
-this limit because the project portion alone consumes the entire
-budget left for the task slug.
+## Layering rules
 
-The orchestrator handles this with a two-layer mechanism:
+### What goes in L1 (this repo)
 
-1. **Explicit alias (preferred)** — register a short name for the
-   project in `~/.orchestrator/project-aliases.json`. The
-   orchestrator substitutes the alias for the long basename when
-   constructing the slot.
-2. **Hash safety net** — if no alias is registered and the slot
-   would overflow, the orchestrator falls back to
-   `{family}-{6-char-hash}-{index}`. The slot loses zmx-grep
-   readability but never fails; the original task name is still
-   visible in `claude --name` and `state.json`.
+A change belongs in L1 if **all** the following hold:
 
-### Managing aliases
+1. The maintainer wants it active on every machine, in every persona.
+2. Removing it would create risk (security, compliance, ACP integrity) regardless of persona.
+3. It does not depend on persona-specific infrastructure
+   (no Jira/Wiki/사내 GHE/ClickHouse references).
 
-```bash
-# List registered aliases
-team.sh alias list
+Examples of in-scope: permission-bypass guard, ACP skills, sib, codex skill.
 
-# Register a new alias (validated: kebab-case, 2–25 chars, no collisions)
-team.sh alias add /path/to/your-very-long-project-dir my-proj
+Examples of out-of-scope: anything OBSERV-specific, anything that names
+a particular Slack/Discord workspace, ClickHouse log-comment guards.
 
-# Preview what an alias lookup returns for a given cwd
-team.sh alias check /path/to/your-very-long-project-dir
+### What goes in L2
 
-# Remove an alias
-team.sh alias rm /path/to/your-very-long-project-dir
-```
+L2 = persona overlay. Same rules as L1 but scoped to the persona:
+"every machine in this persona, but not other personas".
 
-`check` additionally warns when an unaliased cwd has a basename
-of 27+ chars (the threshold beyond which the hash fallback fires).
-The alias file is stored at `~/.orchestrator/project-aliases.json`
-and is per-user/per-machine local — fork adopters seed their own.
+Examples (사내 페르소나): Jira/Wiki MCP wiring, OBSERV ticket templates,
+사내 GHE network constraints, ClickHouse cluster guards.
 
-### What aliases don't change
+### What goes in L3
 
-- `cwd`, `task_slug`, `worktree_path`, `claude --name`, and
-  `state.json` task keys are all preserved verbatim regardless of
-  alias resolution.
-- Only the zmx session identifier (`slot_name`) is affected.
-- `claude --resume <session-id>` continues to work as normal —
-  session storage is keyed by cwd, not by slot name.
+L3 = domain pack inside a project root. Active only when working in
+that project tree.
 
-## Prerequisites
+Examples (ch-ops-pack): cluster-specific runbooks, partition-move dashboards,
+domain DDL guards.
 
-| Requirement | Version | Notes |
-|-------------|---------|-------|
-| `bash` | 4.0+ | Required by sync/release scripts |
-| `jq` | 1.6+ | Required by analysis and hook workflows |
-| `python3` | 3.8+ | Required for `extract-traces.py` |
-| `rsync` | current | Required by `sync-all.sh` Step 5 (orchestrator subtree) |
-| Claude Code CLI | current | Required for Claude deployment target |
-| Codex CLI | current | Optional, required for `codex`/`collab` skills |
-| [`cmux`](https://github.com/myeongjjun/cmux) + [`zmx`](https://github.com/myeongjjun/zmx) | current | Required for orchestrator, conductor, handoff-rotate. Without these, only the standalone skill/hook subset works. |
+## Why this is not a fork target
 
-## License
+Older versions of this repo positioned themselves as a public fork target
+with `FORKING.md`, mirror sync from a downstream workspace, and dual-review
+gates on push. Those are **retired**: the repo is now the maintainer's
+personal baseline, not a community framework.
 
-MIT
+If you stumbled into this repo from outside: you can still copy ideas, but
+nothing here is being maintained for general adoption.
+
+## Status terminology elsewhere
+
+L2 personas (`agent-workspace`, `dotfiles`) and L3 domain packs (`ch-ops-pack`)
+adopt the same status set above. If you see an older ADR using only
+`accepted | proposed | deprecated | superseded` (4-state Nygard original),
+that's a pre-2026-06-16 record waiting for a sweep — see
+`agent-workspace/agent-context/decisions/INDEX.md` "후속 정리" task.
