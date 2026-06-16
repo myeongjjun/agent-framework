@@ -52,7 +52,7 @@ override what an upper layer installs.
 |---|---|
 | `~/.claude/skills/{acp-*,codex}` | symlink to this repo's `skills/` |
 | `~/.codex/skills/{acp-*,codex}` | same source |
-| `~/.local/bin/sib` | cmux + git-worktree sibling-agent launcher |
+| `~/.local/bin/sib` | cmux sibling-agent launcher (git-worktree opt-in via `--worktree`) |
 | `~/.claude/hooks/guard-acp-direct-edit.sh` | block agent edits to `agent-context/` |
 | `~/.claude/hooks/guard-deployed-artifact-edit.sh` | block agent edits to deployed runtime |
 | `~/.claude/hooks/guard-permission-bypass.sh` | block agent edits to permission/hook/MCP config |

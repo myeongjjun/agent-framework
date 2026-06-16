@@ -59,9 +59,8 @@ fi
 
 ### Mode A: sib spawn --codex (interactive)
 
-Spawn a codex sibling into a new cmux pane and isolated git worktree
-via `sib spawn --codex` (L1 sibling-agent launcher, installed by
-`agent-framework/scripts/install.sh`).
+Spawn a codex sibling into a new cmux pane via `sib spawn --codex` (L1
+sibling-agent launcher, installed by `agent-framework/scripts/install.sh`).
 
 Preconditions:
 - `$CMUX_WORKSPACE_ID` set (running inside a cmux pane)
@@ -72,15 +71,19 @@ sib spawn "codex-<slug>" --codex -- "<task description>"
 ```
 
 `sib spawn` does:
-1. Create `~/.local/share/sib/worktrees/<repo>-<slug>` (branch `sib/<slug>`)
-2. Open a new cmux pane (right split)
-3. Boot `codex` inside the worktree
-4. Poll for the codex marker `›` (race-prevention)
-5. Send the initial prompt
-6. Persist state to `~/.local/share/sib/state/<slug>.env`
+1. Open a new cmux pane (right split) in the caller's working directory
+2. Boot `codex` in that pane
+3. Poll for the codex marker `›` (race-prevention)
+4. Send the initial prompt
+5. Persist state to `~/.local/share/sib/state/<slug>.env`
+
+Add `--worktree` if codex needs an isolated branch (parallel edits with
+the caller, audit-friendly provenance). Default = shared workdir, which
+matches the single-agent dispatch model.
 
 Talk back: `sib send codex-<slug> "..."`
-Tear down: `sib kill codex-<slug>` (closes pane + removes worktree + branch)
+Tear down: `sib kill codex-<slug>` (closes pane; with `--worktree`, also
+removes the worktree + branch)
 
 Use Mode A when:
 - You need an interactive back-and-forth with codex
