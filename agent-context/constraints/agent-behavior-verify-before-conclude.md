@@ -16,7 +16,7 @@ When performing analysis, comparison, or decision-making tasks, the agent must p
 
 ## Rationale
 
-`/observe` trace analysis found a recurring pattern of "premature conclusion without evidence": the agent would state a verdict before presenting the quantitative and qualitative basis, forcing the user to ask for re-analysis. This constraint codifies the expectation that analysis tasks show their work before the conclusion.
+Transcript analysis found a recurring pattern of "premature conclusion without evidence": the agent would state a verdict before presenting the quantitative and qualitative basis, forcing the user to ask for re-analysis. This constraint codifies the expectation that analysis tasks show their work before the conclusion.
 
 ## Verification
 
@@ -34,4 +34,4 @@ Before presenting a conclusion in analysis tasks, check:
 
 ## References
 
-- `skills/observe/SKILL.md` — proposal #3 from a `/observe` trace-analysis run prompted this constraint
+- Origin: 2026-04-02 transcript trace-analysis (proposal #3) identified the premature-conclusion pattern.

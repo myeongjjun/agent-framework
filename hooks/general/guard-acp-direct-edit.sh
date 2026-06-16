@@ -9,10 +9,9 @@
 # Enforces (warn-level) the AGENTS.md critical rule:
 #   "agent-context/ 파일 직접 수정 금지. 반드시 ACP Skills 사용."
 #
-# Background: the 2026-04-07 industry alignment review (see
-# .agent/observe/reports/2026-04-07-industry-alignment-review.md finding E)
-# flagged that the ACP write-discipline rule existed only as documentation
-# with no runtime enforcement. This hook adds runtime visibility.
+# Background: a 2026-04-07 review flagged that the ACP write-discipline
+# rule existed only as documentation with no runtime enforcement. This
+# hook adds runtime visibility.
 #
 # Design decision: WARN, not BLOCK. The /acp-decision and /acp-constraint
 # skills themselves need to write to agent-context/, and we cannot
@@ -22,7 +21,7 @@
 # Strengthening to BLOCK/ASK should only happen after skills gain a way to
 # signal authorized writes (e.g., an env var or marker file).
 #
-# Added: 2026-04-07 as part of .collab/adr-audit-2604 follow-up.
+# Added: 2026-04-07.
 
 set -euo pipefail
 

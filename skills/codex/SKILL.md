@@ -43,7 +43,7 @@ Choose the reasoning effort level based on task complexity:
 
 MCP is **disabled by default in `~/.codex/config.toml`** to avoid startup latency (see [ADR-019](../../agent-context/decisions/2026-03-05-codex-mcp-less-execution.md)).
 
-Codex does not need MCP directly. If external data is needed (Jira, Wiki, Calendar, etc.), the orchestrator (Claude) fetches it and includes it in the Codex prompt.
+Codex does not need MCP directly. If external data is needed, the caller (Claude or another agent) fetches it and includes it in the Codex prompt.
 
 Verification: logs should show `mcp startup: no servers` for default invocations.
 
@@ -54,42 +54,42 @@ Verification: logs should show `mcp startup: no servers` for default invocations
 Detect dispatch mode before invoking Codex:
 
 ```bash
-if bash -c '. ~/.orchestrator/scripts/orchestrator/protocol.sh && orchestrator_alive' 2>/dev/null; then
-  DISPATCH_MODE="orchestrator"   # dispatch codex worker via orchestrator
+if [[ -n "${CMUX_WORKSPACE_ID:-}" ]] && command -v sib >/dev/null; then
+  DISPATCH_MODE="sib"     # spawn an interactive codex sibling session
 else
-  DISPATCH_MODE="exec"            # codex exec (non-interactive fallback)
+  DISPATCH_MODE="exec"    # codex exec (non-interactive fallback)
 fi
 ```
 
-### Mode A: Orchestrator dispatch (recommended when available)
+### Mode A: sib-spawned codex sibling (recommended when inside a cmux pane)
 
-Dispatch a codex worker through the Global Session Orchestrator using
-`orchestrator_request --type dispatch`. The orchestrator handles surface
-creation, worktree setup, and worker lifecycle.
+Spawn a codex worker into a new cmux pane and isolated git worktree via
+`sib spawn --codex`. This is the L1 sibling-agent launcher (delivered by
+agent-framework). No long-running daemon is involved.
 
 **Prerequisites:**
-- Orchestrator agent running (`bash ~/.orchestrator/scripts/orchestrator/health.sh`)
-- `~/.orchestrator/scripts/orchestrator/protocol.sh` available
+- Running inside a cmux pane (`$CMUX_WORKSPACE_ID` set)
+- `sib` on PATH (installed by `agent-framework/scripts/install.sh`)
 
 ```bash
-# Dispatch codex worker via orchestrator
-bash -c '
-  . ~/.orchestrator/scripts/orchestrator/protocol.sh
-  orchestrator_request --type dispatch --slug "codex-{task}" --timeout 180 --payload "## Payload
-- slug: codex-{task}
-- description: {task description}
-- worker_family: codex
-- dry_run: false
-- no_worktree: false
-"
-'
+sib spawn "codex-{task}" --codex -- "{task description}"
 ```
 
-**Advantages**: Centralized session management, automatic worktree isolation, cross-session visibility via orchestrator state.
+`sib spawn` creates the worktree, opens a new cmux pane, boots `codex`,
+and sends the initial prompt after the codex marker `›` appears
+(race-prevention polling).
 
-### Mode B: codex exec fallback (no orchestrator)
+Talk back: `sib send codex-{task} "..."`. Tear down: `sib kill codex-{task}`
+(closes pane, removes worktree + branch).
 
-**MUST USE** `codex exec` when the orchestrator is unavailable. Claude Code's bash environment is non-terminal.
+**Advantages**: interactive — you can converse with the codex worker
+mid-task; isolated git worktree by default; full visibility of the
+worker's screen via the cmux pane.
+
+### Mode B: codex exec fallback (no cmux pane)
+
+**MUST USE** `codex exec` when not running inside a cmux pane (headless
+scripts, CI, etc.). Claude Code's bash environment is non-terminal.
 
 **Preconditions (verify before dispatch):**
 1. Default model: `grep '^model' ~/.codex/config.toml` — use this model. Do NOT hardcode `-m`.
@@ -102,7 +102,7 @@ codex exec -s workspace-write \
   "prompt"
 ```
 
-**Never use** bare `codex` (interactive mode) without a terminal — will fail with "stdout is not a terminal". Use Mode A (orchestrator dispatch) or Mode B (`codex exec`) instead.
+**Never use** bare `codex` (interactive mode) without a terminal — will fail with "stdout is not a terminal". Use Mode A (`sib spawn --codex`) or Mode B (`codex exec`).
 
 ---
 

@@ -1,6 +1,8 @@
-# AGENTS.md
+# AGENTS.md — L1 baseline
 
-> ACP guide for AI agents.
+> Read by every agent (Claude Code, Codex CLI, ...) in every persona
+> that inherits from this framework. Personas append below this base
+> with their own AGENTS.md; they never edit the base itself.
 
 ## ⚠️ Critical Rule
 
@@ -9,111 +11,90 @@
 
 위반 시 context 동기화 깨짐.
 
----
-
-## Agent Context Pack (ACP) v1.0
+## Agent Context Pack (ACP)
 
 ### Directory Structure
 
 | Directory | Access |
-|-----------|--------|
+|---|---|
 | `/agent-context/decisions/` | **READ-ONLY** → `/acp-decision` |
 | `/agent-context/constraints/` | **READ-ONLY** → `/acp-constraint` |
-| `/.agent/` | **VIA SKILL** → `/handoff`, `/takeover` |
 
 ### Session Workflow
 
 | Phase | Action |
-|-------|--------|
-| **Start** | Read constraints/ → Read decisions/ → `/takeover` |
-| **During** | `/acp-decision`, `/acp-constraint` |
-| **End** | `/handoff` |
+|---|---|
+| **Start** | Read constraints/ → Read decisions/ (agentmemory hooks auto-load recall in supported personas) |
+| **During** | `/acp-decision`, `/acp-constraint` for new decisions / constraints |
 
-### ACP Skills
+### Universal ACP skills (delivered by L1 install)
 
 | Skill | When |
-|-------|------|
-| `/acp-decision` | 아키텍처 결정 |
-| `/acp-constraint` | 제약 추가 |
-| `/handoff` | 세션 종료 |
-| `/takeover` | 세션 시작 |
+|---|---|
+| `/acp-init` | Bootstrap a new project's ACP structure |
+| `/acp-decision` | Record an architectural decision |
+| `/acp-constraint` | Add or review a constraint |
 
-### Agent Notes
+## Layering
 
-- **Codex**: Auto-reads AGENTS.md
-- **Claude Code**: Auto-loaded via CLAUDE.md → AGENTS.md symlink
+| Layer | Repo | Adds |
+|---|---|---|
+| **L1 — baseline (this repo)** | `agent-framework` | ACP standard, codex skill, sib, security guards, AGENTS.md base |
+| **L2 — persona** | Each persona repo | Persona-specific overlay (e.g., domain MCP servers, persona-specific constraints) |
+| **L3 — domain pack** | Project-root pack | Project-specific overlay (active by cwd) |
 
-<!-- ACP:TEMPLATE_END -->
+Each layer **appends** to higher layers — lower layers never remove or
+override what an upper layer installs.
 
-<!-- ACP:CRITICAL_CONSTRAINTS -->
-### Critical Constraints (auto-synced)
+## L1-installed surfaces
 
-- **Framework Push Dual Review**: Public agent-framework push requires Claude + Codex review PASS → [`security-framework-push-dual-review.md`](agent-context/constraints/security-framework-push-dual-review.md)
-- **Skill Language Convention**: English for workflow/logic sections, Korean only for output format examples and trigger phrases → [`code-style-skill-language-convention.md`](agent-context/constraints/code-style-skill-language-convention.md)
-<!-- ACP:CRITICAL_CONSTRAINTS_END -->
+| Surface | Contents |
+|---|---|
+| `~/.claude/skills/{acp-*,codex}` | symlink to this repo's `skills/` |
+| `~/.codex/skills/{acp-*,codex}` | same source |
+| `~/.local/bin/sib` | cmux + git-worktree sibling-agent launcher |
+| `~/.claude/hooks/guard-acp-direct-edit.sh` | block agent edits to `agent-context/` |
+| `~/.claude/hooks/guard-deployed-artifact-edit.sh` | block agent edits to deployed runtime |
+| `~/.claude/hooks/guard-permission-bypass.sh` | block agent edits to permission/hook/MCP config |
+| `~/.claude/AGENTS.md.framework-base` | the base every persona's AGENTS.md starts from |
+
+Install: `bash ~/personal/agent-framework/scripts/install.sh`.
+Update: `bash ~/personal/agent-framework/scripts/check-update.sh` (cron).
+Verify: `bash ~/personal/agent-framework/scripts/verify.sh` (called from SessionStart hook).
+
+## ADR / Constraint conventions
+
+L1 uses AWS Well-Architected ADR status terminology:
+
+| Status | Meaning |
+|---|---|
+| **Proposed** | Drafted, not yet adopted |
+| **Accepted** | Adopted and in effect |
+| **Rejected** | Considered but not adopted |
+| **Deprecated** | No longer recommended, no successor |
+| **Superseded** | Replaced by another ADR |
+
+Cross-references in frontmatter: `Supersedes`, `Superseded by`, `Amends`,
+`Amended by`. See `README.md` for the full table and references.
 
 ## Language Policy
 
-- User-facing responses should be in Korean unless the user requests another language.
-- Agent-facing instructions, task briefs, reviews, handoffs, and workflow notes may use English when it improves brevity, consistency, token efficiency, or technical precision.
-- Agent-to-agent communication may use English or the most efficient language for the context.
-- Preserve code, commands, logs, JQL, issue keys, file paths, API names, and exact error messages in their original form.
+- User-facing responses default to Korean unless the user requests
+  another language.
+- Agent-facing instructions, task briefs, reviews, handoffs, and
+  workflow notes may use English when it improves brevity, token
+  efficiency, or technical precision.
+- Preserve code, commands, logs, file paths, API names, and exact
+  error messages in their original form.
 
+## Critical constraints (active L1)
 
-## Project Info
-
-**Name**: Agent Framework
-**Purpose**: ACP 스킬 개발 및 Agent Context Pack 표준 정의
-**Stack**: Markdown, Bash, YAML
-
-## Build & Deploy
-
-**Canonical entry point**: `./scripts/sync-all.sh` — deploys skills,
-hooks, **and agents** in one call. Prefer this for day-to-day use.
-See ADR-016 (amended by ADR-025) and ADR-027 (agents).
-
-```bash
-# Canonical: deploy skills + hooks + agents together
-./scripts/sync-all.sh
-
-# Dry-run preview
-./scripts/sync-all.sh --dry-run
-```
-
-Lower-level tools (used by `sync-all.sh` or when you need fine-grained
-control):
-
-```bash
-# Skill sync (see ADR-016)
-./sync-skills.sh --status                 # status only
-./sync-skills.sh --push                   # Claude only
-./sync-skills.sh --codex --push           # Codex only
-./sync-skills.sh --target both --push     # both
-./sync-skills.sh --push --dry-run         # preview
-./sync-skills.sh --list                   # list skills
-
-# Hook sync (see ADR-021)
-./sync-hooks.sh --status
-./sync-hooks.sh --target both --push      # Claude + Codex
-./sync-hooks.sh --target codex --push     # Codex only
-./sync-hooks.sh --push --profile <name>   # general + observability + <name>
-
-# Agent sync (see ADR-027)
-./sync-agents.sh --status                 # status only
-./sync-agents.sh --push                   # source → ~/.claude/agents/
-./sync-agents.sh --list                   # show name + model + tools
-./sync-agents.sh --push --dry-run         # preview
-```
-
-**Source layout**:
-- `skills/<name>/SKILL.md` — user-facing slash commands
-- `hooks/<category>/<name>.sh` — lifecycle hooks
-- `agents/<name>.md` — internal worker agent definitions (NOT slash
-  commands; spawned via `claude --agent <name>`)
-
----
-
-| Section | Reference | Added |
-|---------|-----------|-------|
-| Project Info | - | 2026-01-15 |
-| Build & Deploy | - | 2026-01-15 |
+- **No Permission Bypass** — agent must not auto-grant permissions or
+  modify settings.json / hooks / MCP config. See
+  [`agent-context/constraints/no-permission-bypass.md`](agent-context/constraints/no-permission-bypass.md).
+- **Skill Language Convention** — English for workflow/logic sections,
+  Korean reserved for output examples and trigger phrases. See
+  [`agent-context/constraints/code-style-skill-language-convention.md`](agent-context/constraints/code-style-skill-language-convention.md).
+- **Hook Source of Truth** — hook source lives here; deployed copies
+  under `~/.claude/hooks/` are read-only artefacts of `install.sh`.
+  See [`agent-context/constraints/hook-source-of-truth.md`](agent-context/constraints/hook-source-of-truth.md).

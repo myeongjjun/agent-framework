@@ -11,7 +11,7 @@ Agent는 다음 신호를 받으면 **즉시 멈추고 사용자에게 명시 �
 1. Bash hook 이 `BLOCKED:` / `REFUSED:` 등 deny 메시지 반환
 2. Claude Code permission system 이 `denied by auto mode` 표시
 3. MCP tool 이 `denied` / `unauthorized` / `permission denied` 반환
-4. 사내 가드 (`hooks/general/guard-*.sh`) 가 차단
+4. Framework guard (`hooks/general/guard-*.sh`) 가 차단
 
 ## 우회 금지 동작
 
