@@ -1,6 +1,6 @@
 # Constraints Index
 
-> Last updated: 2026-04-06
+> Last updated: 2026-06-16
 
 ## By Severity
 
@@ -8,16 +8,15 @@
 
 | Constraint | Category | Scope |
 |------------|----------|-------|
-| [Skill Language Convention](code-style-skill-language-convention.md) | code-style | `skills/*/SKILL.md` |
+| [no-permission-bypass](no-permission-bypass.md) | security | All personas |
+| [code-style-skill-language-convention](code-style-skill-language-convention.md) | code-style | `skills/*/SKILL.md` |
 
 ### High
 
 | Constraint | Description |
 |------------|-------------|
-| [skill-interdependency](skill-interdependency.md) | handoff, takeover, codex 3 skill interdependency rules |
-| [handoff-format-v1](handoff-format-v1.md) | Handoff entry v1.0.0 (6 sections) format rules |
-| [hook-source-of-truth](hook-source-of-truth.md) | Hooks managed in hooks/<category>/ + sync-hooks.sh only |
-| [verify-before-conclude](agent-behavior-verify-before-conclude.md) | Require quantitative + qualitative evidence before conclusions |
+| [hook-source-of-truth](hook-source-of-truth.md) | Hooks managed in `hooks/<category>/` + deployed via `scripts/install.sh` only |
+| [agent-behavior-verify-before-conclude](agent-behavior-verify-before-conclude.md) | Require quantitative + qualitative evidence before conclusions |
 
 ### Medium
 

@@ -13,6 +13,14 @@
 
 _None_
 
+### Rejected
+
+_None_
+
 ### Deprecated
+
+_None_
+
+### Superseded
 
 _None_
