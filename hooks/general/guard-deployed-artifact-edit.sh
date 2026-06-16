@@ -8,7 +8,7 @@
 # source in agent-framework/.
 #
 # Deployed artifact paths:
-#   ~/.orchestrator/   (orchestrator scripts, bootstrap, agent state)
+#   ~/.orchestrator/   (orchestrator scripts and agent state)
 #   ~/.claude/skills/  (deployed skills)
 #   ~/.claude/hooks/   (deployed hooks)
 #   ~/.claude/agents/  (deployed agents)
@@ -44,13 +44,12 @@ expanded="${file_path/#\~/$HOME}"
 
 # Check if targeting a deployed artifact path
 # ~/.orchestrator/ contains both deployed artifacts and runtime state:
-#   Deployed (block): scripts/, agent/bootstrap.md
+#   Deployed (block): scripts/
 #   Runtime (allow):  state.json, activity.jsonl, locks/, agent/pid, agent/RUNNING, etc.
 #   Communication (allow): inbox/, outbox/, mailbox/, tasks/, done/
 is_deployed=0
 case "$expanded" in
   ${HOME}/.orchestrator/scripts/*)        is_deployed=1 ;;
-  ${HOME}/.orchestrator/agent/bootstrap.md) is_deployed=1 ;;
   ${HOME}/.claude/skills/*)               is_deployed=1 ;;
   ${HOME}/.claude/hooks/*)                is_deployed=1 ;;
   ${HOME}/.claude/agents/*)               is_deployed=1 ;;
