@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# cmux stub for sib bats tests.
+#
+# Records every invocation (one line per call) to $CMUX_STUB_LOG and returns
+# canned output matching the real cmux CLI's shape, so sib's parsing logic is
+# exercised without a live cmux. Behaviour is overridable per-subcommand via
+# env vars (see below) to simulate failures.
+set -euo pipefail
+
+log="${CMUX_STUB_LOG:-/dev/null}"
+echo "cmux $*" >> "$log"
+
+sub="${1:-}"; shift || true
+
+case "$sub" in
+  new-pane)
+    # real: "OK surface:N workspace:M" (varies); sib greps surface:
+    echo "OK ${CMUX_STUB_SURFACE:-surface:90} ${CMUX_STUB_WS:-workspace:99}"
+    ;;
+  new-split)
+    # real: "OK surface:N workspace:M"
+    echo "OK ${CMUX_STUB_SURFACE:-surface:91} ${CMUX_STUB_WS:-workspace:7}"
+    ;;
+  new-workspace|workspace)
+    # `workspace create` and legacy `new-workspace` both print "OK workspace:N"
+    echo "OK ${CMUX_STUB_WS:-workspace:42}"
+    ;;
+  list-pane-surfaces)
+    echo "* ${CMUX_STUB_SURFACE:-surface:92}  sib-test  [selected]"
+    ;;
+  send|send-key|close-surface|close-workspace)
+    : # no stdout needed; the log line above is the assertion target
+    ;;
+  read-screen)
+    # emit the ready marker so sib's boot-wait loop exits immediately
+    printf '%s\n' "${CMUX_STUB_READY:-❯}"
+    ;;
+  *)
+    : # tolerate anything else silently
+    ;;
+esac

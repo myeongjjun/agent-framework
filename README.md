@@ -40,10 +40,15 @@ change L1 behaviour, it goes back to L1 (not a local override).
 | `agent-context/decisions/` | ADRs that justify L1 contents. |
 | `skills/acp-{constraint,decision,init}` | ACP standard skills. Required by every persona that uses ACP. |
 | `skills/codex` | Codex CLI integration. Used in every persona. |
+| `skills/dispatch` | Single-agent sibling launch via sib, with workspace targeting. Used in every persona. |
+| `skills/collab` | Dual-agent same-task cross-review via sib worktrees. Used in every persona. |
 | `bin/sib` | cmux + worktree sibling-agent launcher. Used in every persona. |
+| `bin/agent-promote.sh` | Squash-merge a sib worker branch (`sib/<slug>`) into the base branch with a risk scan. Backs `/collab` merges. |
 | `hooks/general/guard-acp-direct-edit.sh` | Block agent edits to `agent-context/`. Force ACP skill use. |
 | `hooks/general/guard-deployed-artifact-edit.sh` | Block agent edits to deployed runtime (~/.claude/skills, ~/.codex/skills, ...). |
 | `hooks/general/guard-permission-bypass.sh` | Block agent edits to `~/.claude/settings.json`, `hooks/**/*.sh`, `.claude.json`. |
+| `hooks/general/guard-cherry-pick.sh` | Warn on ad-hoc `git cherry-pick`; steer to `agent-promote.sh`. |
+| `hooks/general/turn-end-wip-commit.sh` | Auto-commit each turn inside a sib worker worktree so promote squashes cleanly. |
 | `agents/approver.md` | cmux approval-prompt auto-approver agent (daemon). |
 | `scripts/install.sh` | Pull L1 contents into `~/.claude/`, `~/.codex/`, `~/.local/bin/`. Atomic, overwrite. |
 | `scripts/check-update.sh` | git fetch + detect changes + trigger install. Driven by cron. |
@@ -107,7 +112,7 @@ A change belongs in L1 if **all** the following hold:
    ticket systems, or domain services).
 
 Examples of in-scope: permission-bypass guard, ACP skills, sib,
-codex skill.
+codex skill, dispatch + collab (sib-based, persona-free), agent-promote.
 
 Examples of out-of-scope: anything that names a particular
 work-organisation's ticket system, wiki, or chat workspace; guards

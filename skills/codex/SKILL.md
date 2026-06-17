@@ -176,10 +176,11 @@ After codex finishes a sib-spawned task, the worktree (branch
 `sib/<slug>`) holds the changes. Promote to the base branch via:
 
 ```bash
-./scripts/agent-promote.sh codex-<slug>
+agent-promote.sh codex-<slug>
 ```
 
-(`agent-promote.sh` is a persona-level helper; L1 sib only handles
+(`agent-promote.sh` is an L1 helper on PATH via `~/.local/bin/`; it
+squash-merges the `sib/<slug>` worker branch. sib itself only handles
 spawn/kill.)
 
 ## Common errors

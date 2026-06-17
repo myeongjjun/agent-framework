@@ -10,8 +10,17 @@
 # into `--worktree` when two siblings must edit in parallel (e.g. /collab's
 # dual-agent same-task pattern) so their changes do not collide.
 #
+# Placement: by default the sibling splits the caller's current workspace.
+# Use `--workdir <path>` to start it in a different directory, `--workspace
+# <id|ref>` to split a specific (already-open) workspace, or `--new-workspace`
+# to create a dedicated workspace rooted at the chosen workdir. These let a
+# caller put work where it belongs instead of dumping every sibling into the
+# base session's pane (see /dispatch workspace targeting).
+#
 # Subcommands:
-#   sib spawn <slug> [--codex] [--yolo] [--base <branch>] [--worktree] [--takeover] [-- <prompt...>]
+#   sib spawn <slug> [--codex] [--yolo] [--base <branch>] [--worktree]
+#             [--workdir <path>] [--workspace <id|ref> | --new-workspace]
+#             [--takeover] [-- <prompt...>]
 #   sib list
 #   sib send <slug> <text...>
 #   sib kill <slug> [--keep-worktree]
@@ -19,7 +28,10 @@
 # Talk to a sibling by focusing its cmux pane and typing, or `sib send <slug> "..."`.
 # Trade-off vs zmx: no detached persistence — the agent lives only while its pane is open.
 set -euo pipefail
-export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+# Normalise PATH so cmux/git resolve regardless of the caller's login shell.
+# SIB_EXTRA_PATH is prepended first: a seam for injecting an alternate
+# toolchain (and for tests that stub cmux/git). Empty by default.
+export PATH="${SIB_EXTRA_PATH:+${SIB_EXTRA_PATH}:}/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 
 STATE_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/sib"
 WT_ROOT="${STATE_DIR}/worktrees"
@@ -40,15 +52,20 @@ spawn)
   # --yolo opts into autonomous mode (skip gates) — only for unattended work.
   agent="claude"; yolo=0
   base="HEAD"; do_worktree=0; takeover=0; prompt=""
+  workdir=""; target_ws=""; new_ws=0
   while (($#)); do case "$1" in
-    --codex)        agent="codex" ;;
-    --yolo)         yolo=1 ;;
-    --base)         shift; base="${1:?--base needs branch}" ;;
-    --worktree)     do_worktree=1 ;;
-    --takeover)     takeover=1 ;;
-    --)             shift; prompt="$*"; break ;;
-    *)              die "unknown spawn arg: $1" ;;
+    --codex)            agent="codex" ;;
+    --yolo)             yolo=1 ;;
+    --base)             shift; base="${1:?--base needs branch}" ;;
+    --worktree)         do_worktree=1 ;;
+    --workdir|--cwd)    shift; workdir="${1:?--workdir needs a path}" ;;
+    --workspace)        shift; target_ws="${1:?--workspace needs an id|ref}" ;;
+    --new-workspace)    new_ws=1 ;;
+    --takeover)         takeover=1 ;;
+    --)                 shift; prompt="$*"; break ;;
+    *)                  die "unknown spawn arg: $1" ;;
   esac; shift || true; done
+  [[ -n "${target_ws}" ]] && (( new_ws )) && die "--workspace and --new-workspace are mutually exclusive"
   if [[ "${agent}" == "codex" ]]; then
     agent_cmd="codex"; (( yolo )) && agent_cmd="codex --dangerously-bypass-approvals-and-sandbox"
     ready_marker="›"
@@ -59,8 +76,15 @@ spawn)
 
   [[ -f "${STATE_DIR}/state/${slug}.env" ]] && die "sib '${slug}' already exists (sib kill ${slug} first)"
 
-  # Isolated worktree from the current repo (opt-in via --worktree).
+  # Resolve the sibling's start directory.
+  # Precedence: --worktree (managed checkout) wins over --workdir, which wins
+  # over the caller's PWD. --worktree implies a git-managed path, so combining
+  # it with --workdir is contradictory.
+  if (( do_worktree )) && [[ -n "${workdir}" ]]; then
+    die "--worktree manages its own path; do not combine with --workdir"
+  fi
   start_dir="${PWD}"
+  [[ -n "${workdir}" ]] && start_dir="${workdir}"
   if (( do_worktree )); then
     git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "not in a git repo (--worktree requires one)"
     repo="$(basename "$(git rev-parse --show-toplevel)")"
@@ -69,20 +93,44 @@ spawn)
     git worktree add -b "sib/${slug}" "${wt}" "${base}" >/dev/null
     start_dir="${wt}"
   fi
+  [[ -d "${start_dir}" ]] || die "start dir does not exist: ${start_dir}"
 
-  ws="${CMUX_WORKSPACE_ID}"
-  out="$(cmux new-pane --type terminal --direction right --workspace "${ws}")"
-  surface="$(grep -oE 'surface:[^[:space:]]+' <<<"${out}" | head -1)"
-  [[ -n "${surface}" ]] || { echo "${out}" >&2; die "failed to create pane"; }
+  # Place the sibling pane. Three modes:
+  #   default        — split the caller's current workspace (legacy behaviour)
+  #   --workspace W  — split an already-open workspace W
+  #   --new-workspace— create a dedicated workspace rooted at start_dir
+  if (( new_ws )); then
+    # cmux new-workspace --cwd boots a shell in start_dir; we then grab its
+    # surface so the agent launch + later `sib send`/`kill` can target it.
+    wsout="$(cmux new-workspace --name "sib-${slug}" --cwd "${start_dir}" --focus false 2>&1)"
+    ws="$(grep -oE 'workspace:[^[:space:]]+' <<<"${wsout}" | head -1)"
+    [[ -n "${ws}" ]] || { echo "${wsout}" >&2; die "failed to create workspace"; }
+    surface="$(cmux list-pane-surfaces --workspace "${ws}" 2>/dev/null | grep -oE 'surface:[^[:space:]]+' | head -1)"
+    [[ -n "${surface}" ]] || die "created workspace ${ws} but found no surface"
+  elif [[ -n "${target_ws}" ]]; then
+    ws="${target_ws}"
+    out="$(cmux new-split right --workspace "${ws}" --focus false 2>&1)"
+    surface="$(grep -oE 'surface:[^[:space:]]+' <<<"${out}" | head -1)"
+    [[ -n "${surface}" ]] || { echo "${out}" >&2; die "failed to split workspace ${ws}"; }
+  else
+    ws="${CMUX_WORKSPACE_ID}"
+    out="$(cmux new-pane --type terminal --direction right --workspace "${ws}")"
+    surface="$(grep -oE 'surface:[^[:space:]]+' <<<"${out}" | head -1)"
+    [[ -n "${surface}" ]] || { echo "${out}" >&2; die "failed to create pane"; }
+  fi
 
   # Launch the agent directly in the new pane (exec → closing pane ends it; no zmx).
   cmux send --surface "${surface}" --workspace "${ws}" "cd $(printf %q "${start_dir}") && exec ${agent_cmd}"
   cmux send-key --surface "${surface}" --workspace "${ws}" enter
 
-  # Persist state.
+  # Persist state. `worktree=` keeps its historical name (it is the sibling's
+  # start dir whether or not a worktree was created); `worktree_managed`
+  # records whether sib owns a git worktree to clean up on kill. `workdir=`
+  # records the resolved start dir explicitly for newer consumers.
   { echo "slug=${slug}"; echo "agent=${agent}";
     echo "surface=${surface}"; echo "workspace=${ws}"; echo "worktree=${start_dir}";
-    echo "worktree_managed=${do_worktree}"; } > "${STATE_DIR}/state/${slug}.env"
+    echo "workdir=${start_dir}"; echo "worktree_managed=${do_worktree}";
+    echo "workspace_managed=${new_ws}"; } > "${STATE_DIR}/state/${slug}.env"
 
   # Wait for the agent's input prompt to appear, then optional initial input.
   booted=0
@@ -99,8 +147,8 @@ spawn)
     cmux send-key --surface "${surface}" --workspace "${ws}" enter
   fi
 
-  echo "✓ sib '${slug}' (${agent}) → surface ${surface} $([[ ${booted} == 1 ]] && echo '[booted]' || echo '[booting…]')"
-  echo "  worktree: ${start_dir}"
+  echo "✓ sib '${slug}' (${agent}) → ${ws} ${surface} $([[ ${booted} == 1 ]] && echo '[booted]' || echo '[booting…]')"
+  echo "  workdir: ${start_dir}$( (( new_ws )) && echo '  (dedicated workspace)'; (( do_worktree )) && echo '  (worktree)')"
   echo "  talk: focus the pane, or  sib send ${slug} \"...\""
   ;;
 
@@ -127,9 +175,16 @@ kill)
   slug="${1:?sib kill <slug>}"; shift
   keep_wt=0; [[ "${1:-}" == "--keep-worktree" ]] && keep_wt=1
   f="${STATE_DIR}/state/${slug}.env"; [[ -f "$f" ]] || die "no such sib: ${slug}"
+  workspace_managed=0  # default for state files written before this field existed
   . "$f"
-  # Closing the pane ends the agent process running in it (no zmx to kill).
-  cmux close-surface --surface "${surface}" --workspace "${workspace}" 2>/dev/null || true
+  # End the agent by tearing down its surface. A sib-created dedicated
+  # workspace holds only this one surface, and cmux refuses to close the last
+  # surface — close the whole workspace instead. Otherwise just close the pane.
+  if (( workspace_managed )); then
+    cmux close-workspace --workspace "${workspace}" 2>/dev/null || true
+  else
+    cmux close-surface --surface "${surface}" --workspace "${workspace}" 2>/dev/null || true
+  fi
   if (( worktree_managed )) && (( ! keep_wt )); then
     git worktree remove --force "${worktree}" 2>/dev/null || true
     git branch -D "sib/${slug}" 2>/dev/null || true

@@ -1,6 +1,6 @@
 # Decisions Index
 
-> No decisions yet. Use `/acp-decision` to record architectural decisions.
+> Last updated: 2026-06-17
 
 ## By Status
 
@@ -8,6 +8,7 @@
 
 | ADR | Date | Title |
 |-----|------|-------|
+| [001](2026-06-17-sib-workspace-targeting-and-dispatch-collab-l1-promotion.md) | 2026-06-17 | sib workspace targeting + dispatch/collab promotion to L1 |
 
 ### Proposed
 
