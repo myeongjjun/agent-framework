@@ -11,6 +11,7 @@
 - **워크스페이스의 cwd를 알고 싶으면 `cmux sidebar-state --workspace <ref>`** 를 써라. `cmux tree`에는 cwd가 없다.
 - **tty를 워크스페이스 식별키로 쓰지 마라.** tty는 재사용·중복된다(예: ttys000이 두 워크스페이스에).
 - **워크스페이스 제목을 신뢰하지 마라.** auto-name(작업 설명)과 cwd 표시가 번갈아 나온다(아래 "제목 이원 구조").
+- **TUI 에이전트(claude/codex)에 입력 제출 시, 프롬프트 마커(`❯`/`›`)가 떴다고 enter를 쏘지 마라.** 마커는 "입력창이 그려짐"일 뿐 "입력 수용 준비"가 아니다. 특히 codex는 부팅 직후 MCP 로딩 중 입력을 큐로 돌린다(`tab to queue message`). → 텍스트 안착 + 큐 상태 해제를 확인한 뒤 enter (아래 §9).
 
 ---
 
@@ -143,6 +144,70 @@ cmux ping     # → PONG  (소켓 살아있음 + 자동화 모드 동작 확인)
   대부분의 일상 작업은 전용 CLI로 충분하므로 rpc는 최후수단.
 - 내부적으로 모든 CLI는 cmux 앱과 unix 소켓으로 통신한다. **사용자/에이전트는 소켓을 직접 다룰 필요 없다** — CLI만 쓰면 된다.
 - `CMUX_QUIET=1` — alias 안내 등 부가 출력 억제.
+
+---
+
+## 9. TUI 에이전트에 입력 제출하기 (claude/codex) — 함정 + 검증된 패턴 ★
+
+`cmux send`(텍스트) + `cmux send-key enter`로 TUI 에이전트에게 작업을 주는 흐름은
+**언제 enter를 보내느냐**가 전부다. 2026-06-17 codex/claude로 실측한 사실:
+
+### 함정 1 — 프롬프트 마커는 "ready"가 아니다
+- `❯`(claude) / `›`(codex)는 **입력창이 그려졌다**는 뜻일 뿐, 입력을 받아 **제출**할 준비가
+  됐다는 뜻이 아니다. 마커 줄에는 placeholder(예: codex `Run /review on my current changes`)가
+  들어있는 빈 입력창도 포함된다.
+
+### 함정 2 — codex는 부팅 직후 입력을 "큐"로 돌린다
+- codex는 시작 시 **MCP 서버를 로딩**한다(`• Starting MCP servers (1/2)`). 이 구간엔 입력이
+  제출되지 않고 큐에 쌓인다 — 화면 하단에 **`tab to queue message`** 가 뜬다.
+- 이 상태에서 텍스트를 보내고 enter(또는 `\n`)를 쏘면 **제출되지 않고 입력창에 남는다.**
+  (collab에서 codex worker가 작업을 시작 안 했던 실제 원인이 이것.)
+- MCP 로딩이 끝나면(모델 배너 `model: gpt-5.5 …` 표시 + `tab to queue` 사라짐) enter가 제출된다.
+
+### 함정 3 — `send "텍스트\n"` 원자 전송도 해결책이 아니다
+- `cmux send`는 `\n`/`\r`을 Enter로 처리하지만(help 명시), **큐 상태에선 `\n`도 똑같이 큐잉**된다.
+  한 방에 보낸다고 타이밍 문제가 사라지지 않는다.
+
+### 검증된 패턴 — send → 안착·ready 확인 → enter → 제출 확인
+```bash
+# 1) 텍스트를 입력창에 넣는다 (enter 아직 X)
+cmux send --surface "$SURF" --workspace "$WS" "$PROMPT"
+
+# 2) 텍스트가 입력창에 보이고 + 큐 상태가 아닌지 확인 (최대 N초 폴링)
+for _ in $(seq 1 60); do
+  screen=$(cmux read-screen --surface "$SURF" --workspace "$WS" --lines 40 2>/dev/null)
+  # codex: 'tab to queue message'가 사라져야 제출 가능
+  if grep -qF "$PROMPT_HEAD" <<<"$screen" && ! grep -qF "tab to queue message" <<<"$screen"; then
+    break
+  fi
+  sleep 0.5
+done
+
+# 3) enter로 제출
+cmux send-key --surface "$SURF" --workspace "$WS" enter
+
+# 4) 제출됐는지 확인 (claude/codex 공통: 'Working'/'esc to interrupt' 등 작업 신호)
+#    안 떴으면 enter를 한 번 더 (codex 큐 해제 직후 1회 재시도가 안전)
+sleep 1
+cmux read-screen --surface "$SURF" --workspace "$WS" --lines 20 2>/dev/null \
+  | grep -qiE 'working|esc to interrupt' || cmux send-key --surface "$SURF" --workspace "$WS" enter
+```
+
+### 자동완성/탭 변형 (과거 사례)
+- 입력창에 텍스트를 넣었을 때 셸/에이전트가 **자동완성 후보**를 띄우면, enter가 그 후보를
+  선택해버리거나 첫 enter가 후보 확정에 먹히는 경우가 있었다. 이때는 **탭으로 후보를 확정/해제한
+  뒤 enter**, 또는 제출 신호가 안 보이면 enter를 한 번 더 보내는 재시도가 필요하다.
+- 공통 교훈: **키를 보낸 뒤 화면으로 결과를 확인하지 않고 다음 키를 보내지 마라.** send → read-screen
+  확인 → 다음 키. 이 "확인 사이클"이 claude/codex/자동완성 모든 변형을 흡수한다.
+
+### 마커별 신호 요약
+| 에이전트 | 입력창 마커 | 진짜 ready 신호 | 제출됨 신호 |
+|---|---|---|---|
+| claude | `❯` | 마커 + 입력 즉시 수용(보통 빠름) | `Working`, `esc to interrupt`, 토큰 카운터 |
+| codex | `›` | `tab to queue message` **없음** + 모델 배너 | `• Working (… esc to interrupt)` |
+
+→ sib(`bin/sib`)는 이 패턴을 구현한다: spawn 후 마커만이 아니라 입력 수용 상태를 확인하고,
+codex는 큐 해제까지 기다린 뒤 제출 + 1회 재시도.
 
 ---
 

@@ -144,7 +144,9 @@ spawn)
     echo "workdir=${start_dir}"; echo "worktree_managed=${do_worktree}";
     echo "workspace_managed=${new_ws}"; } > "${STATE_DIR}/state/${slug}.env"
 
-  # Wait for the agent's input prompt to appear, then optional initial input.
+  # Wait for the agent's input prompt to appear. The marker (❯/›) means the
+  # input box is *drawn* — not that input is accepted yet. See cmux-cli-
+  # reference §9 for the full trap analysis.
   booted=0
   for _ in $(seq 1 40); do
     if cmux read-screen --surface "${surface}" --workspace "${ws}" --lines 60 2>/dev/null | grep -qF "${ready_marker}"; then
@@ -155,8 +157,27 @@ spawn)
   (( takeover )) && prompt="/takeover"
   if [[ -n "${prompt}" ]]; then
     (( booted )) || sleep 3
+    # Put the prompt in the input box first (no enter yet).
     cmux send --surface "${surface}" --workspace "${ws}" "${prompt}"
+    # codex queues input while MCP servers load ("tab to queue message"); an
+    # enter sent then is swallowed. Wait until the queue notice clears (and the
+    # prompt text is visible) before submitting. Harmless no-op for claude.
+    head_chars="${prompt:0:24}"
+    for _ in $(seq 1 60); do
+      scr="$(cmux read-screen --surface "${surface}" --workspace "${ws}" --lines 40 2>/dev/null || true)"
+      if grep -qF "${head_chars}" <<<"${scr}" && ! grep -qF "tab to queue message" <<<"${scr}"; then
+        break
+      fi
+      sleep 0.5
+    done
     cmux send-key --surface "${surface}" --workspace "${ws}" enter
+    # Confirm submission; if no work signal appeared (queue cleared a beat
+    # late, autocomplete ate the first enter), send one more enter.
+    sleep 1
+    if ! cmux read-screen --surface "${surface}" --workspace "${ws}" --lines 20 2>/dev/null \
+         | grep -qiE 'working|esc to interrupt'; then
+      cmux send-key --surface "${surface}" --workspace "${ws}" enter
+    fi
   fi
 
   echo "✓ sib '${slug}' (${agent}) → ${ws} ${surface} $([[ ${booted} == 1 ]] && echo '[booted]' || echo '[booting…]')"

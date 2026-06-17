@@ -38,8 +38,18 @@ case "$sub" in
     : # no stdout needed; the log line above is the assertion target
     ;;
   read-screen)
-    # emit the ready marker so sib's boot-wait loop exits immediately
-    printf '%s\n' "${CMUX_STUB_READY:-❯}"
+    # Boot-wait loop looks for the ready marker. The prompt-submit logic then
+    # looks for (a) the prompt text + absence of "tab to queue message", and
+    # (b) a work signal ("working") after enter. Emit a screen that satisfies
+    # all three by default. Override via CMUX_STUB_SCREEN to simulate states
+    # (e.g. a queued codex pane).
+    if [[ -n "${CMUX_STUB_SCREEN:-}" ]]; then
+      printf '%s\n' "${CMUX_STUB_SCREEN}"
+    else
+      printf '%s\n' "${CMUX_STUB_READY:-❯}"
+      printf '%s\n' "${CMUX_STUB_PROMPT_ECHO:-the task prompt}"
+      printf 'working (esc to interrupt)\n'
+    fi
     ;;
   *)
     : # tolerate anything else silently

@@ -164,3 +164,42 @@ EOF
   [ "$status" -eq 0 ]
   grep -q "cmux close-surface --surface surface:11" "$CMUX_STUB_LOG"
 }
+
+# --- prompt submission (cmux-cli-reference §9) ------------------------------
+
+@test "prompt is sent as text BEFORE its submit enter (not after)" {
+  # Put text in the box, then submit. If enter preceded the text send, the
+  # agent would submit an empty line and drop the task. (Note: the launch
+  # 'cd && exec' line has its own earlier enter — we check the PROMPT send is
+  # followed by an enter, i.e. there is an enter AFTER the prompt send line.)
+  run "$SIB" spawn submit-order --workdir "$WORKDIR" -- "do the thing"
+  [ "$status" -eq 0 ]
+  send_line=$(grep -n "cmux send .*do the thing" "$CMUX_STUB_LOG" | head -1 | cut -d: -f1)
+  last_enter=$(grep -n "cmux send-key .* enter" "$CMUX_STUB_LOG" | tail -1 | cut -d: -f1)
+  [ -n "$send_line" ] && [ -n "$last_enter" ]
+  # the submit enter comes after the prompt text was placed
+  [ "$last_enter" -gt "$send_line" ]
+}
+
+@test "submission waits out a codex queue notice before enter" {
+  # Simulate a pane stuck on 'tab to queue message': sib must NOT have given up
+  # without ever sending enter. (Loop is bounded, so it still proceeds.)
+  export CMUX_STUB_SCREEN="›
+do the thing
+tab to queue message"
+  run "$SIB" spawn queued --codex --workdir "$WORKDIR" -- "do the thing"
+  [ "$status" -eq 0 ]
+  # prompt text was placed in the box
+  grep -q "cmux send .*do the thing" "$CMUX_STUB_LOG"
+  # and an enter was eventually sent (after the bounded queue wait)
+  grep -q "cmux send-key .* enter" "$CMUX_STUB_LOG"
+}
+
+@test "no prompt → only the launch enter, no prompt-submit enter" {
+  run "$SIB" spawn no-prompt --workdir "$WORKDIR"
+  [ "$status" -eq 0 ]
+  # the launch 'cd && exec' line gets exactly one enter; with no prompt there
+  # must be no second (submit) enter.
+  enters=$(grep -c "cmux send-key .* enter" "$CMUX_STUB_LOG")
+  [ "$enters" -eq 1 ]
+}
