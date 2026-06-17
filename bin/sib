@@ -40,6 +40,9 @@ mkdir -p "${STATE_DIR}/state" "${WT_ROOT}"
 die() { echo "sib: $*" >&2; exit 1; }
 need_cmux() { [[ -n "${CMUX_WORKSPACE_ID:-}" ]] || die "not inside a cmux pane (CMUX_WORKSPACE_ID unset)"; }
 surface_alive() { cmux read-screen --surface "$1" --workspace "$2" --lines 1 >/dev/null 2>&1; }
+# Working directory of a cmux workspace (its `cwd=` from sidebar-state). cmux
+# tree omits cwd; sidebar-state is the supported source. Empty if unknown.
+workspace_cwd() { cmux sidebar-state --workspace "$1" 2>/dev/null | sed -n 's/^cwd=//p' | head -1; }
 
 cmd="${1:-}"; shift || true
 
@@ -83,8 +86,17 @@ spawn)
   if (( do_worktree )) && [[ -n "${workdir}" ]]; then
     die "--worktree manages its own path; do not combine with --workdir"
   fi
+  # Default start dir: caller's PWD. An explicit --workdir wins. Failing that,
+  # targeting an existing workspace (--workspace W) means "run where W lives" —
+  # adopt W's cwd so the pane and the agent's directory agree. (Without this,
+  # the pane lands in W but the agent starts in the caller's PWD.)
   start_dir="${PWD}"
-  [[ -n "${workdir}" ]] && start_dir="${workdir}"
+  if [[ -n "${workdir}" ]]; then
+    start_dir="${workdir}"
+  elif [[ -n "${target_ws}" ]] && (( ! do_worktree )); then
+    ws_cwd="$(workspace_cwd "${target_ws}")"
+    [[ -n "${ws_cwd}" ]] && start_dir="${ws_cwd}"
+  fi
   if (( do_worktree )); then
     git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "not in a git repo (--worktree requires one)"
     repo="$(basename "$(git rev-parse --show-toplevel)")"

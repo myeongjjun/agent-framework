@@ -77,12 +77,33 @@ setup() {
 # --- --workspace ------------------------------------------------------------
 
 @test "--workspace splits the named workspace, not the caller's" {
+  export CMUX_STUB_WS_CWD="$WORKDIR"
   run "$SIB" spawn ws-test --workspace workspace:5
   [ "$status" -eq 0 ]
   grep -q "cmux new-split right --workspace workspace:5" "$CMUX_STUB_LOG"
   # must NOT split the caller's workspace
   ! grep -q "cmux new-pane" "$CMUX_STUB_LOG"
   grep -qx "workspace=workspace:5" "$STATE/ws-test.env"
+}
+
+@test "--workspace without --workdir adopts the target workspace's cwd" {
+  # Regression: pane went to W but the agent started in the caller's PWD.
+  # sib must read W's cwd (sidebar-state) and start the agent there.
+  export CMUX_STUB_WS_CWD="$WORKDIR"
+  run "$SIB" spawn ws-cwd --workspace workspace:5
+  [ "$status" -eq 0 ]
+  grep -q "cmux sidebar-state --workspace workspace:5" "$CMUX_STUB_LOG"
+  grep -q "cmux send .* cd .*$WORKDIR && exec claude" "$CMUX_STUB_LOG"
+  grep -qx "workdir=$WORKDIR" "$STATE/ws-cwd.env"
+}
+
+@test "--workspace with explicit --workdir keeps the explicit dir" {
+  # explicit --workdir must win over the target workspace's cwd
+  OTHER="$BATS_TEST_TMPDIR/explicit"; mkdir -p "$OTHER"
+  export CMUX_STUB_WS_CWD="$WORKDIR"
+  run "$SIB" spawn ws-explicit --workspace workspace:5 --workdir "$OTHER"
+  [ "$status" -eq 0 ]
+  grep -qx "workdir=$OTHER" "$STATE/ws-explicit.env"
 }
 
 # --- --new-workspace --------------------------------------------------------

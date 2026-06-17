@@ -28,6 +28,12 @@ case "$sub" in
   list-pane-surfaces)
     echo "* ${CMUX_STUB_SURFACE:-surface:92}  sib-test  [selected]"
     ;;
+  sidebar-state)
+    # emit a cwd= line so workspace_cwd() can adopt the target workspace's dir
+    echo "tab=STUBTAB"
+    echo "cwd=${CMUX_STUB_WS_CWD:-/stub/workspace/cwd}"
+    echo "focused_cwd=${CMUX_STUB_WS_CWD:-/stub/workspace/cwd}"
+    ;;
   send|send-key|close-surface|close-workspace)
     : # no stdout needed; the log line above is the assertion target
     ;;
