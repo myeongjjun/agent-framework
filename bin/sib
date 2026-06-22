@@ -148,27 +148,44 @@ spawn)
   # input box is *drawn* — not that input is accepted yet. See cmux-cli-
   # reference §9 for the full trap analysis.
   booted=0
-  for _ in $(seq 1 40); do
+  for i in $(seq 1 50); do
     if cmux read-screen --surface "${surface}" --workspace "${ws}" --lines 60 2>/dev/null | grep -qF "${ready_marker}"; then
       booted=1; break
     fi
-    sleep 0.5
+    # Adaptive poll: fast (~1s total) at first so a quick boot is caught almost
+    # immediately, then back off to 0.5s (≈20s ceiling) for a slow cold start.
+    if (( i <= 10 )); then sleep 0.1; else sleep 0.5; fi
   done
   (( takeover )) && prompt="/takeover"
   if [[ -n "${prompt}" ]]; then
     (( booted )) || sleep 3
     # Put the prompt in the input box first (no enter yet).
     cmux send --surface "${surface}" --workspace "${ws}" "${prompt}"
-    # codex queues input while MCP servers load ("tab to queue message"); an
-    # enter sent then is swallowed. Wait until the queue notice clears (and the
-    # prompt text is visible) before submitting. Harmless no-op for claude.
-    head_chars="${prompt:0:24}"
-    for _ in $(seq 1 60); do
+    # Confirm the text landed, then submit. Two traps this guards against:
+    #   1) wrap (claude + codex) — a narrow split pane soft-wraps the input, so
+    #      the first 24 chars can straddle a line break and `grep -F` never
+    #      matches them on one line. The loop then spins to its 30s cap before
+    #      submitting (measured: a 27-char codex prompt took 42s). Fix: strip
+    #      spaces+newlines from BOTH the screen and the needle so the match is
+    #      wrap-immune while keeping 24-char specificity (low false-match risk).
+    #   2) codex queue — codex queues input while MCP servers load
+    #      ("tab to queue message"); an enter sent then is swallowed. Only the
+    #      codex branch waits the notice out (regression-critical); claude has
+    #      no input queue, so it submits as soon as the text is visible.
+    needle="$(printf '%s' "${prompt:0:24}" | tr -d ' \n')"
+    for i in $(seq 1 60); do
       scr="$(cmux read-screen --surface "${surface}" --workspace "${ws}" --lines 40 2>/dev/null || true)"
-      if grep -qF "${head_chars}" <<<"${scr}" && ! grep -qF "tab to queue message" <<<"${scr}"; then
-        break
+      scr_ns="$(printf '%s' "${scr}" | tr -d ' \n')"
+      if grep -qF "${needle}" <<<"${scr_ns}"; then
+        if [[ "${agent}" == "codex" ]]; then
+          grep -qF "tab to queue message" <<<"${scr}" || break
+        else
+          break
+        fi
       fi
-      sleep 0.5
+      # Adaptive poll: fast (~1s total) at first to catch a quick render, then
+      # back off to 0.5s so a slow boot still resolves without busy-looping.
+      if (( i <= 10 )); then sleep 0.1; else sleep 0.5; fi
     done
     cmux send-key --surface "${surface}" --workspace "${ws}" enter
     # Confirm submission; if no work signal appeared (queue cleared a beat
@@ -189,6 +206,8 @@ list)
   shopt -s nullglob
   printf '%-16s %-8s %-12s %s\n' SLUG AGENT SURFACE WORKTREE
   for f in "${STATE_DIR}"/state/*.env; do
+    # shellcheck source=/dev/null  # runtime state file; fields set by spawn
+    # shellcheck disable=SC2154    # slug/agent/surface/workspace/worktree come from the sourced file
     ( . "$f"; st=$(surface_alive "${surface}" "${workspace}" && echo up || echo dead)
       printf '%-16s %-8s %-12s %s (%s)\n' "$slug" "$agent" "$surface" "$worktree" "$st" )
   done
@@ -197,6 +216,7 @@ list)
 send)
   slug="${1:?sib send <slug> <text>}"; shift
   f="${STATE_DIR}/state/${slug}.env"; [[ -f "$f" ]] || die "no such sib: ${slug}"
+  # shellcheck source=/dev/null  # runtime state file; fields set by spawn
   . "$f"
   surface_alive "${surface}" "${workspace}" || die "sib '${slug}' pane is gone (sib kill ${slug} to clean up)"
   cmux send --surface "${surface}" --workspace "${workspace}" "$*"
@@ -209,6 +229,7 @@ kill)
   keep_wt=0; [[ "${1:-}" == "--keep-worktree" ]] && keep_wt=1
   f="${STATE_DIR}/state/${slug}.env"; [[ -f "$f" ]] || die "no such sib: ${slug}"
   workspace_managed=0  # default for state files written before this field existed
+  # shellcheck source=/dev/null  # runtime state file; fields set by spawn
   . "$f"
   # End the agent by tearing down its surface. A sib-created dedicated
   # workspace holds only this one surface, and cmux refuses to close the last
@@ -218,6 +239,7 @@ kill)
   else
     cmux close-surface --surface "${surface}" --workspace "${workspace}" 2>/dev/null || true
   fi
+  # shellcheck disable=SC2154  # worktree_managed/worktree set by the sourced state file
   if (( worktree_managed )) && (( ! keep_wt )); then
     git worktree remove --force "${worktree}" 2>/dev/null || true
     git branch -D "sib/${slug}" 2>/dev/null || true

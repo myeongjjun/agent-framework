@@ -1,0 +1,39 @@
+name: ci
+
+# What runs here (and what does NOT):
+#   - bats: bin/sib's flag/placement/state logic. cmux is stubbed
+#     (tests/helpers/cmux-stub via SIB_EXTRA_PATH), so no live cmux is needed —
+#     this is safe and deterministic on a headless runner.
+#   - shellcheck: lint the bash entrypoints.
+# The LIVE prompt-injection check (tests/live-smoke.sh) is intentionally absent:
+# it needs a running cmux.app desktop session + authenticated claude/codex
+# binaries, none of which exist on CI. It runs locally — see
+# docs/sib-spawn-timing.md ("회귀 방어").
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  bats:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install bats
+        run: sudo apt-get update && sudo apt-get install -y bats
+      - name: Run bats suite
+        run: bats tests/
+
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run shellcheck
+        run: |
+          sudo apt-get update && sudo apt-get install -y shellcheck
+          # bin/sib has no .sh extension; lint it explicitly alongside *.sh.
+          shellcheck --shell=bash bin/sib bin/agent-promote.sh tests/live-smoke.sh

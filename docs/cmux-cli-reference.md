@@ -193,6 +193,16 @@ cmux read-screen --surface "$SURF" --workspace "$WS" --lines 20 2>/dev/null \
   | grep -qiE 'working|esc to interrupt' || cmux send-key --surface "$SURF" --workspace "$WS" enter
 ```
 
+### 함정 4 — 좁은 pane의 wrap이 에코 확인을 깨뜨린다 (2026-06-22 실측)
+- 제출 전 "텍스트 안착 확인"으로 프롬프트 앞 N자를 `grep -F`로 찾는 패턴은, split
+  pane이 좁아 입력 텍스트를 **soft-wrap**하면 그 N자가 줄 경계에 걸려 한 줄로
+  안 나타나 **매칭이 영영 실패**한다. → 루프가 상한까지 헛돌다 제출(실측: codex
+  27자 프롬프트가 42초). pane이 우연히 한 줄로 리플로우되면 그제서야 통과.
+- 해결: 화면과 needle **양쪽에서 공백·개행을 제거(`tr -d ' \n'`)하고 비교**하면
+  wrap 위치와 무관하게 매칭된다. 자세한 분해·근거는 [sib-spawn-timing.md](./sib-spawn-timing.md).
+- 부수 교훈: 체감 느림의 주범은 codex 큐가 아니라 **프롬프트 길이 × pane 폭**이라
+  긴 프롬프트면 claude도 똑같이 느려진다.
+
 ### 자동완성/탭 변형 (과거 사례)
 - 입력창에 텍스트를 넣었을 때 셸/에이전트가 **자동완성 후보**를 띄우면, enter가 그 후보를
   선택해버리거나 첫 enter가 후보 확정에 먹히는 경우가 있었다. 이때는 **탭으로 후보를 확정/해제한
