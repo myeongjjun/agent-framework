@@ -24,15 +24,14 @@
 |-----------|--------|
 | `/agent-context/decisions/` | **READ-ONLY** → `/acp-decision` |
 | `/agent-context/constraints/` | **READ-ONLY** → `/acp-constraint` |
-| `/.agent/` | **VIA SKILL** → `/handoff`, `/takeover` |
 
 ### Session Workflow
 
 | Phase | Action |
 |-------|--------|
-| **Start** | Read constraints/ → Read decisions/ → `/takeover` |
+| **Start** | Read constraints/ → Read decisions/ (agentmemory `SessionStart` hook auto-injects recall) |
 | **During** | `/acp-decision`, `/acp-constraint` |
-| **End** | `/handoff` |
+| **End** | (agentmemory `Stop` hook auto-captures observations) |
 
 ### ACP Skills
 
@@ -40,8 +39,6 @@
 |-------|------|
 | `/acp-decision` | 아키텍처 결정 |
 | `/acp-constraint` | 제약 추가 |
-| `/handoff` | 세션 종료 |
-| `/takeover` | 세션 시작 |
 
 ### Agent Notes
 
@@ -204,6 +201,6 @@ _None yet_
 ## .gitignore Addition
 
 ```gitignore
-# ACP session handoffs
+# ACP local session archive (legacy handoffs + inbox; not version-controlled)
 .agent/
 ```
