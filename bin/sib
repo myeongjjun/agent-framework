@@ -20,7 +20,7 @@
 # Subcommands:
 #   sib spawn <slug> [--codex] [--yolo] [--base <branch>] [--worktree]
 #             [--workdir <path>] [--workspace <id|ref> | --new-workspace]
-#             [--takeover] [-- <prompt...>]
+#             [-- <prompt...>]
 #   sib list
 #   sib send <slug> <text...>
 #   sib kill <slug> [--keep-worktree]
@@ -54,7 +54,7 @@ spawn)
   # Default: normal permission gates (interactive sibling you supervise in the pane).
   # --yolo opts into autonomous mode (skip gates) — only for unattended work.
   agent="claude"; yolo=0
-  base="HEAD"; do_worktree=0; takeover=0; prompt=""
+  base="HEAD"; do_worktree=0; prompt=""
   workdir=""; target_ws=""; new_ws=0
   while (($#)); do case "$1" in
     --codex)            agent="codex" ;;
@@ -64,7 +64,6 @@ spawn)
     --workdir|--cwd)    shift; workdir="${1:?--workdir needs a path}" ;;
     --workspace)        shift; target_ws="${1:?--workspace needs an id|ref}" ;;
     --new-workspace)    new_ws=1 ;;
-    --takeover)         takeover=1 ;;
     --)                 shift; prompt="$*"; break ;;
     *)                  die "unknown spawn arg: $1" ;;
   esac; shift || true; done
@@ -156,7 +155,6 @@ spawn)
     # immediately, then back off to 0.5s (≈20s ceiling) for a slow cold start.
     if (( i <= 10 )); then sleep 0.1; else sleep 0.5; fi
   done
-  (( takeover )) && prompt="/takeover"
   if [[ -n "${prompt}" ]]; then
     (( booted )) || sleep 3
     # Put the prompt in the input box first (no enter yet).
