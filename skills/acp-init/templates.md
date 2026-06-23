@@ -29,9 +29,8 @@
 
 | Phase | Action |
 |-------|--------|
-| **Start** | Read constraints/ → Read decisions/ (agentmemory `SessionStart` hook auto-injects recall) |
+| **Start** | Read constraints/ → Read decisions/ |
 | **During** | `/acp-decision`, `/acp-constraint` |
-| **End** | (agentmemory `Stop` hook auto-captures observations) |
 
 ### ACP Skills
 
