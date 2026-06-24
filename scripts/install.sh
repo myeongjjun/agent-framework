@@ -2,11 +2,19 @@
 # install.sh — agent-framework L1 baseline installer.
 #
 # Pulls L1 contents into the user's runtime locations:
-#   skills/*       → ~/.claude/skills/<name>   (symlink)
-#                   ~/.codex/skills/<name>    (symlink, same source)
-#   hooks/**/*.sh  → ~/.claude/hooks/<name>    (copy + chmod +x)
-#   bin/*          → ~/.local/bin/<name>       (symlink)
-#   AGENTS.md      → ~/.claude/AGENTS.md       (copy, L1 base only — personas append)
+#   skills/*               → ~/.claude/skills/<name>   (symlink)
+#                           ~/.codex/skills/<name>    (symlink, same source)
+#   hooks/**/*.sh          → ~/.claude/hooks/<name>    (copy + chmod +x)
+#   bin/*                  → ~/.local/bin/<name>       (symlink)
+#   configs/claude/statusline.sh → ~/.claude/statusline.sh (copy + chmod +x)
+#   AGENTS.md              → ~/.claude/AGENTS.md       (copy, L1 base only — personas append)
+#
+# Statusline layering (ADR-043): configs/claude/statusline.sh is the L1
+# PUBLIC BASELINE — provider-agnostic skeleton only, no in-house specifics.
+# On in-house machines the agent-workspace L2 overlay (sync-hooks.sh) ALSO
+# deploys ~/.claude/statusline.sh and MUST WIN. Since this installer can run
+# from cron, an L1 run may transiently overwrite the in-house L2 version with
+# the baseline until the next sync-all; re-running sync-all restores L2.
 #
 # Symlinks point back at this repo so L1 git pulls are immediately
 # visible to running tools without re-running install.sh.
@@ -157,7 +165,27 @@ for binfile in "${FRAMEWORK_ROOT}/bin"/*; do
 done
 
 # ---------------------------------------------------------------------------
-# 4) AGENTS.md — copy as base. Personas APPEND to this; never edit.
+# 4) Statusline — copy the L1 baseline into ~/.claude/statusline.sh (+chmod).
+#    Copied (not symlinked) so the L2 in-house overlay (agent-workspace
+#    sync-hooks.sh) can overwrite it in place on in-house machines without
+#    fighting a symlink. L2 wins; see ADR-043 / header note above.
+# ---------------------------------------------------------------------------
+statusline_src="${FRAMEWORK_ROOT}/configs/claude/statusline.sh"
+if [[ -f "${statusline_src}" ]]; then
+  mkdir -p "${HOME}/.claude"
+  statusline_dst="${HOME}/.claude/statusline.sh"
+  if [[ -f "${statusline_dst}" ]] && cmp -s "${statusline_src}" "${statusline_dst}"; then
+    ok "statusline.sh → ~/.claude/ (already current)"
+  elif (( DRY_RUN == 1 )); then
+    printf '  [dry-run] install -m 755 %s %s\n' "${statusline_src}" "${statusline_dst}"
+  else
+    install -m 755 "${statusline_src}" "${statusline_dst}"
+    ok "statusline.sh → ~/.claude/"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# 5) AGENTS.md — copy as base. Personas APPEND to this; never edit.
 #    install only seeds ~/.claude/AGENTS.md.framework-base; the actual
 #    ~/.claude/AGENTS.md is the persona's responsibility to compose.
 # ---------------------------------------------------------------------------
@@ -172,7 +200,7 @@ if [[ -f "${FRAMEWORK_ROOT}/AGENTS.md" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 5) Drift-detection checksum file — verify.sh consumes this.
+# 6) Drift-detection checksum file — verify.sh consumes this.
 # ---------------------------------------------------------------------------
 sum_file="${HOME}/.claude/.framework-checksums"
 if (( DRY_RUN == 0 )); then
@@ -187,6 +215,7 @@ if (( DRY_RUN == 0 )); then
         | sort -z | xargs -0 shasum -a 256
       find agent-context/constraints -type f -name '*.md' -print0 \
         | sort -z | xargs -0 shasum -a 256
+      [[ -f configs/claude/statusline.sh ]] && shasum -a 256 configs/claude/statusline.sh
       [[ -f AGENTS.md ]] && shasum -a 256 AGENTS.md
     } > "${sum_file}"
   )
@@ -198,7 +227,7 @@ fi
 echo ""
 ok "L1 install complete."
 echo "   Source : ${FRAMEWORK_ROOT}"
-echo "   Targets: ~/.claude/{skills,hooks,AGENTS.md.framework-base}"
+echo "   Targets: ~/.claude/{skills,hooks,statusline.sh,AGENTS.md.framework-base}"
 echo "            ~/.codex/skills"
 echo "            ~/.local/bin"
 echo ""

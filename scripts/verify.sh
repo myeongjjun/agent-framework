@@ -47,6 +47,7 @@ current_sum="$(
       | sort -z | xargs -0 shasum -a 256
     find agent-context/constraints -type f -name '*.md' -print0 \
       | sort -z | xargs -0 shasum -a 256
+    [[ -f configs/claude/statusline.sh ]] && shasum -a 256 configs/claude/statusline.sh
     [[ -f AGENTS.md ]] && shasum -a 256 AGENTS.md
   }
 )"
@@ -109,6 +110,12 @@ for binfile in "${FRAMEWORK_ROOT}/bin"/*; do
   name="$(basename "${binfile}")"
   check_symlink "${HOME}/.local/bin/${name}" "${binfile}"
 done
+
+# NOTE: ~/.claude/statusline.sh is intentionally NOT checked against the L1
+# source here. Per ADR-043 the in-house L2 overlay (agent-workspace
+# sync-hooks.sh) overwrites the deployed file with its full version; a
+# deployed-copy check would flag that legitimate L2 overwrite as drift. The
+# source-vs-snapshot check above still guards the L1 baseline file itself.
 
 if (( fail == 1 )); then
   say "[verify] deployment drift — re-run install.sh"
