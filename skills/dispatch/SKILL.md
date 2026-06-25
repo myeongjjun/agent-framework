@@ -1,14 +1,16 @@
 ---
 name: dispatch
-version: 0.6.0
+version: 0.7.0
 description: >
   Spawn a scoped sibling agent session via `sib` (cmux pane, shared
   working tree — no worktree by default), placing it in the workspace
   that matches the task's working directory. The skill derives slug +
-  worker, resolves the target workspace, and executes on mode selection.
-  v0.6.0: workspace targeting — find/create the right workspace instead
-  of always splitting the caller's pane. dispatch = single-agent branch
-  sharing; for dual-agent isolated work, use /collab.
+  worker + mode and executes immediately — interactive by default, never
+  prompting. v0.7.0: mode is no longer asked (interactive default, only
+  an explicit fire-and-forget signal overrides). v0.6.0: workspace
+  targeting — find/create the right workspace instead of always splitting
+  the caller's pane. dispatch = single-agent branch sharing; for
+  dual-agent isolated work, use /collab.
 trigger_phrases:
   - "/dispatch"
   - "dispatch"
@@ -82,8 +84,13 @@ Do not use this skill for:
 
 - Accept free-form input: `/dispatch <description>`
 - Optional explicit overrides: `--slug <slug>`, `--worker claude|codex`,
-  `--workdir <path>` (force the working directory), `--keep-alive`
-  (advisory; sib panes persist until the user closes them)
+  `--workspace <id|ref>` (target an open workspace directly),
+  `--workdir <path>` (force the working directory). Mode is advisory
+  only (interactive by default; `keep_alive: false` / "ff" selects
+  fire-and-forget) — it is not a sib flag, just how the pane is used.
+- Any of these explicit targets — `--workspace`, `--workdir`, or a
+  workspace/repo named in the description — is a **go-signal**: resolve
+  it and spawn without asking (see Step 3 confirmation policy).
 - Extract description text (everything after the trigger, minus flags)
 
 ### Step 2 — Verify environment
@@ -100,12 +107,18 @@ If either check fails, surface the error and stop.
 This is the core of v0.6.0. A sibling must start where the work lives,
 not wherever the caller happens to be.
 
-**3a — Determine the workdir.** In priority order:
+**3a — Determine the workdir.** In priority order. Track whether the
+result was **explicit** (1–3) or **inferred** (4) — it decides whether
+3c confirms:
 
-1. Explicit `--workdir <path>` from the user.
-2. A path the task description clearly names (e.g. "agent-framework의
-   README", "~/foo 에서").
-3. Fallback: the caller's cwd (`cmux sidebar-state | grep '^cwd='`).
+1. Explicit `--workspace <id|ref>` from the user → that workspace is the
+   target; its cwd is the workdir (skip 3b). **Explicit.**
+2. Explicit `--workdir <path>` from the user. **Explicit.**
+3. A path/repo the request clearly names (e.g. "agent-framework에서",
+   "~/foo 에서", "cmux repo에서"). Resolve the repo name to its path.
+   **Explicit.**
+4. Fallback: the caller's cwd (`cmux sidebar-state | grep '^cwd='`).
+   **Inferred.**
 
 **3b — Find a workspace already rooted at that workdir.** Enumerate
 workspaces and read each one's cwd. `cmux tree` does NOT report cwd —
@@ -133,17 +146,26 @@ done
 | The caller's own workspace has cwd == workdir | split the caller | `sib spawn <slug>` (default) |
 | No workspace matches workdir | dedicated new workspace | `sib spawn <slug> --workdir <workdir> --new-workspace` |
 
-If the workdir differs from the caller's workspace cwd, **warn and
-confirm** before spawning (you are placing work outside the base
-session):
+**Confirmation policy — do not ask when the target is explicit.** When
+the workdir/workspace came from 3a.1–3a.3 (the user named a workspace,
+a path, or a repo), **proceed immediately** — no confirmation prompt,
+even when the target differs from the caller's workspace. That explicit
+naming *is* the go-signal; asking again is exactly the friction to avoid.
+
+Confirm in **only one** case: the workdir was **inferred** (3a.4, the
+caller's cwd fallback) AND it resolves to placing work in a workspace
+other than the caller's. Then print the warning below and wait. If the
+inferred workdir is the caller's own workspace, just proceed.
 
 ```
-⚠️ base 워크스페이스 cwd = {caller_cwd}
-   작업 대상 cwd       = {workdir}
+⚠️ 작업 대상을 명시하지 않아 caller cwd로 추론했습니다.
+   base 워크스페이스 cwd = {caller_cwd}
+   작업 대상 cwd        = {workdir}
 → {기존 workspace:N 재사용 | 전용 워크스페이스 신규 생성} 예정. 진행할까요?
+   (다음부터는 workspace/경로/repo를 명시하면 바로 실행됩니다.)
 ```
 
-### Step 4 — Derive slug + worker, then ask for mode
+### Step 4 — Derive slug + worker + mode
 
 **Worker inference** (deterministic, not asked) — `claude` by default.
 Pick `codex` only when the description **explicitly mentions codex**
@@ -154,57 +176,34 @@ infer codex from task-shape keywords.
 lowercased, kebab-joined, trimmed to ~24 chars. Avoid reserved names
 (`base`, `main`, `master`, `head`, `origin`, `ghost-*`).
 
-**Mode derivation** — scan the user's request for mode signals before
-deciding whether to ask:
+**Mode derivation** — `interactive` is the default. Never ask; only an
+explicit fire-and-forget signal overrides it:
 
 | Signal in user input | Mode |
 |---|---|
 | `keep_alive: false` / "fire-and-forget" / "ff" / "FF" | fire-and-forget |
-| `keep_alive: true` / "interactive" / "keep alive" / "keep-alive" | interactive |
-| No mode signal | ask the user (prompt below) |
+| Anything else (incl. no mode signal, `keep_alive: true`, "interactive") | **interactive** (default) |
 
 Note on the sib model: closing the cmux pane ends the agent. There is no
 detached `keep_alive` daemon. So:
 
+- **interactive** (default) = the pane stays open; the user keeps talking
+  to the sibling there after it finishes the task
 - **fire-and-forget** = the sibling runs the task, the user lets the pane
   exit when the agent finishes
-- **interactive** = the user keeps the pane open and continues the
-  conversation in it manually
 
 Both modes look the same at spawn time; the difference is post-task
 intent. The skill records the choice in the message to the user but does
 not alter the sib invocation.
 
-When mode is derived, **skip the prompt entirely** and execute
-immediately with a one-line status update before the request:
+Mode is **always derived, never prompted** — proceed immediately with a
+one-line status update before the request:
 
 ```
-Proceeding fire-and-forget per `keep_alive: false`.
+Proceeding interactive (default).
 - Slug: {slug}
 - Worker: {claude|codex}
 - Placement: {workspace 재사용 workspace:N | 전용 워크스페이스 신규 | 현재 워크스페이스 split}
-```
-
-**Mode selection prompt** (Korean, only when not derived):
-
-```
-Dispatch 준비 완료 — 모드 선택 시 즉시 실행됩니다.
-
-- Slug: {slug}
-- Worker: {claude|codex}
-- Workdir: {workdir}
-- Placement: {workspace 재사용 / 전용 신규 / 현재 split}
-- Description: "{first 120 chars}..."
-
-(Sibling은 위 workdir의 working tree를 공유합니다 — dispatch는 단일
-에이전트 분기이지 격리 작업이 아닙니다. 끝나면 `sib kill {slug}`
-또는 cmux 패인을 직접 닫으세요.)
-
-모드를 선택해주세요:
-  1) fire-and-forget — worker가 작업 후 pane을 닫는 흐름
-  2) interactive — pane을 유지하며 계속 대화
-
-답: 1 / 2  (또는 변경사항, 예: "codex로", "slug=xyz", "cancel")
 ```
 
 ### Step 5 — Execute via sib
@@ -248,6 +247,7 @@ short note:
 
 - Slug: {slug}
 - Worker: {claude|codex}
+- Mode: {interactive | fire-and-forget}
 - Workdir: {workdir}
 - Placement: {workspace:N 재사용 | 전용 워크스페이스 신규 | 현재 split}
 - Surface: {surface from sib output}
@@ -298,6 +298,11 @@ Implications:
 ## Notes
 
 - This skill never required an orchestrator daemon.
+- v0.7.0 changes from v0.6.0:
+  - **Mode is never prompted.** `interactive` is the default; the skill
+    proceeds immediately. Only an explicit fire-and-forget signal
+    (`keep_alive: false`, "fire-and-forget", "ff"/"FF") overrides it.
+    Removed the two-option mode selection prompt entirely.
 - v0.6.0 changes from v0.5.0:
   - **Workspace targeting** (Step 3): resolve the task's workdir, find a
     workspace already rooted there (`cmux sidebar-state` cwd), and place
@@ -305,10 +310,9 @@ Implications:
     workspace. Stops dumping unrelated work into the base pane.
   - Uses sib's new placement flags (`--workdir`, `--workspace`,
     `--new-workspace`).
-  - Report + mode prompt now state the resolved workdir and placement.
-- v0.6.0 retained from v0.5.0: shared working tree (no worktree, no
-  branch), no promote step, slug/worker derivation, mode prompt + go-
-  signal contract, pane-close cleanup model.
+  - Report + status line now state the resolved workdir and placement.
+- Retained from v0.5.0: shared working tree (no worktree, no branch), no
+  promote step, slug/worker derivation, pane-close cleanup model.
 - The sib backend is owned by L1 (`agent-framework/bin/sib`, symlinked to
   `~/.local/bin/sib`). Bug reports / feature requests for sib go to that
   repo.
