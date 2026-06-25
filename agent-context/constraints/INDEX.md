@@ -1,6 +1,6 @@
 # Constraints Index
 
-> Last updated: 2026-06-16
+> Last updated: 2026-06-25
 
 ## By Severity
 
@@ -17,6 +17,7 @@
 |------------|-------------|
 | [hook-source-of-truth](hook-source-of-truth.md) | Hooks managed in `hooks/<category>/` + deployed via `scripts/install.sh` only |
 | [agent-behavior-verify-before-conclude](agent-behavior-verify-before-conclude.md) | Require quantitative + qualitative evidence before conclusions |
+| [git-workflow](git-workflow.md) | Work directly on `main`; review before pushing (public repo). Repo-scoped, not inherited |
 
 ### Medium
 

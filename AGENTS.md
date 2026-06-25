@@ -87,6 +87,21 @@ Cross-references in frontmatter: `Supersedes`, `Superseded by`, `Amends`,
 - Preserve code, commands, logs, file paths, API names, and exact
   error messages in their original form.
 
+## Git Workflow
+
+Before any git write (commit, push, branch, merge), confirm **this repo's**
+strategy — do not assume a default:
+
+1. Check `agent-context/constraints/` for a `git-*` constraint. If one
+   exists, follow it exactly.
+2. If none exists, **ask the user** for the branch + push strategy, then
+   record the agreement via `/acp-constraint` so the next agent need not ask.
+
+This repo's strategy lives in
+[`agent-context/constraints/git-workflow.md`](agent-context/constraints/git-workflow.md).
+Personas append their own `git-*` constraint; never carry this repo's
+strategy into another.
+
 ## Critical constraints (active L1)
 
 - **No Permission Bypass** — agent must not auto-grant permissions or
