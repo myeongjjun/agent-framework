@@ -1,6 +1,6 @@
 ---
 name: pane-msg
-version: 1.0.0
+version: 1.1.0
 description: >
   Deliver a message/task to an ALREADY-OPEN cmux pane — never spawn a new
   session (that is /dispatch). Makes target resolution and delivery
@@ -88,6 +88,7 @@ Do not use this skill for:
 
 ```bash
 skills/pane-msg/scripts/pane-resolve.sh --slug <slug>
+skills/pane-msg/scripts/pane-resolve.sh --spawner-of <slug>   # who spawned sib <slug>
 skills/pane-msg/scripts/pane-resolve.sh --cwd <path>
 skills/pane-msg/scripts/pane-resolve.sh --title <hint>
 skills/pane-msg/scripts/pane-resolve.sh --surface surface:N --workspace workspace:N
@@ -107,6 +108,7 @@ must never be read as idle), `approval` (approval prompt visible), `idle`
 | Selector | Reliability | Why |
 |---|---|---|
 | `--slug` | strongest | sib records surface+workspace refs in `~/.local/share/sib/state/<slug>.env` at spawn time; no inference. Detects stale state (dead pane) and says so. |
+| `--spawner-of` | strongest | sib spawn records the caller's own refs (`spawner_surface`/`spawner_workspace` from `cmux identify`) — a worker's "report back to whoever spawned me" without guessing. `MATCH:0` with a clear message for pre-recording state files. |
 | explicit refs | strongest | user-provided; liveness-checked only |
 | `--cwd` | strong | `cmux workspace list --json` → `.current_directory` is the authoritative workspace root. NOT titles, NOT statusline grep. |
 | `--title` | weakest | titles are auto-named per turn and flip between task summary and path (cmux title dual-source problem); a match is a *candidate*, never an identity |
@@ -251,10 +253,12 @@ Investigated 2026-07-08; current facts:
   already rooted at the workdir") should call
   `pane-resolve.sh --cwd <workdir>`: `MATCH:0` is the only case where
   `--new-workspace` is justified. /pane-msg never spawns.
-- **`sib send <slug>`** — quick unverified send to a sibling you are
-  certain about (e.g. one you spawned this turn). For anything
-  resolution-dependent or where delivery must be confirmed, use
-  `pane-deliver.sh` (same slug convenience: `--slug`).
+- **`sib send <slug>`** — since sib's pane-msg integration, `sib send`
+  *delegates* to `pane-deliver.sh` when the skill is deployed (legacy
+  blind send only as a fallback when it is not). One delivery-logic
+  source: same gates, same verification, same exit codes; `sib send
+  <slug> --queue` passes the busy-override through. sib itself stays
+  lifecycle-only (spawn/list/kill).
 - **`/collab`** — orchestrates its own workers via sib; may use
   `pane-deliver.sh` for mid-flight nudges to a worker.
 - **approver daemon** — see Reconciliation above.
@@ -285,6 +289,12 @@ Investigated 2026-07-08; current facts:
   caller-splits; `pane-resolve.sh` normalizes UUIDs to refs via
   `sidebar-state`'s `tab=` field before joining against workspace
   metadata.
+- v1.1.0 (sib integration): `sib send` delegates to `pane-deliver.sh`
+  (with `--queue` passthrough); `sib spawn` records
+  `spawner_surface`/`spawner_workspace` in the state file; new
+  `--spawner-of <slug>` selector resolves a worker's spawner
+  deterministically. Motivating failure: a worker *guessed* which pane
+  had spawned it from screen content and picked the wrong session.
 - Self-test performed dry (resolution + `--dry-run` delivery only, no
   injection into live panes) on 2026-07-08; the ambiguous-cwd case
   reproduced the original "redundant workspace" failure and returned

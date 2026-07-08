@@ -9,6 +9,8 @@
 #
 # Selectors (exactly one):
 #   --slug <slug>                 sib state file lookup (most reliable)
+#   --spawner-of <slug>           the pane that spawned sib <slug>
+#                                 (spawner_* fields recorded by sib spawn)
 #   --cwd <path>                  workspaces rooted at <path> (placement reuse)
 #   --title <hint>                case-insensitive substring on workspace and
 #                                 surface titles (weakest — titles are
@@ -70,22 +72,24 @@ pane_state() { # $1=surface $2=workspace
   echo unknown
 }
 
-slug="" cwd="" title="" surface="" workspace=""
+slug="" spawner_of="" cwd="" title="" surface="" workspace=""
 while (($#)); do case "$1" in
-  --slug)      shift; slug="${1:?--slug needs a value}" ;;
-  --cwd)       shift; cwd="${1:?--cwd needs a path}" ;;
-  --title)     shift; title="${1:?--title needs a hint}" ;;
-  --surface)   shift; surface="${1:?--surface needs a ref}" ;;
-  --workspace) shift; workspace="${1:?--workspace needs a ref}" ;;
+  --slug)       shift; slug="${1:?--slug needs a value}" ;;
+  --spawner-of) shift; spawner_of="${1:?--spawner-of needs a slug}" ;;
+  --cwd)        shift; cwd="${1:?--cwd needs a path}" ;;
+  --title)      shift; title="${1:?--title needs a hint}" ;;
+  --surface)    shift; surface="${1:?--surface needs a ref}" ;;
+  --workspace)  shift; workspace="${1:?--workspace needs a ref}" ;;
   *) die "unknown arg: $1" ;;
 esac; shift || true; done
 
 n_selectors=0
 [[ -n "${slug}" ]] && ((n_selectors += 1))
+[[ -n "${spawner_of}" ]] && ((n_selectors += 1))
 [[ -n "${cwd}" ]] && ((n_selectors += 1))
 [[ -n "${title}" ]] && ((n_selectors += 1))
 [[ -n "${surface}" ]] && ((n_selectors += 1))
-(( n_selectors == 1 )) || die "exactly one selector required (--slug | --cwd | --title | --surface+--workspace)"
+(( n_selectors == 1 )) || die "exactly one selector required (--slug | --spawner-of | --cwd | --title | --surface+--workspace)"
 [[ -n "${surface}" && -z "${workspace}" ]] && die "--surface requires --workspace"
 
 command -v cmux >/dev/null || die "cmux not found on PATH"
@@ -179,6 +183,25 @@ elif [[ -n "${slug}" ]]; then
     exit 3
   fi
   matches="$(emit "${s_workspace}" "${s_surface}" "${slug}" "-")"
+
+elif [[ -n "${spawner_of}" ]]; then
+  f="${STATE_DIR}/${spawner_of}.env"
+  if [[ ! -f "$f" ]]; then
+    echo "MATCH:0"; echo "pane-resolve: no sib state for slug '${spawner_of}'" >&2; exit 3
+  fi
+  sp_surface="$(sed -n 's/^spawner_surface=//p' "$f")"
+  sp_workspace="$(normalize_ws "$(sed -n 's/^spawner_workspace=//p' "$f")")"
+  if [[ -z "${sp_surface}" || -z "${sp_workspace}" ]]; then
+    echo "MATCH:0"
+    echo "pane-resolve: sib '${spawner_of}' has no spawner recorded (spawned before sib recorded spawner_* fields)" >&2
+    exit 3
+  fi
+  if ! alive "${sp_surface}" "${sp_workspace}"; then
+    echo "MATCH:0"
+    echo "pane-resolve: spawner of '${spawner_of}' (${sp_surface}) is gone" >&2
+    exit 3
+  fi
+  matches="$(emit "${sp_workspace}" "${sp_surface}" "${SLUG_BY_TARGET["${sp_workspace} ${sp_surface}"]:-}" "-")"
 
 elif [[ -n "${cwd}" ]]; then
   target="$(cd "${cwd}" 2>/dev/null && pwd -P)" || die "cwd does not exist: ${cwd}"

@@ -22,7 +22,7 @@
 #             [--workdir <path>] [--workspace <id|ref> | --new-workspace]
 #             [-- <prompt...>]
 #   sib list
-#   sib send <slug> <text...>
+#   sib send <slug> [--queue] <text...>
 #   sib kill <slug> [--keep-worktree]
 #
 # Talk to a sibling by focusing its cmux pane and typing, or `sib send <slug> "..."`.
@@ -134,6 +134,17 @@ spawn)
   cmux send --surface "${surface}" --workspace "${ws}" "cd $(printf %q "${start_dir}") && exec ${agent_cmd}"
   cmux send-key --surface "${surface}" --workspace "${ws}" enter
 
+  # Record who spawned this sibling (the caller's own pane, from cmux
+  # identify). Gives "reply to my spawner" a deterministic address —
+  # /pane-msg's pane-resolve.sh resolves it via --spawner-of <slug>.
+  # Best-effort: empty when jq or identify is unavailable.
+  spawner_surface="" spawner_workspace=""
+  if command -v jq >/dev/null 2>&1; then
+    ident="$(cmux identify --json 2>/dev/null || true)"
+    spawner_surface="$(jq -r '.caller.surface_ref // empty' <<<"${ident}" 2>/dev/null || true)"
+    spawner_workspace="$(jq -r '.caller.workspace_ref // empty' <<<"${ident}" 2>/dev/null || true)"
+  fi
+
   # Persist state. `worktree=` keeps its historical name (it is the sibling's
   # start dir whether or not a worktree was created); `worktree_managed`
   # records whether sib owns a git worktree to clean up on kill. `workdir=`
@@ -141,7 +152,9 @@ spawn)
   { echo "slug=${slug}"; echo "agent=${agent}";
     echo "surface=${surface}"; echo "workspace=${ws}"; echo "worktree=${start_dir}";
     echo "workdir=${start_dir}"; echo "worktree_managed=${do_worktree}";
-    echo "workspace_managed=${new_ws}"; } > "${STATE_DIR}/state/${slug}.env"
+    echo "workspace_managed=${new_ws}";
+    echo "spawner_surface=${spawner_surface}";
+    echo "spawner_workspace=${spawner_workspace}"; } > "${STATE_DIR}/state/${slug}.env"
 
   # Wait for the agent's input prompt to appear. The marker (❯/›) means the
   # input box is *drawn* — not that input is accepted yet. See cmux-cli-
@@ -212,11 +225,23 @@ list)
   ;;
 
 send)
-  slug="${1:?sib send <slug> <text>}"; shift
+  slug="${1:?sib send <slug> [--queue] <text>}"; shift
+  queue_flag=""
+  [[ "${1:-}" == "--queue" ]] && { queue_flag="--queue"; shift; }
   f="${STATE_DIR}/state/${slug}.env"; [[ -f "$f" ]] || die "no such sib: ${slug}"
   # shellcheck source=/dev/null  # runtime state file; fields set by spawn
   . "$f"
   surface_alive "${surface}" "${workspace}" || die "sib '${slug}' pane is gone (sib kill ${slug} to clean up)"
+  # Delegate to /pane-msg's verified delivery when deployed — single source
+  # of delivery logic (busy/approval gates, landed check, submit
+  # confirmation). A busy pane is REFUSED (exit 4) unless --queue. Falls
+  # back to the legacy blind send when the skill is absent.
+  deliver="${HOME}/.claude/skills/pane-msg/scripts/pane-deliver.sh"
+  if [[ -x "${deliver}" ]]; then
+    echo "→ ${slug}:"
+    # shellcheck disable=SC2086  # queue_flag is intentionally word-split (one optional flag)
+    exec "${deliver}" --surface "${surface}" --workspace "${workspace}" ${queue_flag} -- "$*"
+  fi
   cmux send --surface "${surface}" --workspace "${workspace}" "$*"
   cmux send-key --surface "${surface}" --workspace "${workspace}" enter
   echo "→ sent to ${slug}"
