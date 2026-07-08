@@ -1,6 +1,6 @@
 ---
 name: dispatch
-version: 0.7.0
+version: 0.7.1
 description: >
   Spawn a scoped sibling agent session via `sib` (cmux pane, shared
   working tree — no worktree by default), placing it in the workspace
@@ -120,17 +120,23 @@ result was **explicit** (1–3) or **inferred** (4) — it decides whether
 4. Fallback: the caller's cwd (`cmux sidebar-state | grep '^cwd='`).
    **Inferred.**
 
-**3b — Find a workspace already rooted at that workdir.** Enumerate
-workspaces and read each one's cwd. `cmux tree` does NOT report cwd —
-use `cmux sidebar-state`, which exposes `cwd=` as a first-class field:
+**3b — Find a workspace already rooted at that workdir.** This check is
+MANDATORY before any spawn — skipping it and running `sib spawn
+--new-workspace` blind creates redundant workspaces (observed failure).
+Use /pane-msg's resolution primitive, which returns matches plus a
+reuse-or-create verdict:
 
 ```bash
-# List workspace refs, then read each one's cwd (sidebar-state has no --all).
-for ws in $(cmux list-workspaces | grep -oE 'workspace:[0-9]+'); do
-  cwd=$(cmux sidebar-state --workspace "$ws" 2>/dev/null | sed -n 's/^cwd=//p')
-  [[ "$cwd" == "$WORKDIR" ]] && echo "match: $ws"
-done
+skills/pane-msg/scripts/pane-resolve.sh --cwd "$WORKDIR"
+# exit 0 → exactly one workspace rooted there: reuse it (--workspace <ws>)
+# exit 3 → none: --new-workspace is justified
+# exit 4 → several: present candidates, ask the user — never pick silently
 ```
+
+Fallback (primitive unavailable): `cmux workspace list --json | jq -r
+'.workspaces[] | [.ref, .current_directory] | @tsv'` and match
+`current_directory` against `$WORKDIR`. `cmux tree` does NOT report cwd,
+and titles/statusline text are not cwd sources.
 
 > Do NOT identify a workspace's directory via `tty`→`lsof`, by parsing
 > `cmux tree`'s OSC surface titles, or by hitting the socket directly.
@@ -298,6 +304,12 @@ Implications:
 ## Notes
 
 - This skill never required an orchestrator daemon.
+- v0.7.1 changes from v0.7.0:
+  - Step 3b now delegates the workspace-by-cwd check to
+    `skills/pane-msg/scripts/pane-resolve.sh --cwd` and declares it
+    mandatory before any spawn (a blind `--new-workspace` created a
+    redundant workspace in practice). cwd source switched to
+    `cmux workspace list --json` `.current_directory`.
 - v0.7.0 changes from v0.6.0:
   - **Mode is never prompted.** `interactive` is the default; the skill
     proceeds immediately. Only an explicit fire-and-forget signal

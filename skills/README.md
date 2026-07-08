@@ -12,6 +12,7 @@ to this directory) by `scripts/install.sh`.
 | `codex` | Codex CLI integration and full-cycle delegation | `codex` CLI on PATH |
 | `dispatch` | Single-agent sibling launch via sib, placed in the workspace matching the task's workdir | `sib` + `cmux` |
 | `collab` | Dual-agent same-task cross-review in sib worktrees, merge via `agent-promote.sh` | `sib` + `cmux` + `git` |
+| `pane-msg` | Deterministic message delivery to an already-open cmux pane (resolve → gate → verified send); placement reuse-or-create verdicts | `cmux` + `jq` |
 
 ## What's NOT here
 
