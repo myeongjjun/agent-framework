@@ -24,8 +24,14 @@
 # guard-permission-bypass.sh will then prevent agent edits to the
 # deployed copy; source edits go to this repo's hooks/general/.
 #
-# Atomicity: per-file operations. A failure during one file leaves
-# previous files installed; re-run is safe.
+# Atomicity: per-file operations. A refused target is reported and
+# skipped; the remaining sections still run, and the refusal surfaces
+# as the final exit code. Re-run is safe.
+#
+# Skill layering: a non-symlink dir at ~/.{claude,codex}/skills/<name>
+# is treated as an L2 overlay copy (e.g. agent-workspace sync-skills.sh)
+# and left in place — L2 wins, same rule as the statusline (ADR-043).
+# --force replaces it with the L1 symlink.
 #
 # Idempotent: re-running with no L1 changes is a no-op (or just
 # re-creates symlinks pointing at the same target).
@@ -34,8 +40,8 @@
 #   0  success
 #   1  generic failure
 #   2  framework directory missing or malformed
-#   3  refused: detected a conflicting non-framework symlink that
-#      would need user-confirmed overwrite
+#   3  refused: a bin target exists as a non-symlink and would need
+#      user-confirmed overwrite (--force); reported after all sections run
 
 set -euo pipefail
 
@@ -66,6 +72,8 @@ while (( $# > 0 )); do
   esac
   shift
 done
+
+REFUSED=0
 
 ok()   { printf '\033[0;32m✓\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m⚠\033[0m %s\n' "$*"; }
@@ -98,12 +106,12 @@ install_skill() {
     fi
     run rm -f "${dst}"
   elif [[ -e "${dst}" ]]; then
-    # Regular file/dir — refuse without --force (so we don't blow away
-    # a hand-edited deployed copy without consent)
+    # Regular file/dir — an L2 overlay copy (or a hand-edited one). Leave
+    # it; L2 wins over L1. --force replaces it with the L1 symlink.
     if (( FORCE == 0 )); then
-      err "skill ${name} at ${dst} is a regular file/dir, not a symlink."
-      err "  Move or remove it, or re-run with --force to overwrite."
-      return 3
+      warn "skill ${name} at ${dst} is a non-symlink copy (L2 overlay?) — kept; L1 version not linked."
+      warn "  Re-run with --force to replace it with the L1 symlink."
+      return 0
     fi
     run rm -rf "${dst}"
   fi
@@ -155,7 +163,8 @@ for binfile in "${FRAMEWORK_ROOT}/bin"/*; do
   elif [[ -e "${dst}" ]]; then
     if (( FORCE == 0 )); then
       err "bin ${name} at ${dst} is not a symlink. Re-run with --force to overwrite."
-      exit 3
+      REFUSED=1
+      continue
     fi
     run rm -f "${dst}"
   fi
@@ -225,10 +234,15 @@ else
 fi
 
 echo ""
-ok "L1 install complete."
+if (( REFUSED == 1 )); then
+  err "L1 install finished with refused targets (see ✗ above)."
+else
+  ok "L1 install complete."
+fi
 echo "   Source : ${FRAMEWORK_ROOT}"
 echo "   Targets: ~/.claude/{skills,hooks,statusline.sh,AGENTS.md.framework-base}"
 echo "            ~/.codex/skills"
 echo "            ~/.local/bin"
 echo ""
 echo "   Update path: scripts/check-update.sh (run via cron / SessionStart)."
+(( REFUSED == 0 )) || exit 3
