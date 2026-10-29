@@ -306,7 +306,7 @@ kill)
   if (( workspace_managed )); then
     cmux close-workspace --workspace "${workspace}" >/dev/null 2>&1 \
       || cmux close-workspace --workspace "${workspace}" --force true >/dev/null 2>&1 || true
-    cmux workspace list 2>/dev/null | grep -qF -- "${workspace}" \
+    cmux workspace list 2>/dev/null | grep -qwF -- "${workspace}" \
       && die "workspace ${workspace} is still open — state kept; close it in cmux, then re-run sib kill ${slug}"
   else
     cmux close-surface --surface "${surface}" --workspace "${workspace}" >/dev/null 2>&1 \
