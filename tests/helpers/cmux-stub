@@ -21,7 +21,13 @@ case "$sub" in
     # real: "OK surface:N workspace:M"
     echo "OK ${CMUX_STUB_SURFACE:-surface:91} ${CMUX_STUB_WS:-workspace:7}"
     ;;
-  new-workspace|workspace)
+  workspace)
+    # `workspace list` — nothing open in the stub (kill's post-close check);
+    # `workspace create` prints "OK workspace:N" like new-workspace.
+    [[ "${1:-}" == list ]] && exit 0
+    echo "OK ${CMUX_STUB_WS:-workspace:42}"
+    ;;
+  new-workspace)
     # `workspace create` and legacy `new-workspace` both print "OK workspace:N"
     echo "OK ${CMUX_STUB_WS:-workspace:42}"
     ;;
@@ -34,10 +40,18 @@ case "$sub" in
     echo "cwd=${CMUX_STUB_WS_CWD:-/stub/workspace/cwd}"
     echo "focused_cwd=${CMUX_STUB_WS_CWD:-/stub/workspace/cwd}"
     ;;
-  send|send-key|close-surface|close-workspace)
+  close-surface)
+    # CMUX_STUB_CLOSE_FAIL=1 simulates cmux refusing the close. Otherwise
+    # record the surface as gone so a later read-screen on it fails, the
+    # way sib kill's post-close check sees a really closed pane.
+    [[ "${CMUX_STUB_CLOSE_FAIL:-0}" == 1 ]] && exit 1
+    while (($#)); do [[ "$1" == --surface ]] && { touch "${log}.closed-$2"; break; }; shift; done
+    ;;
+  send|send-key|close-workspace)
     : # no stdout needed; the log line above is the assertion target
     ;;
   read-screen)
+    for a in "$@"; do [[ -e "${log}.closed-${a}" ]] && exit 1; done
     # Boot-wait loop looks for the ready marker at line start (+ claude's rule
     # line). The prompt-submit logic then looks for (a) the prompt text (head
     # and tail) + absence of "tab to queue message", and

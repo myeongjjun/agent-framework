@@ -165,6 +165,18 @@ EOF
   grep -q "cmux close-surface --surface surface:11" "$CMUX_STUB_LOG"
 }
 
+@test "kill that cannot close the pane fails and keeps the state file" {
+  run "$SIB" spawn stuck-kill
+  [ "$status" -eq 0 ]
+  CMUX_STUB_CLOSE_FAIL=1 run "$SIB" kill stuck-kill
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"still open"* ]]
+  [[ "$output" != *"killed"* ]]
+  [ -f "$STATE/stuck-kill.env" ]
+  # the forced retry was attempted
+  grep -q "cmux close-surface .*--force true" "$CMUX_STUB_LOG"
+}
+
 # --- prompt submission (cmux-cli-reference §9) ------------------------------
 
 @test "prompt is sent as text BEFORE its submit enter (not after)" {
