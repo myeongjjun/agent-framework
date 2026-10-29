@@ -172,6 +172,7 @@ EOF
   # agent would submit an empty line and drop the task. (Note: the launch
   # 'cd && exec' line has its own earlier enter — we check the PROMPT send is
   # followed by an enter, i.e. there is an enter AFTER the prompt send line.)
+  export CMUX_STUB_PROMPT_ECHO="do the thing"
   run "$SIB" spawn submit-order --workdir "$WORKDIR" -- "do the thing"
   [ "$status" -eq 0 ]
   send_line=$(grep -n "cmux send .*do the thing" "$CMUX_STUB_LOG" | head -1 | cut -d: -f1)
@@ -184,9 +185,11 @@ EOF
 @test "submission waits out a codex queue notice before enter" {
   # Simulate a pane stuck on 'tab to queue message': sib must NOT have given up
   # without ever sending enter. (Loop is bounded, so it still proceeds.)
+  # (static stub screen: the trailing work signal lets the submit confirm.)
   export CMUX_STUB_SCREEN="›
 do the thing
-tab to queue message"
+tab to queue message
+working"
   run "$SIB" spawn queued --codex --workdir "$WORKDIR" -- "do the thing"
   [ "$status" -eq 0 ]
   # prompt text was placed in the box
@@ -202,4 +205,36 @@ tab to queue message"
   # must be no second (submit) enter.
   enters=$(grep -c "cmux send-key .* enter" "$CMUX_STUB_LOG")
   [ "$enters" -eq 1 ]
+}
+
+# --- boot detection + truncation (2026-10-29 incident) ----------------------
+
+@test "a shell prompt using the same glyph does not count as booted" {
+  # starship's default prompt ends in '❯'. Typing the task into the shell
+  # before claude takes the pty truncates it at MAX_CANON (1024 bytes).
+  export CMUX_STUB_SCREEN="host  repo  main ❯ cd /x && exec claude"
+  run "$SIB" spawn shell-glyph --workdir "$WORKDIR" -- "do the thing"
+  [ "$status" -eq 5 ]
+  [[ "$output" == *"input box never appeared"* ]]
+  # the prompt was never typed
+  ! grep -q "cmux send .*do the thing" "$CMUX_STUB_LOG"
+}
+
+@test "a prompt whose tail never shows up is not submitted" {
+  export CMUX_STUB_SCREEN="❯ do the thing and then
+──────────────────────"
+  run "$SIB" spawn truncated --workdir "$WORKDIR" -- "do the thing and then a long tail that got cut off"
+  [ "$status" -eq 5 ]
+  [[ "$output" == *"did not fully appear"* ]]
+  # only the launch enter — no submit enter for a partial prompt
+  enters=$(grep -c "cmux send-key .* enter" "$CMUX_STUB_LOG")
+  [ "$enters" -eq 1 ]
+}
+
+@test "newlines in the prompt are flattened (cmux send treats \\n as enter)" {
+  export CMUX_STUB_PROMPT_ECHO="line one line two"
+  run "$SIB" spawn multiline --workdir "$WORKDIR" -- "line one
+line two"
+  [ "$status" -eq 0 ]
+  grep -q "cmux send .*line one line two" "$CMUX_STUB_LOG"
 }

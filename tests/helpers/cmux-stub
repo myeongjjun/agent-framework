@@ -38,8 +38,9 @@ case "$sub" in
     : # no stdout needed; the log line above is the assertion target
     ;;
   read-screen)
-    # Boot-wait loop looks for the ready marker. The prompt-submit logic then
-    # looks for (a) the prompt text + absence of "tab to queue message", and
+    # Boot-wait loop looks for the ready marker at line start (+ claude's rule
+    # line). The prompt-submit logic then looks for (a) the prompt text (head
+    # and tail) + absence of "tab to queue message", and
     # (b) a work signal ("working") after enter. Emit a screen that satisfies
     # all three by default. Override via CMUX_STUB_SCREEN to simulate states
     # (e.g. a queued codex pane).
@@ -47,6 +48,7 @@ case "$sub" in
       printf '%s\n' "${CMUX_STUB_SCREEN}"
     else
       printf '%s\n' "${CMUX_STUB_READY:-❯}"
+      printf '──────────────────────\n'   # claude's input-box rule line
       printf '%s\n' "${CMUX_STUB_PROMPT_ECHO:-the task prompt}"
       printf 'working (esc to interrupt)\n'
     fi

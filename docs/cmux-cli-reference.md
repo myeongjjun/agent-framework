@@ -203,6 +203,18 @@ cmux read-screen --surface "$SURF" --workspace "$WS" --lines 20 2>/dev/null \
 - 부수 교훈: 체감 느림의 주범은 codex 큐가 아니라 **프롬프트 길이 × pane 폭**이라
   긴 프롬프트면 claude도 똑같이 느려진다.
 
+### 함정 5 — 셸 프롬프트의 `❯` 를 부팅 완료로 오인 → 1024바이트에서 잘림 (2026-10-29 실측)
+- starship 기본 프롬프트도 `❯` 를 쓴다. 화면 어디서든 `❯` 를 찾는 부팅 판정은 `exec claude`
+  직후 **셸 줄**에서 즉시 통과한다.
+- 그 순간 pty 는 아직 canonical(cooked) 모드라 typeahead 한 줄이 **MAX_CANON(macOS 1024바이트)**
+  에서 잘리고, 버퍼가 찬 뒤의 Enter 도 버려진다. 한국어는 글자당 3바이트라 약 340자부터 잘린다.
+  실측: 1,000자(1,518바이트) 프롬프트가 정확히 1,024바이트("…로 다")에서 끊기고 미제출.
+  Claude 입력창이 그려진 뒤 보내면 같은 1,518바이트가 온전히 들어간다.
+- 해결: (1) 마커를 **줄 맨 앞**에서만 인정하고, claude 는 입력창 테두리(`──────────`)까지 확인한다.
+  (2) 안착 확인에 프롬프트 **끝 24자**도 포함한다 — 앞부분만 보면 잘린 프롬프트도 통과한다.
+  (3) needle 이 `-` 로 시작하면 grep 이 옵션으로 읽으니 `grep -qF -- "$needle"`.
+  (4) 입력창이 끝내 안 뜨면 보내지 않는다(타이핑 자체가 잘림 경로).
+
 ### 자동완성/탭 변형 (과거 사례)
 - 입력창에 텍스트를 넣었을 때 셸/에이전트가 **자동완성 후보**를 띄우면, enter가 그 후보를
   선택해버리거나 첫 enter가 후보 확정에 먹히는 경우가 있었다. 이때는 **탭으로 후보를 확정/해제한
@@ -216,12 +228,19 @@ cmux read-screen --surface "$SURF" --workspace "$WS" --lines 20 2>/dev/null \
 | claude | `❯` | 마커 + 입력 즉시 수용(보통 빠름) | `Working`, `esc to interrupt`, 토큰 카운터 |
 | codex | `›` | `tab to queue message` **없음** + 모델 배너 | `• Working (… esc to interrupt)` |
 
-→ sib(`bin/sib`)는 이 패턴을 구현한다: spawn 후 마커만이 아니라 입력 수용 상태를 확인하고,
-codex는 큐 해제까지 기다린 뒤 제출 + 1회 재시도.
+→ sib(`bin/sib`)는 이 패턴을 구현한다: spawn 후 줄 맨 앞 마커(+claude 입력창 테두리)를 확인하고,
+프롬프트 앞·끝이 모두 보일 때만 제출하며, codex는 큐 해제까지 기다린 뒤 제출 + 1회 재시도.
+전달 실패나 제출 미확인이면 `✓` 대신 `✗` 를 출력하고 exit 5.
 
 ---
 
 ## 미해결/개선 후보 (cmux 본체 작업)
+- cmux 에서 복사한 `cmux://workspace/<UUID>` 링크의 UUID 는 **stableId**(재시작에도 유지)다.
+  CLI(`workspace list`의 `id`, `list-panes --workspace`, `sidebar-state`)와 `sib --workspace` 는
+  **런타임 workspaceId** 만 받아 `not_found` 가 난다. 현재 우회: 세션 파일
+  `~/Library/Application Support/cmux/session-com.cmuxterm.app.json` 의
+  `windows[].tabManager.workspaces[]` 에서 `stableId` → `workspaceId` 변환(주기 저장이라 갓 만든
+  워크스페이스는 누락 가능). CLI 가 stableId 를 직접 받으면 우회가 필요 없다.
 - `cmux tree`(및 `--json`)에 워크스페이스/surface 레벨 `cwd` 필드 추가하면 §1 우회 호출이 불필요해진다.
   데이터·계산 함수는 cmux에 이미 존재(`TerminalController+ControlSystemContext.swift`의
   `extensionSidebarWorkspaceRow`가 `currentDirectory`/`panelDirectories` 사용). 출력 스키마에 한 필드 추가 수준.

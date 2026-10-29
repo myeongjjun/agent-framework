@@ -121,20 +121,25 @@ cmux send --surface "${surface}" --workspace "${workspace}" "${msg_flat}" >/dev/
 
 # 2) Confirm the text landed. Strip spaces+newlines from BOTH the screen and
 # the needle so a narrow pane's soft-wrap cannot break the match (§9 trap 4).
-# codex additionally queues input while MCP servers load — wait until the
-# 'tab to queue message' notice is gone (never appears for claude; harmless).
-needle="$(printf '%s' "${msg_flat:0:24}" | tr -d ' ')"
+# Both the head and the tail must be visible — a head-only match passed a
+# prompt cut at 1024 bytes (§9 trap 5). codex additionally queues input while
+# MCP servers load — wait until the 'tab to queue message' notice is gone
+# (never appears for claude; harmless).
+head_needle="$(printf '%s' "${msg_flat:0:24}" | tr -d ' ')"
+tail_needle="$(printf '%s' "${msg_flat: -24}" | tr -d ' ')"
+(( ${#msg_flat} < 24 )) && tail_needle="${head_needle}"
 landed=0
 for i in $(seq 1 60); do
-  scr="$(read_screen 40 || true)"
+  scr="$(read_screen 200 || true)"
   scr_ns="$(printf '%s' "${scr}" | tr -d ' \n')"
-  if grep -qF "${needle}" <<<"${scr_ns}" && ! grep -qF 'tab to queue message' <<<"${scr}"; then
+  if grep -qF -- "${head_needle}" <<<"${scr_ns}" && grep -qF -- "${tail_needle}" <<<"${scr_ns}" \
+     && ! grep -qF 'tab to queue message' <<<"${scr}"; then
     landed=1; break
   fi
   if (( i <= 10 )); then sleep 0.1; else sleep 0.5; fi
 done
 if (( ! landed )); then
-  echo "UNCONFIRMED: text did not appear in ${surface}'s input box within ~30s — not submitting. Inspect the pane." >&2
+  echo "UNCONFIRMED: text did not fully appear in ${surface}'s input box within ~30s — not submitting. Inspect the pane." >&2
   exit 5
 fi
 

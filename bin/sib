@@ -156,23 +156,43 @@ spawn)
     echo "spawner_surface=${spawner_surface}";
     echo "spawner_workspace=${spawner_workspace}"; } > "${STATE_DIR}/state/${slug}.env"
 
-  # Wait for the agent's input prompt to appear. The marker (❯/›) means the
-  # input box is *drawn* — not that input is accepted yet. See cmux-cli-
-  # reference §9 for the full trap analysis.
+  # Wait for the agent's own input box. Matching the marker anywhere on screen
+  # is not enough: a shell prompt can use the same glyph (starship's default
+  # `❯`), so the old check fired on the pane's shell before `exec` took over.
+  # Text typed then lands in a pty still in canonical mode, which caps a
+  # pending line at MAX_CANON (1024 bytes on macOS): the prompt was cut at
+  # 1024 bytes and the submit enter was dropped (2026-10-29 incident). So
+  # require the marker at line start, plus claude's input-box rule line.
+  agent_ui_ready() {
+    local scr
+    scr="$(cmux read-screen --surface "${surface}" --workspace "${ws}" --lines 60 2>/dev/null)" || return 1
+    if [[ "${agent}" == "codex" ]]; then
+      grep -qE "^[[:space:]]*${ready_marker}" <<<"${scr}"
+    else
+      # (claude follows the marker with U+00A0, not a space — anchor only.)
+      grep -q "^${ready_marker}" <<<"${scr}" && grep -qF '──────────' <<<"${scr}"
+    fi
+  }
   booted=0
-  for i in $(seq 1 50); do
-    if cmux read-screen --surface "${surface}" --workspace "${ws}" --lines 60 2>/dev/null | grep -qF "${ready_marker}"; then
+  for i in $(seq 1 70); do
+    if agent_ui_ready; then
       booted=1; break
     fi
     # Adaptive poll: fast (~1s total) at first so a quick boot is caught almost
-    # immediately, then back off to 0.5s (≈20s ceiling) for a slow cold start.
+    # immediately, then back off to 0.5s (≈30s ceiling) for a slow cold start.
     if (( i <= 10 )); then sleep 0.1; else sleep 0.5; fi
   done
-  if [[ -n "${prompt}" ]]; then
-    (( booted )) || sleep 3
+  delivery=""
+  if [[ -n "${prompt}" ]] && (( ! booted )); then
+    # Typing into a pane whose agent never drew its input box is the
+    # truncation path above — do not. The pane stays up for a manual retry.
+    delivery="not sent: agent input box never appeared (~30s)"
+  elif [[ -n "${prompt}" ]]; then
+    # cmux send treats \n as Enter, which would submit a partial prompt.
+    prompt="$(printf '%s' "${prompt}" | tr '\n\t' '  ')"
     # Put the prompt in the input box first (no enter yet).
     cmux send --surface "${surface}" --workspace "${ws}" "${prompt}"
-    # Confirm the text landed, then submit. Two traps this guards against:
+    # Confirm the text landed, then submit. Three traps this guards against:
     #   1) wrap (claude + codex) — a narrow split pane soft-wraps the input, so
     #      the first 24 chars can straddle a line break and `grep -F` never
     #      matches them on one line. The loop then spins to its 30s cap before
@@ -183,11 +203,17 @@ spawn)
     #      ("tab to queue message"); an enter sent then is swallowed. Only the
     #      codex branch waits the notice out (regression-critical); claude has
     #      no input queue, so it submits as soon as the text is visible.
-    needle="$(printf '%s' "${prompt:0:24}" | tr -d ' \n')"
+    #   3) truncation — the head alone proves nothing about the rest, so the
+    #      last 24 chars must be visible too. Never submit a partial prompt.
+    head_needle="$(printf '%s' "${prompt:0:24}" | tr -d ' ')"
+    tail_needle="$(printf '%s' "${prompt: -24}" | tr -d ' ')"
+    (( ${#prompt} < 24 )) && tail_needle="${head_needle}"
+    landed=0
     for i in $(seq 1 60); do
-      scr="$(cmux read-screen --surface "${surface}" --workspace "${ws}" --lines 40 2>/dev/null || true)"
+      scr="$(cmux read-screen --surface "${surface}" --workspace "${ws}" --lines 200 2>/dev/null || true)"
       scr_ns="$(printf '%s' "${scr}" | tr -d ' \n')"
-      if grep -qF "${needle}" <<<"${scr_ns}"; then
+      if grep -qF -- "${head_needle}" <<<"${scr_ns}" && grep -qF -- "${tail_needle}" <<<"${scr_ns}"; then
+        landed=1
         if [[ "${agent}" == "codex" ]]; then
           grep -qF "tab to queue message" <<<"${scr}" || break
         else
@@ -198,16 +224,32 @@ spawn)
       # back off to 0.5s so a slow boot still resolves without busy-looping.
       if (( i <= 10 )); then sleep 0.1; else sleep 0.5; fi
     done
-    cmux send-key --surface "${surface}" --workspace "${ws}" enter
-    # Confirm submission; if no work signal appeared (queue cleared a beat
-    # late, autocomplete ate the first enter), send one more enter.
-    sleep 1
-    if ! cmux read-screen --surface "${surface}" --workspace "${ws}" --lines 20 2>/dev/null \
-         | grep -qiE 'working|esc to interrupt'; then
+    if (( ! landed )); then
+      delivery="not submitted: prompt did not fully appear in the input box (inspect the pane)"
+    else
       cmux send-key --surface "${surface}" --workspace "${ws}" enter
+      # Confirm submission; if no work signal appeared (queue cleared a beat
+      # late, autocomplete ate the first enter), send one more enter. Newer
+      # claude builds show only a spinner line ('✻ Thinking…') while working.
+      work_signal() {
+        cmux read-screen --surface "${surface}" --workspace "${ws}" --lines 20 2>/dev/null \
+          | grep -qiE 'working|esc to interrupt|^[[:space:]]*(·|✢|✳|✶|✻|✽|\*|\+|•)[[:space:]]+[A-Z][a-z]+(…|\.\.\.)'
+      }
+      sleep 1
+      work_signal || cmux send-key --surface "${surface}" --workspace "${ws}" enter
+      delivery="unconfirmed: enter sent but no work signal within ~8s (inspect the pane)"
+      for _ in $(seq 1 16); do
+        work_signal && { delivery=""; break; }
+        sleep 0.5
+      done
     fi
   fi
 
+  if [[ -n "${delivery}" ]]; then
+    echo "✗ sib '${slug}' (${agent}) → ${ws} ${surface} — prompt ${delivery}" >&2
+    echo "  retry: sib send ${slug} \"...\"   or  sib kill ${slug}" >&2
+    exit 5
+  fi
   echo "✓ sib '${slug}' (${agent}) → ${ws} ${surface} $([[ ${booted} == 1 ]] && echo '[booted]' || echo '[booting…]')"
   echo "  workdir: ${start_dir}$( (( new_ws )) && echo '  (dedicated workspace)'; (( do_worktree )) && echo '  (worktree)')"
   echo "  talk: focus the pane, or  sib send ${slug} \"...\""
