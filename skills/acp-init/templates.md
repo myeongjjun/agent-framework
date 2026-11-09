@@ -42,7 +42,7 @@
 ### Agent Notes
 
 - **Codex**: Auto-reads AGENTS.md
-- **Claude Code**: Auto-loaded via CLAUDE.md → AGENTS.md symlink
+- **Claude Code**: Reads AGENTS.md natively (v2.1.277+). A project CLAUDE.md / CLAUDE.local.md replaces it unless it imports @AGENTS.md
 
 <!-- ACP:TEMPLATE_END -->
 ```
