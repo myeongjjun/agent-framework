@@ -19,7 +19,7 @@ Two problems surfaced while using `/dispatch` in practice:
    reorg, `skills/{dispatch,collab,...}` were removed from `agent-framework`
    as "workspace-specific". Investigation showed this was wrong for two of
    them: dispatch and collab carry **no persona-specific dependency** (no
-   Jira/Wiki/OBSERV/domain tooling) — they use only `sib` + `cmux` + `git`,
+   issue-tracker/wiki/domain tooling) — they use only `sib` + `cmux` + `git`,
    exactly like the `sib` and `codex` assets that *are* L1. Their canonical
    source had drifted to the `agent-workspace` (L2) repo, and a deployed
    orphan copy lived under `~/.claude/skills/` and `~/.codex/skills/` with no
@@ -28,10 +28,10 @@ Two problems surfaced while using `/dispatch` in practice:
    engine they drive.
 
 A full L2 re-audit confirmed the split: only dispatch + collab are
-persona-free. The remaining L2 skills (agit, daily, weekly, research,
-ticket, postmortem, wiki-edit, ch-ops, quick-dashboard, observe, improve,
-inbox) depend on Jira/Wiki/Agit/OBSERV/ClickHouse or the `.agent/` layout
-and correctly stay in L2.
+persona-free. The remaining L2 skills (team reporting, ticket/wiki
+workflows, database operations dashboards, workspace observation and
+inbox triage) depend on the issue tracker, wiki, team messenger, domain
+databases, or the persona's `.agent/` layout and correctly stay in L2.
 
 The reliable way to read a cmux workspace's working directory is
 `cmux sidebar-state --workspace <ref>` (`cwd=` field). `cmux tree` does not

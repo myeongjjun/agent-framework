@@ -1,16 +1,16 @@
 # Improvement Spec: sib `--workdir` + dispatch workspace targeting
 
-> 작성: 2026-06-17 / 대상 리포: `/Users/kakao/personal/agent-framework`
+> 작성: 2026-06-17 / 대상 리포: `agent-framework`
 > sib 소스: `bin/sib` (→ `~/.local/bin/sib` symlink). dispatch 스킬 소스: `skills/dispatch/`(위치는 grep으로 확인).
 > 동기: `/dispatch`를 실제로 써보니 sibling이 **엉뚱한 워크스페이스/디렉터리**에 배치되는 버그를 반복 재현함.
 
 ## 재현된 버그 (실제 사례)
 
-1. base 세션 cwd = `/Users/kakao/personal/cmux` 상태에서 agent-workspace 작업을 dispatch
-   → sibling이 cmux 디렉터리에서 시작됨 (잘못).
-2. agent-framework 작업을 dispatch
-   → sibling이 base 세션(cmux pull 작업, workspace:13)에 split pane으로 붙음.
-   agent-framework 전용 워크스페이스가 따로 있어도 거기로 안 감 (잘못).
+1. base 세션 cwd = `/path/to/repo-a` 상태에서 repo-b 작업을 dispatch
+   → sibling이 repo-a 디렉터리에서 시작됨 (잘못).
+2. repo-c 작업을 dispatch
+   → sibling이 base 세션(repo-a 작업, workspace:13)에 split pane으로 붙음.
+   repo-c 전용 워크스페이스가 따로 있어도 거기로 안 감 (잘못).
 
 근본 원인: `sib spawn`은 (a) workdir 지정 수단이 없어 항상 호출자 cwd에서 시작하고,
 (b) 항상 호출자의 현재 워크스페이스에 split할 뿐, 작업 대상에 맞는 워크스페이스를 탐색/타겟하지 않는다.
@@ -52,8 +52,8 @@ dispatch 스킬 워크플로에 다음을 명시:
 ```bash
 cmux sidebar-state --workspace workspace:4
 # tab=4156EAAD-...                              ← 워크스페이스 UUID
-# cwd=/Users/kakao/personal/agent-framework     ← 워크스페이스 cwd ★
-# focused_cwd=/Users/kakao/personal/agent-framework  ← 포커스된 패인 cwd
+# cwd=/path/to/repo-c                           ← 워크스페이스 cwd ★
+# focused_cwd=/path/to/repo-c                   ← 포커스된 패인 cwd
 # git_branch=main clean                         ← git 정보까지
 ```
 

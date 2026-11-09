@@ -26,8 +26,8 @@ cmux sidebar-state --workspace workspace:13
 ```
 tab=2C8A36F6-...                  # 워크스페이스 UUID
 color=none
-cwd=/Users/kakao/personal/cmux    # ★ 워크스페이스 cwd
-focused_cwd=/Users/kakao/personal/cmux   # 포커스된 패인의 cwd
+cwd=/path/to/repo-a               # ★ 워크스페이스 cwd
+focused_cwd=/path/to/repo-a       # 포커스된 패인의 cwd
 focused_panel=DC0B94F5-...
 git_branch=main dirty             # git 브랜치 + dirty/clean
 pr=none / pr_label=none / ports=none / progress=none
