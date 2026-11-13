@@ -5,6 +5,7 @@
                             recap 은 그 세션이 마지막으로 남긴 요약(어디까지 했고 다음이 뭔지).
                             Claude·Codex 가 함께 묶인 세션에는 collab 이름이 붙는다.
   brief teams               collab 묶음 목록(JSON).
+  brief desk                데스크(orch) 세션의 panel id. 워커가 done-report 를 보낼 주소(없으면 exit 1).
   brief plan < plan.json    TODO 목록을 Sessions 패널 맨 위에 올린다.
                             입력: [{"panel": "<panel id>", "do": "다음 한 수"}, ...] (우선순위 순)
   brief add <panel> <할 일>  목록 끝에 항목 하나를 추가한다.
@@ -111,10 +112,12 @@ def messages():
 def teams(ss=None):
     """함께 일하는 세션 묶음(collab)을 찾는다. 연결은 두 가지다.
 
-    1. sib state(<slug>.env): 워커의 surface 와 그것을 띄운 spawner_surface.
-       이 연결만 있는 묶음은 claude·codex 가 섞였을 때만 collab 으로 본다
-       (같은 계열끼리의 단순 dispatch 까지 넣으면 목록이 묶음으로 뒤덮인다).
-    2. cmux agent message: 최근 48시간 안에 메시지를 주고받은 두 세션. 계열과 무관하게 묶는다.
+    1. sib state(<slug>.env): `sib spawn --worktree` 로 띄운 워커(/collab)와 그것을 띄운
+       spawner_surface. 이 연결만 있는 묶음은 claude·codex 가 섞였을 때만 collab 으로 본다
+       (worktree 없는 dispatch 까지 넣으면 목록이 묶음으로 뒤덮인다).
+    2. cmux agent message: 최근 48시간 안에 보냈고 아직 읽지 않은 메시지(답을 기다리는 중)가 있는
+       두 세션. 계열과 무관하게 묶는다. 다 읽힌 대화는 묶지 않는다: 오래전에 메시지를 한 번
+       주고받았다는 이유로 묶음이 계속 남지 않게.
 
     묶음마다 마지막 메시지(last)를 붙여, 누가 답을 기다리는지 패널이 보여 줄 수 있게 한다.
     """
@@ -150,6 +153,8 @@ def teams(ss=None):
         sp = ref2panel.get(rec.get("spawner_surface", ""))
         if w not in by_panel:
             continue  # 워커 pane 이 닫혔다
+        if rec.get("worktree_managed") != "1":
+            continue  # worktree 없는 dispatch 는 collab 이 아니다
         info[w] = {"agent": rec.get("agent") or by_panel[w]["agent"], "slug": rec.get("slug", "")}
         if sp in by_panel:
             info.setdefault(sp, {"agent": by_panel[sp]["agent"], "slug": ""})
@@ -161,7 +166,8 @@ def teams(ss=None):
     msgs = []
     for m in messages():
         a, b = m.get("sender_surface_id"), m.get("recipient_surface_id")
-        if a in by_panel and b in by_panel and a != b and now - (m.get("created_at") or 0) < MSG_WINDOW:
+        if (a in by_panel and b in by_panel and a != b and m.get("state") != "read"
+                and now - (m.get("created_at") or 0) < MSG_WINDOW):
             for x in (a, b):
                 info.setdefault(x, {"agent": by_panel[x]["agent"], "slug": ""})
                 talked.add(x)
@@ -629,8 +635,10 @@ def request_close(s):
     me = os.environ.get("CMUX_PANEL_ID")
     desk = desk_panel() or me
     to = f"`cmux agent message {desk} \"<reply>\"`" if desk and desk.lower() != s["panel"].lower() else "this pane"
-    text = ("done-request: the user considers this session's task finished. Before it is recorded as done and the pane "
-            "is closed, the desk agent cross-checks your report against reality, so report facts, not memory: run "
+    text = ("done-request: this session's task looks finished (the user called it done, or it has been idle for hours and "
+            "the desk is closing finished sessions). Reply `ready` only if nothing the user asked for is left; otherwise "
+            "`not-ready` and the pane stays open. Before it is recorded as done and the pane is closed, the desk agent "
+            "cross-checks your report against reality, so report facts, not memory: run "
             "`git status` (and `git log -3 --oneline`) in every directory this session created or edited files in.\n"
             f"reply to {to} in this shape, then stay open (the desk closes the pane after checking; do not close it yourself):\n"
             "`done-report: ready|not-ready` then one line each:\n"
@@ -687,6 +695,11 @@ def main(argv):
             if x["panel"].lower() in rc:
                 x["recap"] = rc[x["panel"].lower()]
         print(json.dumps(ss, ensure_ascii=False, indent=1))
+    elif cmd == "desk":  # 데스크(orch) panel id. 워커가 done-report 를 보낼 주소. 없으면 exit 1
+        d = desk_panel()
+        if not d:
+            sys.exit(1)
+        print(d)
     elif cmd == "teams":
         print(json.dumps(teams(), ensure_ascii=False, indent=1))
     elif cmd == "plan":

@@ -1,6 +1,8 @@
 // sessions: "자리 비웠다 돌아왔을 때" 뷰. cmux 가 추적하는 모든 에이전트 세션을
 // 워크스페이스 구분 없이 한 줄로 세우고, 내가 봐야 할 순서대로 정렬한다.
-//   Needs input(입력 대기·안 읽음) → Running → Today → This week → Older
+//   Needs input(입력 대기·안 읽음) → Running → Today → 정리 후보 → This week → Older
+// 정리 후보: 6시간 넘게 idle 인 세션(입력 대기·안 읽음·TODO 아님). 끝났는데 열려 있는 세션을
+// 눈에 띄게 모아, 데스크에서 `/done <이름>` 으로 정리하도록 유도한다.
 // 행을 누르면 그 워크스페이스로 가서 해당 터미널에 포커스한다.
 // 맨 위 "TODO" 는 아침 브리핑 에이전트가 `brief plan` 으로 올린 목록이다.
 //
@@ -25,6 +27,8 @@ function msgLine(t, panel) {
   return "";
 }
 const COLLAB_GROUP = 1.5; // Running 다음, Today 앞
+const STALE_GROUP = 2.5; // Today 다음, This week 앞
+const STALE_AFTER = 6 * 3600; // orch.md 의 정리 후보 기준과 같은 값
 const PLAN_TTL = 20 * 3600; // 브리핑 후 20시간이 지나면 목록을 숨긴다
 const planIndex = {};
 PLAN.items.forEach((it, i) => { planIndex[it.panel.toLowerCase()] = i; });
@@ -65,6 +69,7 @@ function groupOf(a, unread, epoch) {
   if (a.status === "needs_input" || unread) return 0;
   if (a.status === "working") return 1;
   const age = epoch - (a.lastActivityAt ?? 0);
+  if (a.status === "idle" && age >= STALE_AFTER) return STALE_GROUP;
   if (age < DAY) return 2;
   if (age < 7 * DAY) return 3;
   return 4;
@@ -144,7 +149,7 @@ const entries = computed(() => {
       last = r.group;
       if (r.group === BRIEF_GROUP) { out.push(r); continue; }
       const n = rows.filter((x) => x.group === r.group).length;
-      out.push({ key: "h:" + r.group, kind: "header", label: r.group === PLAN_GROUP ? "TODO" : r.group === COLLAB_GROUP ? "Collab" : GROUPS[r.group], count: n, group: r.group });
+      out.push({ key: "h:" + r.group, kind: "header", label: r.group === PLAN_GROUP ? "TODO" : r.group === COLLAB_GROUP ? "Collab" : r.group === STALE_GROUP ? "정리 후보 · /done" : GROUPS[r.group], count: n, group: r.group });
     }
     out.push(r);
   }
@@ -173,7 +178,7 @@ function agentRow(e) {
       Circle({ size: 6 }).fill(() => (e().unread ? COLOR.needs_input : COLOR[e().status] ?? "#7f7f7f66")),
       Text(() => (e().num ? e().num + " " : "") + e().title)
         .font(12).weight("medium").lineLimit(1).truncation("tail")
-        .color(() => (e().status === "ended" || e().group === 4 ? "secondary" : "primary")),
+        .color(() => (e().status === "ended" || e().group === 4 || e().group === STALE_GROUP ? "secondary" : "primary")),
       Spacer(),
       Text(() => (e().status === "working" ? "" : fmtAgo((data.clock()?.epoch ?? 0) - e().at)))
         .font(10).monospaced().color("tertiary").layoutPriority(2),
@@ -205,7 +210,8 @@ sidebar(() =>
         const rows = entries().filter((x) => x.kind === "agent");
         const mine = rows.filter((x) => x.group === 0).length;
         const run = rows.filter((x) => x.group === 1).length;
-        return (mine ? mine + " waiting · " : "") + (run ? run + " running · " : "") + rows.length + " sessions";
+        const stale = rows.filter((x) => x.group === STALE_GROUP).length;
+        return (mine ? mine + " waiting · " : "") + (run ? run + " running · " : "") + (stale ? stale + " to close · " : "") + rows.length + " sessions";
       }).font(10).monospaced().color("tertiary"),
     ]).paddingHorizontal(10),
 

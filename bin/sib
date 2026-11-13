@@ -20,8 +20,8 @@
 # Subcommands:
 #   sib spawn <slug> [--codex] [--yolo] [--base <branch>] [--worktree]
 #             [--workdir <path>] [--workspace <id|ref> | --new-workspace]
-#             [-- <prompt...>]
-#   sib list
+#             [--report] [-- <prompt...>]
+#   sib list          (also prunes state of panes that are gone)
 #   sib send <slug> [--queue] <text...>
 #   sib kill <slug> [--keep-worktree]
 #
@@ -44,18 +44,34 @@ surface_alive() { cmux read-screen --surface "$1" --workspace "$2" --lines 1 >/d
 # tree omits cwd; sidebar-state is the supported source. Empty if unknown.
 workspace_cwd() { cmux sidebar-state --workspace "$1" 2>/dev/null | sed -n 's/^cwd=//p' | head -1; }
 
+# Drop the state file of a sibling whose pane is gone (closed by `brief done`,
+# by hand, or by a cmux restart) — otherwise state/ only ever grows and a dead
+# slug blocks re-spawning under the same name. A sib-managed worktree is never
+# removed here: that state is kept so `sib kill <slug>` can clean it up.
+# Prints "pruned" / "kept-worktree" / nothing (alive or cmux unreachable).
+prune_if_dead() {
+  local f="$1" surface="" workspace="" worktree_managed=0
+  # shellcheck source=/dev/null  # runtime state file; fields set by spawn
+  . "$f"
+  surface_alive "${surface}" "${workspace}" && return 0
+  # Only trust "dead" when cmux itself answers — a broken socket must not
+  # wipe the state of live siblings.
+  cmux workspace list >/dev/null 2>&1 || return 0
+  if (( worktree_managed )); then echo kept-worktree; else rm -f "$f"; echo pruned; fi
+}
+
 cmd="${1:-}"; shift || true
 
 case "${cmd}" in
 spawn)
   slug="${1:?sib spawn <slug> ...}"; shift
-  [[ "${slug}" =~ ^[a-z0-9-]+$ ]] || die "slug must be lowercase-kebab"
+  [[ "${slug}" =~ ^[a-z0-9][a-z0-9-]*$ ]] || die "slug must be lowercase-kebab (and not start with '-'): ${slug}"
   need_cmux
   # Default: normal permission gates (interactive sibling you supervise in the pane).
   # --yolo opts into autonomous mode (skip gates) — only for unattended work.
   agent="claude"; yolo=0
   base="HEAD"; do_worktree=0; prompt=""
-  workdir=""; target_ws=""; new_ws=0
+  workdir=""; target_ws=""; new_ws=0; report=0
   while (($#)); do case "$1" in
     --codex)            agent="codex" ;;
     --yolo)             yolo=1 ;;
@@ -64,6 +80,7 @@ spawn)
     --workdir|--cwd)    shift; workdir="${1:?--workdir needs a path}" ;;
     --workspace)        shift; target_ws="${1:?--workspace needs an id|ref}" ;;
     --new-workspace)    new_ws=1 ;;
+    --report)           report=1 ;;
     --)                 shift; prompt="$*"; break ;;
     *)                  die "unknown spawn arg: $1" ;;
   esac; shift || true; done
@@ -76,7 +93,21 @@ spawn)
     ready_marker="❯"
   fi
 
-  [[ -f "${STATE_DIR}/state/${slug}.env" ]] && die "sib '${slug}' already exists (sib kill ${slug} first)"
+  if [[ -f "${STATE_DIR}/state/${slug}.env" ]]; then
+    [[ "$(prune_if_dead "${STATE_DIR}/state/${slug}.env")" == pruned ]] \
+      || die "sib '${slug}' already exists (sib kill ${slug} first)"
+  fi
+
+  # --report: append the completion contract. The sibling reports to the desk
+  # (orch) when its task is done and stays open; the desk cross-checks the
+  # report and closes the pane. This is what keeps finished siblings from
+  # piling up. /collab workers do not use it — the collab caller owns their
+  # lifecycle (sib kill in its final phase).
+  if (( report )) && [[ -n "${prompt}" ]]; then
+    prompt="${prompt}
+
+--- completion contract (from sib) --- When this task is finished — or nothing is left that you can do without the user — report once and stay open: run \`git status --short\` and \`git log -3 --oneline\` in every directory you edited, then send \`cmux agent message \"\$(brief desk)\" \"done-report: ready|not-ready\"\` with one line each: did / artifacts (absolute paths, commits, links) / uncommitted · unpushed / running (background jobs, pending questions) / remaining (what is left, and who owns it). Use not-ready when anything the user asked for is left undone. If \`brief desk\` prints nothing or the send fails, print the same report in this pane instead. Never close your own pane: the desk checks the report against reality and closes it."
+  fi
 
   # Resolve the sibling's start directory.
   # Precedence: --worktree (managed checkout) wins over --workdir, which wins
@@ -259,6 +290,9 @@ list)
   shopt -s nullglob
   printf '%-16s %-8s %-12s %s\n' SLUG AGENT SURFACE WORKTREE
   for f in "${STATE_DIR}"/state/*.env; do
+    case "$(prune_if_dead "$f")" in
+      pruned) echo "  (pruned $(basename "$f" .env): pane gone)" >&2; continue ;;
+    esac
     # shellcheck source=/dev/null  # runtime state file; fields set by spawn
     # shellcheck disable=SC2154    # slug/agent/surface/workspace/worktree come from the sourced file
     ( . "$f"; st=$(surface_alive "${surface}" "${workspace}" && echo up || echo dead)

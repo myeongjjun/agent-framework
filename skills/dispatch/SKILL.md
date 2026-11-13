@@ -1,6 +1,6 @@
 ---
 name: dispatch
-version: 0.7.2
+version: 0.8.0
 description: >
   Spawn a scoped sibling agent session via `sib` (cmux pane, shared
   working tree — no worktree by default), placing it in the workspace
@@ -75,6 +75,10 @@ Do not use this skill for:
   there. Resolve the target workspace explicitly (Step 3) before spawning.
 - Do not pass `--worktree` to sib — that's reserved for /collab. A
   dispatched sibling shares the target directory's working tree.
+- Always pass `--report`. sib appends the completion contract to the
+  task: when the sibling finishes, it sends a `done-report:` to the desk
+  (orch) and stays open; the desk cross-checks it and closes the pane.
+  Without it, finished siblings stay open indefinitely.
 
 ## Workflow
 
@@ -191,14 +195,15 @@ explicit fire-and-forget signal overrides it:
 Note on the sib model: closing the cmux pane ends the agent. There is no
 detached `keep_alive` daemon. So:
 
-- **interactive** (default) = the pane stays open; the user keeps talking
-  to the sibling there after it finishes the task
-- **fire-and-forget** = the sibling runs the task, the user lets the pane
-  exit when the agent finishes
+- **interactive** (default) = the user may keep talking to the sibling
+  while it works; when the task is done it reports and the desk closes it
+- **fire-and-forget** = the user does not plan to look at the pane; the
+  report + desk review is the only follow-up
 
-Both modes look the same at spawn time; the difference is post-task
-intent. The skill records the choice in the message to the user but does
-not alter the sib invocation.
+Both modes use the same sib invocation (`--report` included); the
+difference is post-task intent, recorded in the message to the user.
+A pane outlives its task only while the desk review finds something
+left (`not-ready`).
 
 Mode is **always derived, never prompted** — proceed immediately with a
 one-line status update before the request:
@@ -226,7 +231,7 @@ YOLO_FLAG=""
 #   PLACEMENT="--workspace $TARGET_WS"    # reuse an existing workspace
 #   PLACEMENT="--workdir $WORKDIR --new-workspace"   # dedicated workspace
 
-sib spawn "$slug" $WORKER_FLAG $YOLO_FLAG $PLACEMENT -- "$description"
+sib spawn "$slug" --report $WORKER_FLAG $YOLO_FLAG $PLACEMENT -- "$description"
 ```
 
 `sib spawn` then:
@@ -236,7 +241,8 @@ sib spawn "$slug" $WORKER_FLAG $YOLO_FLAG $PLACEMENT -- "$description"
    workspace / new dedicated workspace rooted at workdir)
 3. `cd`s into the start dir and `exec`s the agent in the pane
 4. Waits up to 20 s for the agent prompt marker (`❯` claude, `›` codex),
-   then sends the task as the first message
+   then sends the task — with the completion contract appended
+   (`--report`) — as the first message
 5. Persists state to `~/.local/share/sib/state/<slug>.env` (slug, agent,
    surface, workspace, worktree, workdir, worktree_managed,
    workspace_managed)
@@ -259,13 +265,15 @@ short note:
 Talk to the sibling by focusing its cmux pane, or:
   sib send {slug} "..."
 
-When done:
+When done: the sibling sends a done-report to the desk, which checks it
+and closes the pane. Manual teardown if needed:
   sib kill {slug}    # closes the pane; for a dedicated workspace, closes it
 ```
 
 On failure, sib's error message is printed verbatim. Common cases:
 
-- `sib '<slug>' already exists` — different slug needed
+- `sib '<slug>' already exists` — a sibling with that slug is still
+  open (a slug whose pane is gone is reused automatically); pick another
 - `failed to create pane` / `failed to split workspace` — cmux state
   issue, inspect with `cmux list-workspaces`
 - `start dir does not exist` — workdir typo; re-resolve Step 3

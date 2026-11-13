@@ -1,6 +1,6 @@
 ---
 name: collab
-version: 4.0.1
+version: 4.1.0
 description: >
   Orchestrate dual-agent collaboration (Claude worker + Codex worker) on
   the same task by spawning two sib siblings, each in its own git
@@ -85,6 +85,12 @@ Identify the type in Phase 1 and follow the matching flow:
 - Slug collision: if `<base>-claude.env` or `<base>-codex.env` already
   exists in `~/.local/share/sib/state/`, fail with the existing-slug
   message and ask the user to pick a different base.
+- Workers are spawned **without** `--report`: the caller owns their
+  lifecycle, so they must not report to the desk on their own.
+- **The caller tears both workers down, always.** Every run ends with
+  `sib kill` on both workers — after Phase 5, or as soon as the run
+  stops early (see "Stopping early"). A collab that leaves its panes
+  open is unfinished.
 
 ## Workflow
 
@@ -299,8 +305,11 @@ plan, then decide: merge vs re-dispatch.
 
 3. Decide:
    - **Merge now** (Phase 5) if one solution is clearly superior or merge is trivial.
-   - **Re-dispatch** (back to Phase 2) with the same base slug plus a feedback
-     appendix if both outputs are incomplete.
+   - **Re-dispatch** if both outputs are incomplete: send the task plus a
+     feedback appendix to the same two workers with `sib send` (no new
+     spawn), then return to Phase 3.
+   - **Abandon** if neither attempt is worth continuing: tear both
+     workers down now (see "Stopping early").
 
 ### Phase 5 — Final Merge + Cleanup
 
@@ -392,6 +401,27 @@ cat > .collab/<base_slug>.md << 'ARCHIVE'
 ARCHIVE
 ```
 
+### Stopping early
+
+The workers' panes, worktrees and `sib/<base_slug>-*` branches exist
+only for this run. Whenever the run stops before Phase 5 completes —
+the user cancels or changes direction, the second spawn failed and you
+chose not to fall back, a worker is stuck past the timeout and you give
+up on it, or synthesis decides to abandon rather than re-dispatch —
+close them in the same turn:
+
+```bash
+# keep a worker's branch only if something on it may still be wanted
+sib kill <base_slug>-claude [--keep-worktree]
+sib kill <base_slug>-codex  [--keep-worktree]
+```
+
+Then tell the user in one line what was closed and anything kept
+(`--keep-worktree` leaves the worktree and branch for later
+`agent-promote.sh` or deletion). Re-dispatch (Phase 4 → Phase 2) reuses
+the same workers via `sib send` instead of spawning new ones, so it
+does not add panes.
+
 ## Output Format Examples
 
 ### 실행 계획 예시
@@ -422,6 +452,7 @@ ARCHIVE
 ### 5) 최종 병합 + 정리
 - 선택한 워커 branch를 agent-promote.sh 로 caller branch에 squash-merge
 - sib kill <base_slug>-claude / <base_slug>-codex (worktree + branch 정리)
+- 중간에 멈추더라도 두 워커는 같은 턴에 sib kill
 - .collab/{base_slug}.md 아카이브
 ```
 

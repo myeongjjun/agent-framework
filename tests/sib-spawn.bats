@@ -250,3 +250,57 @@ line two"
   [ "$status" -eq 0 ]
   grep -q "cmux send .*line one line two" "$CMUX_STUB_LOG"
 }
+
+# --- slug validation + dead-state pruning ------------------------------------
+
+@test "a slug starting with '-' is rejected before any state is written" {
+  run "$SIB" spawn --help
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"lowercase-kebab"* ]]
+  [ ! -f "$STATE/--help.env" ]
+}
+
+@test "spawn reuses a slug whose old pane is gone (no worktree)" {
+  run "$SIB" spawn reuse-me
+  [ "$status" -eq 0 ]
+  touch "${CMUX_STUB_LOG}.closed-surface:90"   # the old pane was closed outside sib
+  CMUX_STUB_SURFACE="surface:93" run "$SIB" spawn reuse-me
+  [ "$status" -eq 0 ]
+  grep -qx "surface=surface:93" "$STATE/reuse-me.env"
+}
+
+@test "spawn still refuses a slug whose pane is alive" {
+  run "$SIB" spawn live-one
+  [ "$status" -eq 0 ]
+  run "$SIB" spawn live-one
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"already exists"* ]]
+}
+
+@test "list prunes dead non-worktree state but keeps worktree-managed state" {
+  mkdir -p "$STATE"
+  printf 'slug=gone\nagent=claude\nsurface=surface:70\nworkspace=workspace:1\nworktree=/x\nworktree_managed=0\n' > "$STATE/gone.env"
+  printf 'slug=wt\nagent=codex\nsurface=surface:71\nworkspace=workspace:1\nworktree=/y\nworktree_managed=1\n' > "$STATE/wt.env"
+  printf 'slug=up\nagent=claude\nsurface=surface:72\nworkspace=workspace:1\nworktree=/z\nworktree_managed=0\n' > "$STATE/up.env"
+  touch "${CMUX_STUB_LOG}.closed-surface:70" "${CMUX_STUB_LOG}.closed-surface:71"
+  run "$SIB" list
+  [ "$status" -eq 0 ]
+  [ ! -f "$STATE/gone.env" ]
+  [ -f "$STATE/wt.env" ]
+  [ -f "$STATE/up.env" ]
+  [[ "$output" == *"wt "*"(dead)"* ]]
+}
+
+# --- --report completion contract --------------------------------------------
+
+@test "--report appends the completion contract to the prompt" {
+  CMUX_STUB_PROMPT_ECHO="do the thing" CMUX_STUB_SCREEN=$'❯\n──────────\ndothething--- completioncontract ... closes it.\nworking' \
+    run "$SIB" spawn rep-on --report -- "do the thing"
+  grep -q "cmux send .*do the thing.*completion contract.*done-report" "$CMUX_STUB_LOG"
+}
+
+@test "without --report the prompt is sent unchanged" {
+  run "$SIB" spawn rep-off -- "the task prompt"
+  [ "$status" -eq 0 ]
+  ! grep -q "completion contract" "$CMUX_STUB_LOG"
+}

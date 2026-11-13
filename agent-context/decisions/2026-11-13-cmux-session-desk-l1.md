@@ -4,6 +4,7 @@
 - **Status**: Accepted
 - **Deciders**: maintainer (with Claude)
 - **Supersedes**: none
+- **Amended by**: [ADR-004](./2026-11-13-session-cleanup-self-report.md)
 
 ## Context
 

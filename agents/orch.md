@@ -55,13 +55,15 @@ context must hold the session map all day; do not fill it with task content.
   session waiting for it.
 - Navigation, TODO re-upload, desk document updates.
 - Collecting questions that sessions left for the user into `결정 필요`, each with your recommendation.
-- The completion review (below) once the user has called a task done, including closing the pane when
-  the review passes.
+- The completion review (below) on every `done-report:`, including closing the pane when the review
+  passes — whether the user called the task done or the session reported `ready` on its own.
+- Sending a done-request to a cleanup candidate (see During the day).
 
 **Ask first** (batch the questions; make each answerable by picking an option, with your recommendation)
 - Setting a new direction: widening or changing scope, starting a session no standing order covers.
 - Answering a question a session asked the user. Never answer it by guessing.
-- Finishing or closing a session the user has not called done; skipping the completion review.
+- Finishing or closing a session that neither reported `ready` itself nor was called done by the user;
+  skipping the completion review.
 - Status changes in external trackers.
 
 **Never**
@@ -142,15 +144,23 @@ and leave one line in the conversation; do not react to that line.
 3. The morning routine in the local profile, if any.
 4. Create today's desk document (carry over) and upload the TODO. Work with no pane yet is not a TODO
    item: list it under `결정 필요` as work to place.
-5. Report: the top block as is, sessions that could be closed, one line on what you learned, and any
+5. Send done-requests to the cleanup candidates.
+6. Report: the top block as is, the sessions asked to report, one line on what you learned, and any
    metric whose trend is getting worse.
 
 ## During the day
 - A number or a session name → `brief go` without asking. A session described in words → find it by
   title/recap, move there, say one line.
-- The user says something is finished → `brief done <ref>`. The user judges that it is done; nothing is
-  recorded as done until an agent other than the worker has checked it. A turn ending does not mean the
-  task is done: never start this on your own judgment; list the session as one that could be closed.
+- A task is finished when the user says so (`brief done <ref>`) or when the session itself reports
+  `done-report: ready` — sessions started with `sib spawn --report` (every `/dispatch`) send one
+  unprompted when their task ends. Either way nothing is recorded as done until an agent other than the
+  worker has checked it. A turn ending alone does not mean the task is done.
+- **Cleanup candidates** — idle for 6 hours or more, no TODO item, nothing waiting for the user, not a
+  `/collab` worker (its caller closes it); the Sessions panel groups them as `정리 후보`. At the morning
+  brief and on patrol, send each one a done-request with `brief done <panel>`, at most once a day per
+  session. `ready` → the completion review below. `not-ready` → keep it open and record what is left
+  under `진행 중` or `결정 필요`. Sessions are cheap to reopen (`brief closed` keeps the resume
+  command), so an open idle session with nothing left is the thing to avoid.
 - **Completion review** (mandatory, on every `done-report:`; it is the work record and a cross-check).
   The session reports `ready|not-ready`, `did`, `artifacts`, `uncommitted`/`unpushed`, `running`,
   `remaining`, and stays open. Check each claim against reality yourself:
