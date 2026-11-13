@@ -428,3 +428,31 @@ trusted() { jq -e --arg d "$1" '.projects[$d].hasTrustDialogAccepted == true' "$
   [[ "$output" == *"trust-folder dialog"* ]]
   ! grep -q "cmux send .*do the thing" "$CMUX_STUB_LOG"
 }
+
+# --- state with spaces / help ------------------------------------------------
+
+@test "a workdir with spaces survives sib list and kill" {
+  mkdir -p "$BATS_TEST_TMPDIR/with space"
+  run "$SIB" spawn sp --workdir "$BATS_TEST_TMPDIR/with space"
+  [ "$status" -eq 0 ]
+  run "$SIB" list
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"with space (up)"* ]]
+  run "$SIB" kill sp
+  [ "$status" -eq 0 ]
+  [ ! -f "$STATE/sp.env" ]
+}
+
+@test "sib spawn --help prints usage and spawns nothing" {
+  run "$SIB" spawn --help
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"sib spawn <slug>"* ]]
+  [ ! -s "$CMUX_STUB_LOG" ]
+  [ -z "$(ls "$STATE")" ]
+}
+
+@test "a slug starting with '-' is rejected" {
+  run "$SIB" spawn -x
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"lowercase-kebab"* ]]
+}

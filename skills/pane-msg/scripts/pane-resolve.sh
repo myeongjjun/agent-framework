@@ -131,15 +131,23 @@ normalize_ws() { # $1 = workspace ref or UUID → ref (falls back to input)
   printf '%s' "${id}"
 }
 
-# sib slug lookup table: "workspace surface" → slug
-declare -A SLUG_BY_TARGET=()
+# sib slug lookup table: lines of "workspace surface<TAB>slug". A plain
+# string, not `declare -A` — macOS ships bash 3.2, which has no
+# associative arrays.
+SLUG_TABLE=""
+slug_for() { # $1=workspace $2=surface → slug or empty
+  local key val
+  while IFS=$'\t' read -r key val; do
+    [[ "${key}" == "$1 $2" ]] && { printf '%s' "${val}"; return; }
+  done <<<"${SLUG_TABLE}"
+}
 if [[ -d "${STATE_DIR}" ]]; then
   for f in "${STATE_DIR}"/*.env; do
     [[ -f "$f" ]] || continue
     s_slug="$(sed -n 's/^slug=//p' "$f")"
     s_surface="$(sed -n 's/^surface=//p' "$f")"
     s_workspace="$(normalize_ws "$(sed -n 's/^workspace=//p' "$f")")"
-    [[ -n "${s_surface}" && -n "${s_workspace}" ]] && SLUG_BY_TARGET["${s_workspace} ${s_surface}"]="${s_slug}"
+    [[ -n "${s_surface}" && -n "${s_workspace}" ]] && SLUG_TABLE+="${s_workspace} ${s_surface}"$'\t'"${s_slug}"$'\n'
   done
 fi
 
@@ -168,7 +176,7 @@ matches=""
 if [[ -n "${surface}" ]]; then
   workspace="$(normalize_ws "${workspace}")"
   alive "${surface}" "${workspace}" || { echo "MATCH:0"; echo "pane-resolve: ${surface} in ${workspace} is not readable (gone?)" >&2; exit 3; }
-  matches="$(emit "${workspace}" "${surface}" "${SLUG_BY_TARGET["${workspace} ${surface}"]:-}" "-")"
+  matches="$(emit "${workspace}" "${surface}" "$(slug_for "${workspace}" "${surface}")" "-")"
 
 elif [[ -n "${slug}" ]]; then
   f="${STATE_DIR}/${slug}.env"
@@ -201,7 +209,7 @@ elif [[ -n "${spawner_of}" ]]; then
     echo "pane-resolve: spawner of '${spawner_of}' (${sp_surface}) is gone" >&2
     exit 3
   fi
-  matches="$(emit "${sp_workspace}" "${sp_surface}" "${SLUG_BY_TARGET["${sp_workspace} ${sp_surface}"]:-}" "-")"
+  matches="$(emit "${sp_workspace}" "${sp_surface}" "$(slug_for "${sp_workspace}" "${sp_surface}")" "-")"
 
 elif [[ -n "${cwd}" ]]; then
   target="$(cd "${cwd}" 2>/dev/null && pwd -P)" || die "cwd does not exist: ${cwd}"
@@ -211,7 +219,7 @@ elif [[ -n "${cwd}" ]]; then
     [[ "${real_w}" == "${target}" ]] || continue
     while IFS=$'\t' read -r sref stitle; do
       [[ -n "${sref}" ]] || continue
-      matches+="$(emit "${ws}" "${sref}" "${SLUG_BY_TARGET["${ws} ${sref}"]:-}" "${stitle}")"$'\n'
+      matches+="$(emit "${ws}" "${sref}" "$(slug_for "${ws}" "${sref}")" "${stitle}")"$'\n'
     done < <(list_surfaces "${ws}")
   done <<<"${WS_TABLE}"
   matches="${matches%$'\n'}"
@@ -223,7 +231,7 @@ else # --title
       [[ -n "${sref}" ]] || continue
       hay="$(tr '[:upper:]' '[:lower:]' <<<"${ws_title} ${stitle}")"
       [[ "${hay}" == *"${hint}"* ]] || continue
-      matches+="$(emit "${ws}" "${sref}" "${SLUG_BY_TARGET["${ws} ${sref}"]:-}" "${stitle}")"$'\n'
+      matches+="$(emit "${ws}" "${sref}" "$(slug_for "${ws}" "${sref}")" "${stitle}")"$'\n'
     done < <(list_surfaces "${ws}")
   done <<<"${WS_TABLE}"
   matches="${matches%$'\n'}"

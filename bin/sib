@@ -50,9 +50,11 @@ workspace_cwd() { cmux sidebar-state --workspace "$1" 2>/dev/null | sed -n 's/^c
 # removed here: that state is kept so `sib kill <slug>` can clean it up.
 # Prints "pruned" / "kept-worktree" / nothing (alive or cmux unreachable).
 prune_if_dead() {
-  local f="$1" surface="" workspace="" worktree_managed=0
-  # shellcheck source=/dev/null  # runtime state file; fields set by spawn
-  . "$f"
+  local f="$1" surface workspace worktree_managed
+  # Read only the fields needed: spawn calls this mid-setup, so loading the
+  # whole file would overwrite its own slug/agent.
+  surface="$(state_get "$f" surface)"; workspace="$(state_get "$f" workspace)"
+  worktree_managed="$(state_get "$f" worktree_managed)"; : "${worktree_managed:=0}"
   surface_alive "${surface}" "${workspace}" && return 0
   # Only trust "dead" when cmux itself answers — a broken socket must not
   # wipe the state of live siblings.
@@ -99,7 +101,26 @@ trust_allowlisted() {
   rm -f "${tmp}"
 }
 
+# State files are plain `key=value` lines with RAW values (a workdir may
+# contain spaces). Read them field by field — never `source` them, which
+# word-splits an unquoted path into a command.
+state_get() { sed -n "s/^$2=//p" "$1" | head -1; }
+load_state() {
+  slug="$(state_get "$1" slug)"; agent="$(state_get "$1" agent)"
+  surface="$(state_get "$1" surface)"; workspace="$(state_get "$1" workspace)"
+  worktree="$(state_get "$1" worktree)"
+  worktree_managed="$(state_get "$1" worktree_managed)"
+  workspace_managed="$(state_get "$1" workspace_managed)"
+  # defaults for state files written before these fields existed
+  : "${worktree_managed:=0}" "${workspace_managed:=0}"
+}
+usage() { sed -n '2,/^set -euo/p' "$0" | sed '$d'; }
+
 cmd="${1:-}"; shift || true
+# Help anywhere in front of a slug: `sib --help`, `sib spawn --help`, ...
+# (a slug of `--help` used to pass the kebab check and spawn a session).
+case "${cmd}" in -h|--help|help) usage; exit 0 ;; esac
+case "${1:-}" in -h|--help) usage; exit 0 ;; esac
 
 case "${cmd}" in
 spawn)
@@ -387,9 +408,7 @@ list)
     case "$(prune_if_dead "$f")" in
       pruned) echo "  (pruned $(basename "$f" .env): pane gone)" >&2; continue ;;
     esac
-    # shellcheck source=/dev/null  # runtime state file; fields set by spawn
-    # shellcheck disable=SC2154    # slug/agent/surface/workspace/worktree come from the sourced file
-    ( . "$f"; st=$(surface_alive "${surface}" "${workspace}" && echo up || echo dead)
+    ( load_state "$f"; st=$(surface_alive "${surface}" "${workspace}" && echo up || echo dead)
       printf '%-16s %-8s %-12s %s (%s)\n' "$slug" "$agent" "$surface" "$worktree" "$st" )
   done
   ;;
@@ -399,8 +418,7 @@ send)
   queue_flag=""
   [[ "${1:-}" == "--queue" ]] && { queue_flag="--queue"; shift; }
   f="${STATE_DIR}/state/${slug}.env"; [[ -f "$f" ]] || die "no such sib: ${slug}"
-  # shellcheck source=/dev/null  # runtime state file; fields set by spawn
-  . "$f"
+  load_state "$f"
   surface_alive "${surface}" "${workspace}" || die "sib '${slug}' pane is gone (sib kill ${slug} to clean up)"
   # Delegate to /pane-msg's verified delivery when deployed — single source
   # of delivery logic (busy/approval gates, landed check, submit
@@ -421,9 +439,7 @@ kill)
   slug="${1:?sib kill <slug>}"; shift
   keep_wt=0; [[ "${1:-}" == "--keep-worktree" ]] && keep_wt=1
   f="${STATE_DIR}/state/${slug}.env"; [[ -f "$f" ]] || die "no such sib: ${slug}"
-  workspace_managed=0  # default for state files written before this field existed
-  # shellcheck source=/dev/null  # runtime state file; fields set by spawn
-  . "$f"
+  load_state "$f"
   # End the agent by tearing down its surface. A sib-created dedicated
   # workspace holds only this one surface, and cmux refuses to close the last
   # surface — close the whole workspace instead. Otherwise just close the pane.
@@ -442,7 +458,6 @@ kill)
     surface_alive "${surface}" "${workspace}" \
       && die "pane ${surface} is still open — state kept; close it in cmux, then re-run sib kill ${slug}"
   fi
-  # shellcheck disable=SC2154  # worktree_managed/worktree set by the sourced state file
   if (( worktree_managed )) && (( ! keep_wt )); then
     git worktree remove --force "${worktree}" 2>/dev/null || true
     git branch -D "sib/${slug}" 2>/dev/null || true
@@ -452,5 +467,5 @@ kill)
   ;;
 
 *)
-  sed -n '2,18p' "$0" >&2; exit 1 ;;
+  usage >&2; exit 1 ;;
 esac
