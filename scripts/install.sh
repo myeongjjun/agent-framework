@@ -9,12 +9,12 @@
 #   configs/claude/statusline.sh → ~/.claude/statusline.sh (copy + chmod +x)
 #   AGENTS.md              → ~/.claude/AGENTS.md       (copy, L1 base only — personas append)
 #
-# Statusline layering (ADR-043): configs/claude/statusline.sh is the L1
-# PUBLIC BASELINE — provider-agnostic skeleton only, no in-house specifics.
-# On in-house machines the agent-workspace L2 overlay (sync-hooks.sh) ALSO
-# deploys ~/.claude/statusline.sh and MUST WIN. Since this installer can run
-# from cron, an L1 run may transiently overwrite the in-house L2 version with
-# the baseline until the next sync-all; re-running sync-all restores L2.
+# Ownership: a copied target belongs to the layer that last wrote it. This
+# installer records what it wrote in ~/.claude/.framework-owned and only
+# updates a target whose content is still what it wrote (or equals the
+# source). A target another layer or the user has written is left alone,
+# so L1 and a persona installer can run in any order. --force takes a
+# target over. An owned target whose source is gone from L1 is removed.
 #
 # Symlinks point back at this repo so L1 git pulls are immediately
 # visible to running tools without re-running install.sh.
@@ -28,10 +28,9 @@
 # skipped; the remaining sections still run, and the refusal surfaces
 # as the final exit code. Re-run is safe.
 #
-# Skill layering: a non-symlink dir at ~/.{claude,codex}/skills/<name>
-# is treated as an L2 overlay copy (e.g. agent-workspace sync-skills.sh)
-# and left in place — L2 wins, same rule as the statusline (ADR-043).
-# --force replaces it with the L1 symlink.
+# Skills follow the same rule by type: a non-symlink dir at
+# ~/.{claude,codex}/skills/<name> is another layer's copy and is left in
+# place. --force replaces it with the L1 symlink.
 #
 # Idempotent: re-running with no L1 changes is a no-op (or just
 # re-creates symlinks pointing at the same target).
@@ -88,6 +87,55 @@ run() {
 }
 
 # ---------------------------------------------------------------------------
+# Copied targets: ownership manifest (see header).
+# ---------------------------------------------------------------------------
+OWNED_FILE="${HOME}/.claude/.framework-owned"
+SNAPSHOT_FILE="${HOME}/.claude/.framework-checksums"
+OWNED_NEW="$(mktemp)"
+trap 'rm -f "${OWNED_NEW}"' EXIT
+
+sha() { shasum -a 256 "$1" | awk '{print $1}'; }
+note() { printf '· %s\n' "$*"; }
+
+# Hash this installer last wrote to <dst>. An install that predates the
+# manifest is read from its source snapshot (keyed by source path).
+owned_sum() {
+  local dst="$1" rel="$2" file key
+  if [[ -f "${OWNED_FILE}" ]]; then file="${OWNED_FILE}"; key="${dst}"
+  elif [[ -f "${SNAPSHOT_FILE}" ]]; then file="${SNAPSHOT_FILE}"; key="${rel}"
+  else return 0; fi
+  awk -v p="${key}" '{h=$1; sub(/^[^ ]+  /,""); if ($0==p) print h}' "${file}" | tail -1
+}
+
+deploy_copy() {
+  local src="$1" dst="$2" mode="$3" label="$4"
+  local rel="${src#"${FRAMEWORK_ROOT}/"}" src_sum dst_sum="" prev
+  src_sum="$(sha "${src}")"
+  if [[ -e "${dst}" || -L "${dst}" ]]; then
+    [[ -f "${dst}" && ! -L "${dst}" ]] && dst_sum="$(sha "${dst}")"
+    if [[ "${dst_sum}" == "${src_sum}" ]]; then
+      printf '%s  %s\n' "${src_sum}" "${dst}" >> "${OWNED_NEW}"
+      ok "${label} (already current)"
+      return 0
+    fi
+    prev="$(owned_sum "${dst}" "${rel}")"
+    if [[ -z "${dst_sum}" || "${dst_sum}" != "${prev}" ]] && (( FORCE == 0 )); then
+      note "${label}: ${dst} was written by another layer — kept"
+      return 0
+    fi
+  fi
+  if (( DRY_RUN == 1 )); then
+    printf '  [dry-run] install -m %s %s %s\n' "${mode}" "${src}" "${dst}"
+  else
+    mkdir -p "$(dirname "${dst}")"
+    [[ -L "${dst}" ]] && rm -f "${dst}"
+    install -m "${mode}" "${src}" "${dst}"
+  fi
+  printf '%s  %s\n' "${src_sum}" "${dst}" >> "${OWNED_NEW}"
+  ok "${label} → ${dst}"
+}
+
+# ---------------------------------------------------------------------------
 # 1) Skills — symlink each skill dir into ~/.claude/skills and ~/.codex/skills
 # ---------------------------------------------------------------------------
 install_skill() {
@@ -106,11 +154,9 @@ install_skill() {
     fi
     run rm -f "${dst}"
   elif [[ -e "${dst}" ]]; then
-    # Regular file/dir — an L2 overlay copy (or a hand-edited one). Leave
-    # it; L2 wins over L1. --force replaces it with the L1 symlink.
+    # Regular file/dir — another layer's copy. Same rule as copied targets.
     if (( FORCE == 0 )); then
-      warn "skill ${name} at ${dst} is a non-symlink copy (L2 overlay?) — kept; L1 version not linked."
-      warn "  Re-run with --force to replace it with the L1 symlink."
+      note "skill ${name}: ${dst} was written by another layer — kept"
       return 0
     fi
     run rm -rf "${dst}"
@@ -128,21 +174,13 @@ for skill in "${FRAMEWORK_ROOT}/skills"/*/; do
 done
 
 # ---------------------------------------------------------------------------
-# 2) Hooks — copy each .sh into ~/.claude/hooks/ and chmod +x.
-#    Copied (not symlinked) so guard-deployed-artifact-edit.sh can refuse
-#    edits to the deployed copy while source lives in this repo.
+# 2) Hooks — copy each .sh into ~/.claude/hooks/ (copied, not symlinked,
+#    so the deployed copy can be guarded while source lives in this repo).
 # ---------------------------------------------------------------------------
-mkdir -p "${HOME}/.claude/hooks"
 for hook in "${FRAMEWORK_ROOT}/hooks"/*/*.sh; do
   [[ -f "$hook" ]] || continue
   name="$(basename "$hook")"
-  dst="${HOME}/.claude/hooks/${name}"
-  if (( DRY_RUN == 1 )); then
-    printf '  [dry-run] cp %s %s\n' "${hook}" "${dst}"
-  else
-    install -m 755 "${hook}" "${dst}"
-  fi
-  ok "hook ${name} → ~/.claude/hooks/"
+  deploy_copy "${hook}" "${HOME}/.claude/hooks/${name}" 755 "hook ${name}"
 done
 
 # ---------------------------------------------------------------------------
@@ -202,22 +240,10 @@ link_file() {
   ok "${label} → ${dst}"
 }
 
-mkdir -p "${HOME}/.claude/agents"
 for agent in "${FRAMEWORK_ROOT}/agents"/*.md; do
   name="$(basename "$agent")"
   case "$name" in README.md|INDEX.md) continue ;; esac
-  dst="${HOME}/.claude/agents/${name}"
-  if [[ -f "${dst}" && ! -L "${dst}" ]] && cmp -s "${agent}" "${dst}"; then
-    ok "agent ${name%.md} (already current)"
-    continue
-  fi
-  [[ -L "${dst}" ]] && run rm -f "${dst}"
-  if (( DRY_RUN == 1 )); then
-    printf '  [dry-run] install -m 644 %s %s\n' "${agent}" "${dst}"
-  else
-    install -m 644 "${agent}" "${dst}"
-  fi
-  ok "agent ${name%.md} → ~/.claude/agents/"
+  deploy_copy "${agent}" "${HOME}/.claude/agents/${name}" 644 "agent ${name%.md}"
 done
 
 CMUX_SRC="${FRAMEWORK_ROOT}/cmux"
@@ -249,23 +275,11 @@ if [[ -d "${CMUX_SRC}" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 4) Statusline — copy the L1 baseline into ~/.claude/statusline.sh (+chmod).
-#    Copied (not symlinked) so the L2 in-house overlay (agent-workspace
-#    sync-hooks.sh) can overwrite it in place on in-house machines without
-#    fighting a symlink. L2 wins; see ADR-043 / header note above.
+# 4) Statusline — the L1 baseline (provider-agnostic skeleton).
 # ---------------------------------------------------------------------------
 statusline_src="${FRAMEWORK_ROOT}/configs/claude/statusline.sh"
 if [[ -f "${statusline_src}" ]]; then
-  mkdir -p "${HOME}/.claude"
-  statusline_dst="${HOME}/.claude/statusline.sh"
-  if [[ -f "${statusline_dst}" ]] && cmp -s "${statusline_src}" "${statusline_dst}"; then
-    ok "statusline.sh → ~/.claude/ (already current)"
-  elif (( DRY_RUN == 1 )); then
-    printf '  [dry-run] install -m 755 %s %s\n' "${statusline_src}" "${statusline_dst}"
-  else
-    install -m 755 "${statusline_src}" "${statusline_dst}"
-    ok "statusline.sh → ~/.claude/"
-  fi
+  deploy_copy "${statusline_src}" "${HOME}/.claude/statusline.sh" 755 "statusline.sh"
 fi
 
 # ---------------------------------------------------------------------------
@@ -274,13 +288,25 @@ fi
 #    ~/.claude/AGENTS.md is the persona's responsibility to compose.
 # ---------------------------------------------------------------------------
 if [[ -f "${FRAMEWORK_ROOT}/AGENTS.md" ]]; then
-  base_dst="${HOME}/.claude/AGENTS.md.framework-base"
-  if (( DRY_RUN == 1 )); then
-    printf '  [dry-run] cp %s %s\n' "${FRAMEWORK_ROOT}/AGENTS.md" "${base_dst}"
-  else
-    install -m 644 "${FRAMEWORK_ROOT}/AGENTS.md" "${base_dst}"
-  fi
-  ok "AGENTS.md.framework-base → ~/.claude/"
+  deploy_copy "${FRAMEWORK_ROOT}/AGENTS.md" "${HOME}/.claude/AGENTS.md.framework-base" 644 "AGENTS.md.framework-base"
+fi
+
+# ---------------------------------------------------------------------------
+# 5b) Ownership manifest. An owned target that this run did not deploy has
+#     left L1: remove it if it is still exactly what L1 wrote.
+# ---------------------------------------------------------------------------
+if [[ -f "${OWNED_FILE}" ]]; then
+  while IFS= read -r line; do
+    old_sum="${line%%  *}"; old_dst="${line#*  }"
+    awk -v p="${old_dst}" '{sub(/^[^ ]+  /,""); if ($0==p) f=1} END{exit !f}' "${OWNED_NEW}" && continue
+    [[ -f "${old_dst}" && ! -L "${old_dst}" && "$(sha "${old_dst}")" == "${old_sum}" ]] || continue
+    run rm -f "${old_dst}"
+    ok "removed ${old_dst} (no longer in L1)"
+  done < "${OWNED_FILE}"
+fi
+if (( DRY_RUN == 0 )); then
+  mkdir -p "${HOME}/.claude"
+  sort -u -k2 "${OWNED_NEW}" > "${OWNED_FILE}"
 fi
 
 # ---------------------------------------------------------------------------
@@ -318,7 +344,7 @@ else
   ok "L1 install complete."
 fi
 echo "   Source : ${FRAMEWORK_ROOT}"
-echo "   Targets: ~/.claude/{skills,hooks,statusline.sh,AGENTS.md.framework-base}"
+echo "   Targets: ~/.claude/{skills,hooks,agents,statusline.sh,AGENTS.md.framework-base}"
 echo "            ~/.codex/skills"
 echo "            ~/.local/bin"
 echo ""

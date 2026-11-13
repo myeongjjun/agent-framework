@@ -6,8 +6,9 @@
 # state of the framework source tree. If they differ, L1 source has
 # changed since the last install — caller should re-run install.sh.
 #
-# Also walks the deployed locations and detects copies that don't
-# match the source (manual edits / corruption / partial install).
+# Also walks the deployed locations and detects missing targets and stale
+# L1 copies. A target that another layer or the user has written is not
+# L1's to judge (install.sh leaves it alone) and is only listed.
 #
 # Exit codes:
 #   0  in sync
@@ -78,17 +79,33 @@ check_symlink() {
   fi
 }
 
-check_hook_copy() {
-  local dst="$1" src="$2"
-  if [[ ! -f "${dst}" ]]; then
-    say "[verify] missing hook: ${dst}"
+OWNED_FILE="${HOME}/.claude/.framework-owned"
+
+check_copy() {
+  local dst="$1" src="$2" prev=""
+  if [[ ! -e "${dst}" ]]; then
+    say "[verify] missing: ${dst}"
     fail=1
     return
   fi
-  if ! cmp -s "${dst}" "${src}"; then
-    say "[verify] hook drift: ${dst} differs from source"
+  cmp -s "${dst}" "${src}" && return
+  # Differs from source: stale only if it is still what install.sh wrote.
+  [[ -f "${OWNED_FILE}" ]] && prev="$(awk -v p="${dst}" '{h=$1; sub(/^[^ ]+  /,""); if ($0==p) print h}' "${OWNED_FILE}" | tail -1)"
+  if [[ -n "${prev}" && "$(shasum -a 256 "${dst}" | awk '{print $1}')" == "${prev}" ]]; then
+    say "[verify] stale copy: ${dst}"
     fail=1
+  else
+    say "[verify] other layer: ${dst}"
   fi
+}
+
+check_skill() {
+  local dst="$1" src="$2"
+  if [[ -e "${dst}" && ! -L "${dst}" ]]; then
+    say "[verify] other layer: ${dst}"
+    return
+  fi
+  check_symlink "${dst}" "${src}"
 }
 
 # Skills
@@ -96,15 +113,15 @@ for skill in "${FRAMEWORK_ROOT}/skills"/*/; do
   [[ -d "$skill" ]] || continue
   skill="${skill%/}"
   name="$(basename "${skill}")"
-  check_symlink "${HOME}/.claude/skills/${name}" "${skill}"
-  check_symlink "${HOME}/.codex/skills/${name}" "${skill}"
+  check_skill "${HOME}/.claude/skills/${name}" "${skill}"
+  check_skill "${HOME}/.codex/skills/${name}" "${skill}"
 done
 
 # Hooks (copied)
 for hook in "${FRAMEWORK_ROOT}/hooks"/*/*.sh; do
   [[ -f "$hook" ]] || continue
   name="$(basename "${hook}")"
-  check_hook_copy "${HOME}/.claude/hooks/${name}" "${hook}"
+  check_copy "${HOME}/.claude/hooks/${name}" "${hook}"
 done
 
 # Bin
@@ -117,18 +134,18 @@ done
 # Agents + cmux desk
 for agent in "${FRAMEWORK_ROOT}/agents"/*.md; do
   case "$(basename "$agent")" in README.md|INDEX.md) continue ;; esac
-  check_hook_copy "${HOME}/.claude/agents/$(basename "$agent")" "${agent}"
+  check_copy "${HOME}/.claude/agents/$(basename "$agent")" "${agent}"
 done
 if [[ -d "${FRAMEWORK_ROOT}/cmux" ]]; then
   check_symlink "${HOME}/.local/bin/brief" "${FRAMEWORK_ROOT}/cmux/brief"
   check_symlink "${HOME}/.config/cmux/morning-brief.sh" "${FRAMEWORK_ROOT}/cmux/morning-brief.sh"
 fi
 
-# NOTE: ~/.claude/statusline.sh is intentionally NOT checked against the L1
-# source here. Per ADR-043 the in-house L2 overlay (agent-workspace
-# sync-hooks.sh) overwrites the deployed file with its full version; a
-# deployed-copy check would flag that legitimate L2 overwrite as drift. The
-# source-vs-snapshot check above still guards the L1 baseline file itself.
+# Statusline + AGENTS base (copied)
+[[ -f "${FRAMEWORK_ROOT}/configs/claude/statusline.sh" ]] \
+  && check_copy "${HOME}/.claude/statusline.sh" "${FRAMEWORK_ROOT}/configs/claude/statusline.sh"
+[[ -f "${FRAMEWORK_ROOT}/AGENTS.md" ]] \
+  && check_copy "${HOME}/.claude/AGENTS.md.framework-base" "${FRAMEWORK_ROOT}/AGENTS.md"
 
 if (( fail == 1 )); then
   say "[verify] deployment drift — re-run install.sh"

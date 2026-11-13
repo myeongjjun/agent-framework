@@ -52,7 +52,7 @@ change L1 behaviour, it goes back to L1 (not a local override).
 | `agents/orch.md` | cmux session desk agent (`claude --agent orch`). |
 | `cmux/` | Session desk runtime: `brief`, `brief-mod`, Sessions panel, `morning-brief.sh` (runs `morning-brief.d/*.sh` after the desk), orch seeds, automation rules. |
 | `bin/cmux-automations-merge` | Merge a rule fragment into `~/.cmuxterm/automations.json` by rule id. |
-| `scripts/install.sh` | Pull L1 contents into `~/.claude/`, `~/.codex/`, `~/.local/bin/`. Atomic, overwrite. |
+| `scripts/install.sh` | Pull L1 contents into `~/.claude/`, `~/.codex/`, `~/.local/bin/`. Updates only what it wrote; a target another layer wrote is left alone, so layers install in any order. |
 | `scripts/check-update.sh` | git fetch + detect changes + trigger install. Driven by cron. |
 | `scripts/verify.sh` | Drift verify (checksum). Called from SessionStart hook. |
 
