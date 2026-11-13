@@ -1,16 +1,14 @@
 ---
 name: dispatch
-version: 0.7.1
+version: 0.7.2
 description: >
   Spawn a scoped sibling agent session via `sib` (cmux pane, shared
   working tree — no worktree by default), placing it in the workspace
   that matches the task's working directory. The skill derives slug +
-  worker + mode and executes immediately — interactive by default, never
-  prompting. v0.7.0: mode is no longer asked (interactive default, only
-  an explicit fire-and-forget signal overrides). v0.6.0: workspace
-  targeting — find/create the right workspace instead of always splitting
-  the caller's pane. dispatch = single-agent branch sharing; for
-  dual-agent isolated work, use /collab.
+  worker + mode and executes immediately — interactive by default (only
+  an explicit fire-and-forget signal overrides), never prompting.
+  dispatch = single-agent branch sharing; for dual-agent isolated work,
+  use /collab.
 trigger_phrases:
   - "/dispatch"
   - "dispatch"
@@ -104,8 +102,8 @@ If either check fails, surface the error and stop.
 
 ### Step 3 — Resolve the target workdir + workspace
 
-This is the core of v0.6.0. A sibling must start where the work lives,
-not wherever the caller happens to be.
+A sibling must start where the work lives, not wherever the caller
+happens to be.
 
 **3a — Determine the workdir.** In priority order. Track whether the
 result was **explicit** (1–3) or **inferred** (4) — it decides whether
@@ -303,28 +301,6 @@ Implications:
 
 ## Notes
 
-- This skill never required an orchestrator daemon.
-- v0.7.1 changes from v0.7.0:
-  - Step 3b now delegates the workspace-by-cwd check to
-    `skills/pane-msg/scripts/pane-resolve.sh --cwd` and declares it
-    mandatory before any spawn (a blind `--new-workspace` created a
-    redundant workspace in practice). cwd source switched to
-    `cmux workspace list --json` `.current_directory`.
-- v0.7.0 changes from v0.6.0:
-  - **Mode is never prompted.** `interactive` is the default; the skill
-    proceeds immediately. Only an explicit fire-and-forget signal
-    (`keep_alive: false`, "fire-and-forget", "ff"/"FF") overrides it.
-    Removed the two-option mode selection prompt entirely.
-- v0.6.0 changes from v0.5.0:
-  - **Workspace targeting** (Step 3): resolve the task's workdir, find a
-    workspace already rooted there (`cmux sidebar-state` cwd), and place
-    the sibling there — reuse, caller-split, or a dedicated new
-    workspace. Stops dumping unrelated work into the base pane.
-  - Uses sib's new placement flags (`--workdir`, `--workspace`,
-    `--new-workspace`).
-  - Report + status line now state the resolved workdir and placement.
-- Retained from v0.5.0: shared working tree (no worktree, no branch), no
-  promote step, slug/worker derivation, pane-close cleanup model.
 - The sib backend is owned by L1 (`agent-framework/bin/sib`, symlinked to
   `~/.local/bin/sib`). Bug reports / feature requests for sib go to that
   repo.

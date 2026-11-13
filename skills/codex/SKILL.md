@@ -1,6 +1,6 @@
 ---
 name: codex
-version: 3.0.0
+version: 3.0.1
 description: >
   Invoke Codex CLI for high-reasoning coding tasks. Trigger phrases:
   "use codex", "ask codex", "run codex", "call codex", "codex cli",
@@ -191,15 +191,3 @@ spawn/kill.)
 | `unexpected argument '--full-auto'` | Pre-0.129 flag | Replace with `-s workspace-write -a never` |
 | `trust_level required` | repo path not trusted | `cd <repo> && codex login --trust` (or edit `~/.codex/config.toml`) |
 | Slow startup, MCP loading | MCP enabled in config | Disable MCP in `~/.codex/config.toml` (default state) |
-
-## Notes
-
-- v3.0.0 (2026-06-16) is a lean rewrite. Earlier versions wove
-  Codex invocation through the workspace orchestrator + handoff/takeover
-  skills (now retired in ADR-035 / ADR-036). The current skill is
-  scoped to two invocation modes only and depends only on what L1
-  installs (sib).
-- The `references/` and `scripts/` subdirectories were removed in the
-  v3.0.0 rewrite. The earlier `codex-auto-handoff.sh` and
-  `codex-with-context.sh` helpers wired Codex into the workspace
-  handoff system, which no longer exists.

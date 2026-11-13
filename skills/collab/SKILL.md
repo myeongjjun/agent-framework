@@ -1,12 +1,11 @@
 ---
 name: collab
-version: 4.0.0
+version: 4.0.1
 description: >
   Orchestrate dual-agent collaboration (Claude worker + Codex worker) on
   the same task by spawning two sib siblings, each in its own git
   worktree. The skill drives cross-review, synthesis, and merge in the
-  caller's session. v4.0.0: promoted to L1 baseline; merge uses L1's
-  agent-promote.sh; ADR references generalized.
+  caller's session.
 trigger_phrases:
   - "/collab"
   - "collab"
@@ -459,19 +458,6 @@ ARCHIVE
 
 ## Notes
 
-- This is v4.0.0. Changes from v3.0.0:
-  - **Promoted to L1 baseline.** collab + its merge dependency
-    (`bin/agent-promote.sh`) + the supporting Stop/cherry-pick hooks now
-    live in `agent-framework` (L1), available in every persona instead
-    of one workspace.
-  - ADR cross-references generalized to prose (the L1 baseline does not
-    carry the persona ADRs collab was originally filed under).
-  - `agent-promote.sh` invoked by name (L1 install symlinks it onto PATH
-    via `~/.local/bin/`, like sib).
-- v3.0.0 (retained): orchestrator daemon retired — `sib spawn`,
-  `sib send`, `sib kill` drive everything; `--worktree` mandatory for
-  both workers; cross-review injection via `sib send`; cleanup via
-  `sib kill`.
 - Workers run in full sibling sessions with their own permission
   contexts, not as Agent tool sub-agents.
 - Cross-review is the key differentiator of this pattern; skipping it
