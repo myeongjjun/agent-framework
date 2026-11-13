@@ -57,7 +57,7 @@ override what an upper layer installs.
 | `~/.claude/hooks/guard-deployed-artifact-edit.sh` | block agent edits to deployed runtime |
 | `~/.claude/hooks/guard-permission-bypass.sh` | block agent edits to permission/hook/MCP config |
 | `~/.claude/AGENTS.md.framework-base` | the base every persona's AGENTS.md starts from |
-| `~/.claude/agents/{approver,orch}.md` | agent definitions (copied) |
+| `~/.claude/agents/orch.md` | agent definitions (copied) |
 | `~/.config/cmux/`, `~/.local/bin/brief` | cmux session desk (orch, Sessions panel, morning brief); personas extend via `~/.config/cmux/morning-brief.d/*.sh`, opt out per machine with `MORNING_BRIEF=0` in `~/.config/cmux/local.env` |
 | `~/.cmuxterm/automations.json` | L1 rules merged by id (`cmux-automations-merge`); other layers' rules untouched |
 

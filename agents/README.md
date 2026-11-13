@@ -41,7 +41,6 @@ Files must be flat at the top of `agents/` — no subdirectories.
 
 | Agent | Purpose |
 |---|---|
-| `approver` | Bash daemon that auto-approves safe cmux approval prompts. |
 | `orch` | cmux session desk. Runs in its own pane via `claude --agent orch`, launched each morning by `~/.config/cmux/morning-brief.sh` (see `cmux/`). |
 
 ## Deploy
