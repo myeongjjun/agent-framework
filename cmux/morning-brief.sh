@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # 하루 첫 cmux 진입(window.keyed) 때 데스크(오케스트레이터) 세션을 새로 띄운다.
 # 역할은 지시문이 아니라 에이전트 정의로 준다: `claude --agent orch` (orch-agent.md).
-# 데스크는 항상 하나만 둔다: 새로 띄우기 전에, 일하고 있지 않은 이전 데스크 워크스페이스를 닫는다
-# (대화는 `claude --resume` 로 되살릴 수 있다). 닫지 않으려면 MORNING_BRIEF_KEEP_OLD=1.
+# 데스크는 항상 하나만 둔다: 새로 띄우기 전에 이전 데스크를 닫는다. 데스크의 상태는 대화가 아니라
+# 데스크 문서에 있으므로 닫아도 잃는 것이 없다(대화는 `claude --resume` 로 되살릴 수 있다).
+# 닫지 않으려면 MORNING_BRIEF_KEEP_OLD=1.
 # cmux 는 계속 켜 두므로 "앱 시작"이 아니라 "그날 처음 창에 들어온 순간"이 기준.
 # 05시 이전은 전날로 친다. 강제 실행: morning-brief.sh --force
 set -euo pipefail
@@ -30,13 +31,13 @@ if [ -d "$HOME/.local/share/cmux/orch/.git" ]; then
   git -C "$HOME/.local/share/cmux/orch" commit -q -m "orch $today" >/dev/null 2>&1 || true
 fi
 
-# 이전 데스크("☀" 로 시작하는 워크스페이스) 정리. 에이전트가 돌고 있는 것은 건드리지 않는다.
+# 이전 데스크("☀" 로 시작하는 워크스페이스) 정리. 데스크 pane 은 상태와 무관하게 닫는다
+# (cmux 가 알려 주는 "working" 은 멈춘 세션에도 남아 있을 수 있어 기준으로 쓰지 않는다).
+# 데스크가 아닌 세션은 건드리지 않는다.
 # brief 는 cwd 를 "~/..." 로 내놓는다. ${VAR/#$HOME/~} 는 bash 가 ~ 를 다시 홈 경로로 펼쳐 버려 쓸 수 없다.
 desk_cwd="~${BRIEF_CWD#"$HOME"}"
 if [ "${MORNING_BRIEF_KEEP_OLD:-}" != "1" ]; then
-  busy=$("$HOME/.local/bin/brief" sessions | jq -r '[.[] | select(.state == "working") | .workspace] | join(" ")')
   for ws in $(cmux rpc workspace.list '{}' | jq -r '.workspaces[] | select((.custom_title // .title // "") | startswith("☀")) | .id'); do
-    case " $busy " in *" $ws "*) continue ;; esac
     # 데스크가 아닌 세션이 같이 있으면 워크스페이스는 두고 데스크 pane 만 닫은 뒤 "☀" 표시를 뗀다.
     others=$("$HOME/.local/bin/brief" sessions | jq -r --arg ws "$ws" --arg d "$desk_cwd" '[.[] | select(.workspace == $ws and .cwd != $d)] | length')
     if [ "${others:-0}" -gt 0 ]; then
