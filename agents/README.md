@@ -1,7 +1,7 @@
 # Agents
 
 Custom Claude Code agent definitions managed in this repo and deployed
-to `~/.claude/agents/` as copies by `scripts/install.sh` (L1).
+to `~/.claude/agents/` as copies by `scripts/install.sh`.
 
 These are NOT slash-command-invokable skills. They are agents in the
 Claude Code sense — separate identities with their own system prompt,
@@ -41,7 +41,7 @@ Files must be flat at the top of `agents/` — no subdirectories.
 
 | Agent | Purpose |
 |---|---|
-| `orch` | cmux session desk. Runs in its own pane via `claude --agent orch`, launched each morning by `~/.config/cmux/morning-brief.sh` (see `cmux/`). |
+| `orch` | cmux session desk (`claude --agent orch`), launched by `cmux/morning-brief.sh`. |
 
 ## Deploy
 

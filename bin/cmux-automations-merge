@@ -11,8 +11,8 @@ Usage:
   cmux-automations-merge <fragment.json> [--target PATH] [--dry-run]
   cmux-automations-merge --remove <id> [<id> ...] [--target PATH]
 
-If the target is a symlink (legacy: dotfiles linked its whole file), its
-content is read and the link is replaced by a regular file.
+If the target is a symlink, its content is read and the link is replaced
+by a regular file.
 """
 import json
 import os

@@ -174,7 +174,7 @@ for binfile in "${FRAMEWORK_ROOT}/bin"/*; do
 done
 
 # ---------------------------------------------------------------------------
-# 3b) Agents + cmux session desk (ADR 2026-11-13).
+# 3b) Agents + cmux session desk (ADR-003).
 #     agents/*.md        → ~/.claude/agents/   (copy; claude --agent <name>)
 #     cmux/ desk files   → ~/.config/cmux/, ~/.local/bin/brief (symlink)
 #     cmux/seeds/*       → ~/.local/share/cmux/orch/ (copied once; local-only
@@ -202,7 +202,6 @@ link_file() {
   ok "${label} → ${dst}"
 }
 
-# Agents are copied (agents/README.md convention); README/INDEX are skipped.
 mkdir -p "${HOME}/.claude/agents"
 for agent in "${FRAMEWORK_ROOT}/agents"/*.md; do
   name="$(basename "$agent")"
