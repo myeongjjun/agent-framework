@@ -68,7 +68,13 @@ nothing persona-specific.
 ### Negative
 - L1 install now writes outside `~/.claude` (`~/.config/cmux`,
   `~/.cmuxterm`, `~/.local/share/cmux`).
-- Cron-driven L1 updates start the desk on every machine unless opted out.
+- The desk starts on every machine where L1 `install.sh` runs, unless
+  opted out. Today that is a manual `git pull` + `install.sh` per machine;
+  `scripts/check-update.sh` would pull and install automatically only on
+  a machine that registers it (cron is documented but not registered on
+  the machines checked as of 2026-11-13). A machine that pulls a persona
+  repo which dropped its desk copy, without updating L1, loses the desk
+  until L1 is installed.
 - Removing a rule from `cmux/automations.json` does not delete it from
   deployed files; use `cmux-automations-merge --remove <id>`.
 
