@@ -50,9 +50,9 @@ busy_signal() {
   grep -qE '^[[:space:]]*(·|✢|✳|✶|✻|✽|\*|\+|•)[[:space:]]+[A-Z][a-z]+(…|\.\.\.)' <<<"$1"
 }
 
-# Classify what the pane is showing right now. Mirrors the approver daemon's
-# prompt detection so /pane-msg never injects into a screen the approver may
-# also be acting on. Precedence: approval > busy > idle.
+# Classify what the pane is showing right now. An approval prompt belongs to
+# the user — typed text would answer it — so /pane-msg never injects there.
+# Precedence: approval > busy > idle.
 pane_state() { # $1=surface $2=workspace
   local screen tail_text
   screen="$(cmux read-screen --surface "$1" --workspace "$2" --lines 40 2>/dev/null)" || { echo unknown; return; }

@@ -7,8 +7,8 @@
 #   retry) → report.
 #
 # Safety gates (before any injection):
-#   - refuses a pane showing an approval prompt (the approver daemon's
-#     territory — injecting there could alter or double-fire an approval)
+#   - refuses a pane showing an approval prompt (the user's to answer —
+#     injecting there could alter or fire an approval)
 #   - refuses a busy pane ('esc to interrupt') unless --queue is passed,
 #     which the calling skill may only pass after the user chose that target
 #
@@ -68,7 +68,7 @@ read_screen() { cmux read-screen --surface "${surface}" --workspace "${workspace
 read_screen 1 >/dev/null || die "pane ${surface} in ${workspace} is not readable (gone?)" 6
 
 # Trailing-blank-stripped last 25 lines (Claude pads below prompts with blank
-# lines; a naive tail sees only blanks). Same trick as the approver daemon.
+# lines; a naive tail sees only blanks).
 screen_tail() {
   read_screen 40 \
     | awk '/[^[:space:]]/ { last = NR } { buf[NR] = $0 } END { for (i = 1; i <= last; i++) print buf[i] }' \
@@ -91,7 +91,7 @@ if [[ "${tail_text}" == *"Press enter to confirm"* \
    || "${tail_text}" == *"Allow once"* || "${tail_text}" == *"Allow always"* \
    || "${tail_text}" == *"[y/N]"* || "${tail_text}" == *"[Y/n]"* ]] \
    || grep -qE '^[[:space:]]*[›❯] 1\. Yes' <<<"${tail_text}"; then
-  echo "REFUSED: approval prompt on ${surface} — resolve it (user or approver daemon) before messaging." >&2
+  echo "REFUSED: approval prompt on ${surface} — resolve it before messaging." >&2
   exit 3
 fi
 

@@ -1,6 +1,6 @@
 ---
 name: pane-msg
-version: 1.1.0
+version: 1.1.1
 description: >
   Deliver a message/task to an ALREADY-OPEN cmux pane — never spawn a new
   session (that is /dispatch). Makes target resolution and delivery
@@ -79,7 +79,7 @@ Do not use this skill for:
   pane (from `cmux identify --json` `.caller`).
 - **Never touch an approval prompt.** If the target screen shows an
   approval/permission prompt, delivery is refused — that screen belongs to
-  the user or the approver daemon (see Reconciliation below).
+  the user (see Approval prompts & send-key below).
 - **Never silently create-new when a match exists.** For placement
   questions, `MATCH:0` is the only "safe to create" signal; `MATCH:1`
   means evaluate reuse; `MATCH:2+` means present candidates and ask.
@@ -221,9 +221,9 @@ the landed-check are the reliability fix this skill exists for.
 `UNCONFIRMED`(exit 5) 시 그대로 보고하고 화면 스냅샷(`cmux read-screen`)을
 첨부한다 — 성공으로 보고하지 않는다.
 
-## Reconciliation with the approver daemon & send-key guard
+## Approval prompts & send-key
 
-Investigated 2026-07-08; current facts:
+Current facts (updated 2026-11-13):
 
 - **No send-key guard is active today.** The role-based
   `guard-direct-session-control.sh` (approver-only `cmux send-key`,
@@ -231,16 +231,13 @@ Investigated 2026-07-08; current facts:
   architecture; it survives only in an old worktree and is neither
   deployed to `~/.claude/hooks/` nor registered in settings.json. Direct
   `cmux send`/`send-key` from an agent session is currently permitted.
-- **The approver daemon is alive** (`~/.approver/`, scan loop). It
-  auto-presses enter on *approval prompts* it detects on cmux surfaces
-  (via its own wrapper + ledger). Policy so this skill never fights it:
-  `pane-resolve.sh`/`pane-deliver.sh` classify the target screen first
-  and **refuse to inject while an approval prompt is showing** — the
-  prompt patterns are mirrored from `approver-scan.sh` (`Press enter to
-  confirm`, `❯ 1. Yes`, `Do you want to proceed?`, `Allow once/always`,
-  `[y/N]`). In the normal path this skill types into an *input box*, the
-  approver presses enter on *approval dialogs* — disjoint screen states,
-  no interference.
+- **The approver daemon is retired** (its definition and scan loop were
+  removed from L1 on 2026-11-13). Approval prompts are answered by the
+  user. `pane-resolve.sh`/`pane-deliver.sh` still classify the target
+  screen first and **refuse to inject while an approval prompt is
+  showing** (`Press enter to confirm`, `❯ 1. Yes`, `Do you want to
+  proceed?`, `Allow once/always`, `[y/N]`) — typed text would otherwise
+  answer the prompt. This skill only types into an *input box*.
 - **If a guard ever blocks `cmux send-key` again** (a `BLOCKED:` deny from
   a PreToolUse hook): stop and follow the `no-permission-bypass`
   constraint — ask the user with the approval-request format. Re-routing
@@ -261,7 +258,6 @@ Investigated 2026-07-08; current facts:
   lifecycle-only (spawn/list/kill).
 - **`/collab`** — orchestrates its own workers via sib; may use
   `pane-deliver.sh` for mid-flight nudges to a worker.
-- **approver daemon** — see Reconciliation above.
 
 ## Notes
 
