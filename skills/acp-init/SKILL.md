@@ -1,6 +1,6 @@
 ---
 name: acp-init
-version: 1.5.0
+version: 1.5.1
 description: >
   Initialize or upgrade Agent Context Pack (ACP) structure in the current project.
   Creates AGENTS.md (pure ACP guide), decisions/, constraints/ directories.
@@ -58,7 +58,7 @@ is managed-settings only, and project `minimumVersion` only gates auto-updates
 | **Team-shared** (others may run older Claude Code) | A `CLAUDE.md` containing just `@AGENTS.md` — works on every version, Windows-safe, never double-loaded. |
 | **Team-shared, org enforces `requiredMinimumVersion` >= 2.1.281 via managed settings** | None (same as personal). |
 
-Never create a `CLAUDE.md → AGENTS.md` symlink (pre-v2.1.277 workaround).
+Never create a `CLAUDE.md → AGENTS.md` symlink.
 Never modify or delete a real (non-symlink) `CLAUDE.md` file.
 
 ## Modes

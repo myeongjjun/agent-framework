@@ -7,10 +7,8 @@
 # @hook timeout: 30
 #
 # Fires only when the agent's cwd resolves to a worker worktree, detected via:
-#   - sib branch       `sib/<slug>`        (current — `sib spawn --worktree`)
-#   - legacy branch    `dispatch/<slug>-(claude|codex)-<idx>`
+#   - sib branch       `sib/<slug>`        (`sib spawn --worktree`)
 #   - sib worktree dir `<repo>-<slug>` under `.local/share/sib/worktrees/`
-#   - legacy worktree  `.worktrees/dispatch-<slug>-(claude|codex)-<idx>`
 # The slug is the captured group; it is interpolated into the commit subject.
 #
 # Behaviour:
@@ -48,12 +46,9 @@ branch=$(git -C "$worktree_root" rev-parse --abbrev-ref HEAD 2>/dev/null || true
 [[ -n "$branch" && "$branch" != "HEAD" ]] || exit 0
 
 # Slug detection — branch name first (authoritative), worktree dir as fallback.
-# sib branches are `sib/<slug>`; legacy orchestrator branches are
-# `dispatch/<slug>-(claude|codex)-<idx>`.
+# sib branches are `sib/<slug>`.
 slug=""
 if [[ "$branch" =~ ^sib/(.+)$ ]]; then
-  slug="${BASH_REMATCH[1]}"
-elif [[ "$branch" =~ ^dispatch/(.+)-(claude|codex)-([0-9]+)$ ]]; then
   slug="${BASH_REMATCH[1]}"
 fi
 if [[ -z "$slug" ]]; then
@@ -65,12 +60,6 @@ if [[ -z "$slug" ]]; then
       # detection failed — agent-promote resolves the real branch by slug.
       dir_tail="${worktree_root##*/}"
       slug="${dir_tail}"
-      ;;
-    */.worktrees/dispatch-*)
-      dir_tail="${worktree_root##*/}"
-      if [[ "$dir_tail" =~ ^dispatch-(.+)-(claude|codex)-([0-9]+)$ ]]; then
-        slug="${BASH_REMATCH[1]}"
-      fi
       ;;
   esac
 fi

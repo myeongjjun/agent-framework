@@ -1,6 +1,6 @@
 ---
 name: pane-msg
-version: 1.1.1
+version: 1.1.2
 description: >
   Deliver a message/task to an ALREADY-OPEN cmux pane — never spawn a new
   session (that is /dispatch). Makes target resolution and delivery
@@ -231,9 +231,8 @@ the landed-check are the reliability fix this skill exists for.
   already rooted at the workdir") should call
   `pane-resolve.sh --cwd <workdir>`: `MATCH:0` is the only case where
   `--new-workspace` is justified. /pane-msg never spawns.
-- **`sib send <slug>`** — since sib's pane-msg integration, `sib send`
-  *delegates* to `pane-deliver.sh` when the skill is deployed (legacy
-  blind send only as a fallback when it is not). One delivery-logic
+- **`sib send <slug>`** — *delegates* to `pane-deliver.sh` when the
+  skill is deployed (a plain send only as a fallback when it is not). One delivery-logic
   source: same gates, same verification, same exit codes; `sib send
   <slug> --queue` passes the busy-override through. sib itself stays
   lifecycle-only (spawn/list/kill).
@@ -266,13 +265,3 @@ the landed-check are the reliability fix this skill exists for.
   caller-splits; `pane-resolve.sh` normalizes UUIDs to refs via
   `sidebar-state`'s `tab=` field before joining against workspace
   metadata.
-- v1.1.0 (sib integration): `sib send` delegates to `pane-deliver.sh`
-  (with `--queue` passthrough); `sib spawn` records
-  `spawner_surface`/`spawner_workspace` in the state file; new
-  `--spawner-of <slug>` selector resolves a worker's spawner
-  deterministically. Motivating failure: a worker *guessed* which pane
-  had spawned it from screen content and picked the wrong session.
-- Self-test performed dry (resolution + `--dry-run` delivery only, no
-  injection into live panes) on 2026-07-08; the ambiguous-cwd case
-  reproduced the original "redundant workspace" failure and returned
-  `MATCH:2` + exit 4 as designed.

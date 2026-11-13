@@ -200,6 +200,6 @@ _None yet_
 ## .gitignore Addition
 
 ```gitignore
-# ACP local session archive (legacy handoffs + inbox; not version-controlled)
+# ACP local session archive (not version-controlled)
 .agent/
 ```

@@ -107,7 +107,7 @@ spawn)
   [[ -d "${start_dir}" ]] || die "start dir does not exist: ${start_dir}"
 
   # Place the sibling pane. Three modes:
-  #   default        — split the caller's current workspace (legacy behaviour)
+  #   default        — split the caller's current workspace
   #   --workspace W  — split an already-open workspace W
   #   --new-workspace— create a dedicated workspace rooted at start_dir
   if (( new_ws )); then
@@ -277,7 +277,7 @@ send)
   # Delegate to /pane-msg's verified delivery when deployed — single source
   # of delivery logic (busy/approval gates, landed check, submit
   # confirmation). A busy pane is REFUSED (exit 4) unless --queue. Falls
-  # back to the legacy blind send when the skill is absent.
+  # back to a plain send when the skill is absent.
   deliver="${HOME}/.claude/skills/pane-msg/scripts/pane-deliver.sh"
   if [[ -x "${deliver}" ]]; then
     echo "→ ${slug}:"
@@ -301,8 +301,8 @@ kill)
   # surface — close the whole workspace instead. Otherwise just close the pane.
   # cmux asks for confirmation before closing a surface with a live process
   # (`confirmation_required … force=true`); kill is that confirmation, so
-  # retry with --force true. Then verify — a swallowed close error used to
-  # print `✓ killed` while the agent pane stayed open (2026-10-29).
+  # retry with --force true. Then verify, so a swallowed close error never
+  # reports `✓ killed` while the agent pane is still open.
   if (( workspace_managed )); then
     cmux close-workspace --workspace "${workspace}" >/dev/null 2>&1 \
       || cmux close-workspace --workspace "${workspace}" --force true >/dev/null 2>&1 || true

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# agent-promote.sh — Promote a dispatched worker branch into the base
+# agent-promote.sh — Promote a sib worker branch into the base
 # session's current branch via squash-merge. Replaces ad-hoc
 # `git cherry-pick` for the routine worker → base integration flow.
 #
@@ -34,7 +34,7 @@ SCRIPT_NAME="agent-promote.sh"
 
 usage() {
   cat <<'USAGE'
-agent-promote.sh — Promote a dispatched worker branch into the base
+agent-promote.sh — Promote a sib worker branch into the base
 session's current branch via squash-merge. Replaces ad-hoc
 `git cherry-pick` for the routine worker → base integration flow.
 
@@ -116,8 +116,7 @@ done
 
 BASE_REPO="$(git rev-parse --show-toplevel 2>/dev/null)" || die "not inside a git repository"
 
-if [[ "$BASE_REPO" == *"/.worktrees/dispatch-"* ]] \
-  || [[ "$BASE_REPO" == *"/.local/share/sib/worktrees/"* ]]; then
+if [[ "$BASE_REPO" == *"/.local/share/sib/worktrees/"* ]]; then
   die "must be run from the base repo, not from inside a worker worktree (cwd=$BASE_REPO)"
 fi
 
@@ -133,13 +132,12 @@ resolve_worker_branch() {
 
   local matches count
   matches=$(git -C "$BASE_REPO" for-each-ref --format='%(refname:short)' \
-    "refs/heads/dispatch/${SLUG}-*" \
     "refs/heads/sib/${SLUG}" \
     "refs/heads/sib/${SLUG}-*")
   count=$(printf '%s' "$matches" | grep -c '^' || true)
 
   if (( count == 0 )); then
-    die "no worker branch found for slug '${SLUG}' (searched refs/heads/dispatch/${SLUG}-*, refs/heads/sib/${SLUG}, refs/heads/sib/${SLUG}-*)"
+    die "no worker branch found for slug '${SLUG}' (searched refs/heads/sib/${SLUG}, refs/heads/sib/${SLUG}-*)"
   fi
   if (( count > 1 )); then
     warn "multiple worker branches matched slug '${SLUG}':"
