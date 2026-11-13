@@ -90,7 +90,8 @@ if [[ "${tail_text}" == *"Press enter to confirm"* \
    || "${tail_text}" == *"Do you want to proceed?"* \
    || "${tail_text}" == *"Would you like to run the following command?"* \
    || "${tail_text}" == *"Allow once"* || "${tail_text}" == *"Allow always"* \
-   || "${tail_text}" == *"[y/N]"* || "${tail_text}" == *"[Y/n]"* ]] \
+   || "${tail_text}" == *"[y/N]"* || "${tail_text}" == *"[Y/n]"* \
+     || "${tail_text}" == *"Enter to confirm"* || "${tail_text}" == *"trust this folder"* ]] \
    || grep -qE '^[[:space:]]*[›❯] 1\. Yes' <<<"${tail_text}"; then
   echo "REFUSED: approval prompt on ${surface} — resolve it before messaging." >&2
   exit 3
