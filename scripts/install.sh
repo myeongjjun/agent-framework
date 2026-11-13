@@ -174,6 +174,82 @@ for binfile in "${FRAMEWORK_ROOT}/bin"/*; do
 done
 
 # ---------------------------------------------------------------------------
+# 3b) Agents + cmux session desk (ADR 2026-11-13).
+#     agents/*.md        → ~/.claude/agents/   (copy; claude --agent <name>)
+#     cmux/ desk files   → ~/.config/cmux/, ~/.local/bin/brief (symlink)
+#     cmux/seeds/*       → ~/.local/share/cmux/orch/ (copied once; local-only
+#                          git, no remote — orch edits them with user data)
+#     cmux/automations.json → merged by rule id into ~/.cmuxterm/automations.json
+#     Personas extend the morning start via ~/.config/cmux/morning-brief.d/*.sh.
+# ---------------------------------------------------------------------------
+link_file() {
+  local src="$1" dst="$2" label="$3"
+  if [[ -L "${dst}" ]]; then
+    if [[ "$(readlink "${dst}")" == "${src}" ]]; then
+      ok "${label} (already linked)"
+      return 0
+    fi
+    run rm -f "${dst}"
+  elif [[ -e "${dst}" ]]; then
+    if (( FORCE == 0 )); then
+      err "${label}: ${dst} is not a symlink. Re-run with --force to overwrite."
+      REFUSED=1
+      return 0
+    fi
+    run rm -rf "${dst}"
+  fi
+  run ln -s "${src}" "${dst}"
+  ok "${label} → ${dst}"
+}
+
+# Agents are copied (agents/README.md convention); README/INDEX are skipped.
+mkdir -p "${HOME}/.claude/agents"
+for agent in "${FRAMEWORK_ROOT}/agents"/*.md; do
+  name="$(basename "$agent")"
+  case "$name" in README.md|INDEX.md) continue ;; esac
+  dst="${HOME}/.claude/agents/${name}"
+  if [[ -f "${dst}" && ! -L "${dst}" ]] && cmp -s "${agent}" "${dst}"; then
+    ok "agent ${name%.md} (already current)"
+    continue
+  fi
+  [[ -L "${dst}" ]] && run rm -f "${dst}"
+  if (( DRY_RUN == 1 )); then
+    printf '  [dry-run] install -m 644 %s %s\n' "${agent}" "${dst}"
+  else
+    install -m 644 "${agent}" "${dst}"
+  fi
+  ok "agent ${name%.md} → ~/.claude/agents/"
+done
+
+CMUX_SRC="${FRAMEWORK_ROOT}/cmux"
+if [[ -d "${CMUX_SRC}" ]]; then
+  mkdir -p "${HOME}/.config/cmux/sidebars" "${HOME}/.config/cmux/morning-brief.d"
+  run chmod +x "${CMUX_SRC}/brief" "${CMUX_SRC}/morning-brief.sh" "${CMUX_SRC}/sessions-toggle.sh"
+  for f in morning-brief.sh morning-brief.md brief-mod sessions-toggle.sh; do
+    link_file "${CMUX_SRC}/${f}" "${HOME}/.config/cmux/${f}" "cmux ${f}"
+  done
+  link_file "${CMUX_SRC}/brief" "${HOME}/.local/bin/brief" "bin brief"
+
+  ORCH_DATA="${HOME}/.local/share/cmux/orch"
+  mkdir -p "${ORCH_DATA}"
+  for seed in "${CMUX_SRC}/seeds"/*.md; do
+    name="$(basename "$seed")"
+    [[ -e "${ORCH_DATA}/${name}" ]] || run cp "${seed}" "${ORCH_DATA}/${name}"
+    link_file "${ORCH_DATA}/${name}" "${HOME}/.config/cmux/${name}" "cmux ${name}"
+  done
+  [[ -d "${ORCH_DATA}/.git" ]] || run git -C "${ORCH_DATA}" init -q
+
+  if (( DRY_RUN == 1 )); then
+    "${FRAMEWORK_ROOT}/bin/cmux-automations-merge" "${CMUX_SRC}/automations.json" --dry-run >/dev/null \
+      && printf '  [dry-run] merge %s\n' "${CMUX_SRC}/automations.json"
+  else
+    "${FRAMEWORK_ROOT}/bin/cmux-automations-merge" "${CMUX_SRC}/automations.json" \
+      && ok "cmux automations merged" || { err "cmux automations merge failed"; REFUSED=1; }
+    "${CMUX_SRC}/brief" render >/dev/null 2>&1 || warn "brief render failed (cmux not running?)"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # 4) Statusline — copy the L1 baseline into ~/.claude/statusline.sh (+chmod).
 #    Copied (not symlinked) so the L2 in-house overlay (agent-workspace
 #    sync-hooks.sh) can overwrite it in place on in-house machines without
@@ -222,10 +298,13 @@ if (( DRY_RUN == 0 )); then
         | sort -z | xargs -0 shasum -a 256
       find bin -type f -print0 \
         | sort -z | xargs -0 shasum -a 256
+      find agents -type f -name '*.md' -print0 \
+        | sort -z | xargs -0 shasum -a 256
       find agent-context/constraints -type f -name '*.md' -print0 \
         | sort -z | xargs -0 shasum -a 256
       [[ -f configs/claude/statusline.sh ]] && shasum -a 256 configs/claude/statusline.sh
       [[ -f AGENTS.md ]] && shasum -a 256 AGENTS.md
+      [[ -f cmux/automations.json ]] && shasum -a 256 cmux/automations.json
     } > "${sum_file}"
   )
   ok "checksum snapshot → ${sum_file}"

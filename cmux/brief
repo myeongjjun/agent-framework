@@ -1,0 +1,825 @@
+#!/usr/bin/env python3
+"""brief — 브리핑 에이전트와 cmux pane 을 잇는 도구.
+
+  brief sessions            열려 있는 에이전트 세션 요약(JSON). panel 이 세션의 고유 키.
+                            recap 은 그 세션이 마지막으로 남긴 요약(어디까지 했고 다음이 뭔지).
+                            Claude·Codex 가 함께 묶인 세션에는 collab 이름이 붙는다.
+  brief teams               collab 묶음 목록(JSON).
+  brief plan < plan.json    TODO 목록을 Sessions 패널 맨 위에 올린다.
+                            입력: [{"panel": "<panel id>", "do": "다음 한 수"}, ...] (우선순위 순)
+  brief add <panel> <할 일>  목록 끝에 항목 하나를 추가한다.
+  brief go <번호|panel|이름> 그 세션의 pane 으로 이동하고 깜빡인다. 이름은 제목 일부면 된다.
+  brief ping <번호|panel>   이동 없이 깜빡이기만 한다.
+  brief done <번호|panel|이름|here>
+                            완료 검토를 시작한다: 그 세션에 완료 보고를 요청한다. 세션은 한 일·산출물·
+                            미커밋·남은 일을 데스크(orch)에 보고하고 열린 채로 기다린다.
+                            --verified "<검토 기록>"  데스크가 보고를 실제와 대조한 뒤 부른다: 완료 표시,
+                                    기록, pane 닫기 (--keep 을 같이 주면 pane 은 둔다).
+                            --now   검토를 건너뛰고 바로 끝낸다(내가 직접 쓸 때만. 일하는 중이면 거부, --force).
+                            --undo  완료 표시를 되돌린다.   here 는 지금 이 pane.
+  brief patrol              순찰 신호. 지난번 이후 턴이 끝났거나 닫히거나 새로 생긴 세션을 모아 두고,
+                            바뀐 것이 있으면 데스크(orch)에 `patrol <건수>` 를 보낸다(기본 10분에 한 번,
+                            BRIEF_PATROL_MIN).
+                            cmux 자동화가 세션의 턴이 끝날 때마다 부른다.
+  brief patrol --read       모아 둔 변화를 한 줄에 한 건(JSONL)으로 내보내고 비운다(데스크가 읽는다). 한 번이라도 읽은
+                            데스크만 순찰 신호를 받는다.
+  brief review [일수]        데스크 세션에서 내가 한 말·쓴 명령·그 직전 데스크의 답을 시간순으로 뽑는다
+                            (기본 1일, 자기 개선용). 맨 끝에 명령별 사용 횟수.
+  brief board [--json]      에이전트 전체 지표: 세션 수·상태, 오늘 완료(검토 여부), 결정 대기, 개선 루프 둘(orch 교훈,
+                            차단 훅). 값은 하루 한 줄씩 ~/.local/share/cmux/board.jsonl 에 쌓이고(순찰 때 갱신),
+                            이틀치부터 줄 끝에 최근 7일 추이 막대가 붙는다.
+  brief board --trend [일수] 날짜별 표(기본 14일).
+  brief board --set k=v ... [--day YYYY-MM-DD]
+                            직접 센 값을 그날 줄에 적는다: corrections(내가 고쳐 말한 횟수), roundtrips(요청당
+                            왕복), mismatches(완료 대조에서 어긋난 건수).
+  brief view                데스크 워크스페이스 왼쪽에 오늘 데스크 문서를 서식 있는 뷰어로 연다(자동으로는 열지 않는다).
+  brief closed              끝낸 세션 기록(검토 내용)과 다시 여는 명령(최근 10개).
+  brief show                현재 목록 출력.
+  brief render              Sessions 패널 파일을 다시 생성한다(install.sh 가 호출).
+"""
+import json, os, re, subprocess, sys, time
+
+CMUX = "/Applications/cmux.app/Contents/Resources/bin/cmux"
+HOME = os.path.expanduser("~")
+PLAN = os.path.join(HOME, ".cache/cmux/brief-plan.json")
+CLOSED = os.path.join(HOME, ".cache/cmux/brief-closed.jsonl")
+def local_env(key, default):
+    """환경 변수, 없으면 이 기기 전용 설정(~/.config/cmux/local.env, 레포 밖)의 KEY="값"."""
+    if os.environ.get(key):
+        return os.environ[key]
+    try:
+        for line in open(os.path.join(HOME, ".config/cmux/local.env")):
+            k, _, v = line.strip().partition("=")
+            if k == key and v:
+                return v.strip('"')
+    except OSError:
+        pass
+    return default
+
+
+DESK_DIR = local_env("BRIEF_DESK_DIR", os.path.join(HOME, ".local/share/cmux/desk"))  # 데스크가 뜨는 폴더
+PATROL = os.path.join(HOME, ".cache/cmux/brief-patrol.json")
+VIEW = os.path.join(HOME, ".cache/cmux/brief-view.json")
+NO_MAX = os.path.join(HOME, ".cache/cmux/no-maximize")
+PATROL_MIN = float(os.environ.get("BRIEF_PATROL_MIN", "10")) * 60
+TEMPLATE = os.path.join(os.path.dirname(os.path.realpath(__file__)), "sidebars/sessions.js")
+OUT = os.path.join(HOME, ".config/cmux/sidebars/sessions.js")
+MARK = "const PLAN = { at: 0, items: [] }; // @plan"
+TEAMS_MARK = "const TEAMS = []; // @teams"
+RECAPS_MARK = "const RECAPS = {}; // @recaps"
+SIB_STATE = os.environ.get("BRIEF_SIB_STATE", os.path.join(HOME, ".local/share/sib/state"))
+
+
+def cmux(*args):
+    return subprocess.run([CMUX, *args], capture_output=True, text=True, env={**os.environ, "CMUX_QUIET": "1"})
+
+
+def sessions():
+    data = json.loads(cmux("current", "--json", "--limit", "200").stdout)
+    out = []
+    for it in data["items"]:
+        agents = it.get("agents") or []
+        proj = (it.get("projections") or [{}])[0]
+        if not agents or not proj.get("panel_id"):
+            continue
+        a = agents[0]
+        out.append({
+            "panel": proj["panel_id"],
+            "workspace": proj.get("workspace_id"),
+            "title": it.get("label", ""),
+            "cwd": (it.get("cwd") or "").replace(HOME, "~"),
+            "agent": a.get("kind"),
+            "state": a.get("state"),
+            "session": a.get("session_id"),
+            "last_activity": a.get("last_activity_at"),
+        })
+    out.sort(key=lambda s: s["last_activity"] or "", reverse=True)
+    return out
+
+
+MSG_WINDOW = 48 * 3600  # 이 시간 안에 주고받은 메시지만 연결로 본다
+
+
+def messages():
+    """cmux agent message 기록(모든 surface). 실패하면 빈 목록."""
+    try:
+        return json.loads(cmux("agent", "inbox", "--json", "--limit", "200").stdout).get("messages", [])
+    except (ValueError, AttributeError):
+        return []
+
+
+def teams(ss=None):
+    """함께 일하는 세션 묶음(collab)을 찾는다. 연결은 두 가지다.
+
+    1. sib state(<slug>.env): 워커의 surface 와 그것을 띄운 spawner_surface.
+       이 연결만 있는 묶음은 claude·codex 가 섞였을 때만 collab 으로 본다
+       (같은 계열끼리의 단순 dispatch 까지 넣으면 목록이 묶음으로 뒤덮인다).
+    2. cmux agent message: 최근 48시간 안에 메시지를 주고받은 두 세션. 계열과 무관하게 묶는다.
+
+    묶음마다 마지막 메시지(last)를 붙여, 누가 답을 기다리는지 패널이 보여 줄 수 있게 한다.
+    """
+    ss = ss if ss is not None else sessions()
+    by_panel = {s["panel"]: s for s in ss}
+    surf, names = [], []
+    try:
+        names = sorted(n for n in os.listdir(SIB_STATE) if n.endswith(".env"))
+        # surface.list 는 워크스페이스 하나만 답하므로 전부 돈다.
+        surf = []
+        for w in json.loads(cmux("rpc", "workspace.list", "{}").stdout)["workspaces"]:
+            surf += json.loads(cmux("rpc", "surface.list", json.dumps({"workspace_id": w["id"]})).stdout)["surfaces"]
+    except (OSError, ValueError, KeyError):
+        pass
+    ref2panel = {x["ref"]: x["id"] for x in surf}
+    parent = {}
+
+    def find(x):
+        while parent.setdefault(x, x) != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    info = {}  # panel -> {agent, slug}
+    for name in names:
+        if not name.endswith(".env"):
+            continue
+        try:
+            rec = dict(l.strip().split("=", 1) for l in open(os.path.join(SIB_STATE, name)) if "=" in l)
+        except OSError:
+            continue
+        w = ref2panel.get(rec.get("surface", ""))
+        sp = ref2panel.get(rec.get("spawner_surface", ""))
+        if w not in by_panel:
+            continue  # 워커 pane 이 닫혔다
+        info[w] = {"agent": rec.get("agent") or by_panel[w]["agent"], "slug": rec.get("slug", "")}
+        if sp in by_panel:
+            info.setdefault(sp, {"agent": by_panel[sp]["agent"], "slug": ""})
+            parent[find(w)] = find(sp)
+    # 메시지 연결
+    now = time.time()
+    talked = set()   # 메시지로 이어진 panel
+    last = {}        # 묶음 대표 -> 마지막 메시지 (나중에 대표가 바뀔 수 있어 panel 로 모았다가 옮긴다)
+    msgs = []
+    for m in messages():
+        a, b = m.get("sender_surface_id"), m.get("recipient_surface_id")
+        if a in by_panel and b in by_panel and a != b and now - (m.get("created_at") or 0) < MSG_WINDOW:
+            for x in (a, b):
+                info.setdefault(x, {"agent": by_panel[x]["agent"], "slug": ""})
+                talked.add(x)
+            parent[find(a)] = find(b)
+            msgs.append(m)
+    for m in msgs:
+        root = find(m["sender_surface_id"])
+        if root not in last or m["created_at"] > last[root]["at"]:
+            body = " ".join(str(m.get("body", "")).split())
+            last[root] = {"from": m["sender_surface_id"], "to": m["recipient_surface_id"],
+                          "body": body[:120], "state": m.get("state", ""), "at": int(m["created_at"])}
+    groups = {}
+    for panel in info:
+        groups.setdefault(find(panel), []).append(panel)
+    out = []
+    for root, members in groups.items():
+        kinds = {info[m]["agent"] for m in members}
+        if len(members) < 2 or not ({"claude", "codex"} <= kinds or talked & set(members)):
+            continue
+        bases = sorted({re.sub(r"-(claude|codex)$", "", info[m]["slug"]) for m in members if info[m]["slug"]})
+        out.append({
+            "name": bases[0] if bases else "linked",
+            "last": last.get(root),
+            "members": [{"panel": m, "agent": info[m]["agent"], "slug": info[m]["slug"]}
+                        for m in sorted(members, key=lambda m: (info[m]["slug"] != "", info[m]["agent"]))],
+        })
+    out.sort(key=lambda g: g["name"])
+    return out
+
+
+def recaps(ss):
+    """세션별 최신 요약. Claude Code 가 자리를 비웠을 때 대화 기록에 남기는 away_summary 를 읽는다."""
+    import glob
+    out = {}
+    for x in ss:
+        if x["agent"] != "claude" or not x.get("session"):
+            continue
+        for path in glob.glob(os.path.join(HOME, ".claude/projects/*", x["session"] + ".jsonl")):
+            try:
+                with open(path, "rb") as f:
+                    f.seek(max(0, os.path.getsize(path) - 3_000_000))
+                    lines = f.read().decode("utf-8", "ignore").splitlines()
+            except OSError:
+                continue
+            for line in reversed(lines):
+                if '"away_summary"' not in line:
+                    continue
+                try:
+                    text = " ".join(str(json.loads(line).get("content", "")).split())
+                    text = text.replace("(disable recaps in /config)", "").strip()
+                except ValueError:
+                    continue
+                if text:
+                    out[x["panel"].lower()] = text[:300]
+                    break
+    return out
+
+
+def load_plan():
+    try:
+        return json.load(open(PLAN))
+    except (OSError, ValueError):
+        return {"at": 0, "items": []}
+
+
+def save_plan(plan):
+    os.makedirs(os.path.dirname(PLAN), exist_ok=True)
+    json.dump(plan, open(PLAN, "w"), ensure_ascii=False, indent=1)
+    render()
+
+
+def render():
+    src = open(TEMPLATE).read()
+    if MARK not in src:
+        sys.exit("brief: template marker missing in " + TEMPLATE)
+    plan = load_plan()
+    js = "const PLAN = " + json.dumps(plan, ensure_ascii=False) + ";"
+    os.makedirs(os.path.dirname(OUT), exist_ok=True)
+    if os.path.islink(OUT):
+        os.unlink(OUT)
+    tmp = OUT + ".tmp"
+    if TEAMS_MARK not in src:
+        sys.exit("brief: template marker missing in " + TEMPLATE)
+    tjs = "const TEAMS = " + json.dumps(teams(), ensure_ascii=False) + ";"
+    if RECAPS_MARK not in src:
+        sys.exit("brief: template marker missing in " + TEMPLATE)
+    rjs = "const RECAPS = " + json.dumps(recaps(sessions()), ensure_ascii=False) + ";"
+    open(tmp, "w").write(src.replace(MARK, js).replace(TEAMS_MARK, tjs).replace(RECAPS_MARK, rjs))
+    os.replace(tmp, OUT)
+
+
+def resolve(ref):
+    """번호(TODO 목록) 또는 panel id → (panel, workspace, title)."""
+    plan = load_plan()
+    if ref == "here":
+        ref = os.environ.get("CMUX_PANEL_ID") or sys.exit("brief: cmux pane 안이 아닙니다 (CMUX_PANEL_ID 없음)")
+    if ref.isdigit():
+        i = int(ref) - 1
+        if not 0 <= i < len(plan["items"]):
+            sys.exit(f"brief: 목록에 {ref}번이 없습니다 (총 {len(plan['items'])}개)")
+        ref = plan["items"][i]["panel"]
+    ss = sessions()
+    for s in ss:
+        if s["panel"].lower() == ref.lower():
+            return s
+    hits = [s for s in ss if ref.lower() in s["title"].lower()]
+    if len(hits) == 1:
+        return hits[0]
+    if hits:
+        sys.exit("brief: 여러 세션이 맞습니다. 더 길게 적어 주세요:\n" + "\n".join("  " + s["title"] for s in hits))
+    sys.exit("brief: 그 세션의 pane 을 찾지 못했습니다 (닫혔을 수 있음): " + ref)
+
+
+def flash(s):
+    return cmux("trigger-flash", "--workspace", s["workspace"], "--panel", s["panel"])
+
+
+def desk_view(ss=None, force=False):
+    """데스크 워크스페이스 왼쪽에 오늘 데스크 문서를 서식 있는 뷰어로 띄운다(파일이 바뀌면 저절로 갱신).
+    자동으로는 띄우지 않는다: 기본 화면은 넓은 orch pane + 오른쪽 Desk 패널이고, 원할 때 `brief view` 로 연다."""
+    desk = (desk_panel() or "").lower()
+    me = next((x for x in (ss or sessions()) if x["panel"].lower() == desk), None)
+    docs = sorted(f for f in os.listdir(os.path.join(DESK_DIR, "Desk")) if re.fullmatch(r"\d+\.md", f)) \
+        if os.path.isdir(os.path.join(DESK_DIR, "Desk")) else []
+    if not me or not docs:
+        return "데스크나 데스크 문서가 없습니다"
+    try:
+        seen = json.load(open(VIEW))
+    except (OSError, ValueError):
+        seen = {}
+    if seen.get("workspace") == me["workspace"] and seen.get("doc") == docs[-1] and not force:
+        return None
+    r = cmux("markdown", "open", os.path.join(DESK_DIR, "Desk", docs[-1]), "--workspace", me["workspace"],
+             "--surface", me["panel"], "--direction", "left", "--focus", "false")
+    if r.returncode != 0:
+        return (r.stderr or r.stdout).strip()
+    json.dump({"workspace": me["workspace"], "doc": docs[-1]}, open(VIEW, "w"))
+    open(NO_MAX, "w").write(me["workspace"] + "\n")  # 포커스한 pane 을 키우는 자동화가 뷰어를 밀어내지 않게 한다
+    return "데스크 문서를 왼쪽에 열었습니다: Desk/" + docs[-1]
+
+
+LESSONS = os.path.join(HOME, ".config/cmux/orch-lessons.md")
+WRITING = os.path.join(HOME, ".config/cmux/orch-writing.md")
+GUARD = os.path.join(HOME, ".local/share/guard-loop")
+
+
+def md_sections(path):
+    """마크다운 파일을 `## 제목` 별 목록 줄(- 로 시작)로 나눈다."""
+    out, cur = {}, None
+    try:
+        for line in open(path):
+            if line.startswith("## "):
+                cur = line[3:].strip()
+                out[cur] = []
+            elif cur and line.startswith("- "):
+                out[cur].append(line.strip())
+    except OSError:
+        pass
+    return out
+
+
+BOARD_LOG = os.path.join(HOME, ".local/share/cmux/board.jsonl")  # 하루 한 줄. 캐시가 아니라 기록이다.
+SPARK = "▁▂▃▄▅▆▇█"
+# 추이로 볼 숫자: 키 -> 표 머리글. 뒤의 셋은 orch 가 아침에 전날 기록을 읽고 직접 센다(참고용).
+SERIES = {"sessions": "세션", "stale": "멈춤", "done": "완료", "unverified": "무검토", "decisions": "결정대기",
+          "lessons": "교훈", "miss": "어김", "proposals": "제안",
+          "corrections": "고쳐말함", "roundtrips": "왕복", "mismatches": "대조불일치"}
+
+
+def board_day(now=None):
+    return time.strftime("%Y-%m-%d", time.localtime((now or time.time()) - 5 * 3600))  # 05시 이전은 전날
+
+
+def board_history():
+    try:
+        return [json.loads(l) for l in open(BOARD_LOG) if l.strip()]
+    except (OSError, ValueError):
+        return []
+
+
+def board_write(hist):
+    os.makedirs(os.path.dirname(BOARD_LOG), exist_ok=True)
+    tmp = BOARD_LOG + ".tmp"
+    with open(tmp, "w") as f:
+        for h in hist:
+            f.write(json.dumps(h, ensure_ascii=False) + "\n")
+    os.replace(tmp, BOARD_LOG)
+
+
+def board_log(metrics, force=False):
+    """오늘 줄을 지금 값으로 바꿔 쓴다(그날의 마지막 값이 남는다). orch 가 직접 적은 값(manual)은 지킨다."""
+    hist, day, now = board_history(), board_day(), int(time.time())
+    cur = next((h for h in hist if h.get("day") == day), None)
+    if cur and not force and now - cur.get("at", 0) < 1800:
+        return
+    if cur is None:
+        cur = {"day": day}
+        hist.append(cur)
+    cur.update(metrics, at=now)
+    board_write(hist)
+
+
+def board_set(pairs, day):
+    """orch 가 센 값을 그날 줄에 적는다: brief board --set corrections=3 roundtrips=1.8 [--day YYYY-MM-DD]"""
+    hist = board_history()
+    cur = next((h for h in hist if h.get("day") == day), None)
+    if cur is None:
+        cur = {"day": day, "at": int(time.time())}
+        hist.append(cur)
+        hist.sort(key=lambda h: h["day"])
+    for kv in pairs:
+        k, _, v = kv.partition("=")
+        if k not in SERIES:
+            sys.exit(f"brief: 모르는 지표입니다: {k} (쓸 수 있는 것: {', '.join(SERIES)})")
+        cur[k] = float(v) if "." in v else int(v)
+    board_write(hist)
+
+
+def spark(key, hist, days=7):
+    """최근 며칠의 값을 작은 막대로. 이틀치가 안 되면 빈 문자열."""
+    vals = [h[key] for h in hist[-days:] if isinstance(h.get(key), (int, float))]
+    if len(vals) < 2:
+        return ""
+    lo, hi = min(vals), max(vals)
+    return f" · {len(vals)}일 " + "".join(SPARK[int((v - lo) / (hi - lo) * 7) if hi > lo else 0] for v in vals)
+
+
+def desk_decisions():
+    """오늘 데스크 문서의 `## 결정 필요` 건수. 문서가 없으면 None."""
+    d = os.path.join(DESK_DIR, "Desk")
+    docs = sorted(f for f in os.listdir(d) if re.fullmatch(r"\d+\.md", f)) if os.path.isdir(d) else []
+    if not docs:
+        return None
+    n, on = 0, False
+    for line in open(os.path.join(d, docs[-1])):
+        if line.startswith("#"):
+            on = line.lstrip("# ").startswith("결정 필요")
+        elif on and re.match(r"\s*(\d+\.|[-*])\s+\S", line) and "없음" not in line[:8]:
+            n += 1
+    return n
+
+
+def board(log=False):
+    """에이전트 전체의 지표 몇 줄: 세션, 오늘 완료(검토 여부), 두 개선 루프(orch 교훈, 차단 훅).
+    각 줄은 {k: 이름, text: 값, warn: 살펴봐야 하면 true}. 하루 한 줄씩 BOARD_LOG 에 쌓아 추이를 붙인다."""
+    now, rows, m = time.time(), [], {}
+    hist = board_history()
+    day = board_day(now)
+    ss = sessions()
+    work = sum(x["state"] == "working" for x in ss)
+    cut = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - 86400))  # last_activity 는 UTC ISO 문자열
+    stale = sum((x.get("last_activity") or cut) < cut for x in ss)
+    codex = sum(x["agent"] == "codex" for x in ss)
+    m.update(sessions=len(ss), working=work, stale=stale)
+    rows.append({"k": "세션", "text": f"{len(ss)}개 · 일하는 중 {work} · 하루 넘게 멈춤 {stale}"
+                 + (f" · Codex {codex}" if codex else "") + spark("stale", hist), "warn": False})
+    try:
+        recs = [json.loads(l) for l in open(CLOSED) if l.strip()]
+    except (OSError, ValueError):
+        recs = []
+    today = [r for r in recs if time.strftime("%Y-%m-%d", time.localtime(r["at"] - 5 * 3600)) == day]
+    ver = sum(bool(r.get("verified")) for r in today)
+    items = load_plan().get("items", [])
+    rev = sum(bool(it.get("review")) and not it.get("done") for it in items)
+    dec = desk_decisions()
+    m.update(done=len(today), unverified=len(today) - ver, reviewing=rev,
+             todo_left=sum(not it.get("done") for it in items))
+    if dec is not None:
+        m["decisions"] = dec
+    rows.append({"k": "오늘 완료", "text": f"{len(today)}건 (검토 거침 {ver} · 검토 없이 {len(today) - ver}) · 검토 중 {rev}"
+                 f" · TODO {m['todo_left']}/{len(items)}" + spark("unverified", hist), "warn": len(today) > ver})
+    if dec is not None:
+        rows.append({"k": "결정 대기", "text": f"{dec}건" + spark("decisions", hist), "warn": False})
+    ls = md_sections(LESSONS)
+    if ls:
+        les = ls.get("교훈", [])
+        ok = sum(int(m) for l in les for m in re.findall(r"ok:(\d+)", l))
+        miss = sum(int(m) for l in les for m in re.findall(r"miss:(\d+)", l))
+        prop = len(ls.get("제안", []))
+        ws = md_sections(WRITING)
+        at = time.strftime("%m-%d", time.localtime(os.path.getmtime(os.path.realpath(LESSONS))))
+        m.update(lessons=len(les), ok=ok, miss=miss, proposals=prop)
+        last = next((h for h in reversed(hist) if "corrections" in h), None)
+        rows.append({"k": "개선: orch", "text": f"교훈 {len(les)} (지킴 {ok} · 어김 {miss}) · 제안 {prop}"
+                     f" · 글쓰기 조정 {len(ws.get('조정', []))} · 피드백 {len(ws.get('피드백', []))} · 고친 날 {at}"
+                     + (f" · 고쳐 말함 {last['corrections']}회({last['day'][5:]})" + spark("corrections", hist) if last else ""),
+                     "warn": prop > 0 or miss > 0})
+    try:
+        st = json.load(open(os.path.join(GUARD, "state.json")))
+        last = st.get("last_report") or {}
+        rep = json.load(open(os.path.join(GUARD, "reports", last["id"] + ".json")))
+        vs = rep["scorecard"]["versions"]
+        pct = lambda v, key: f"{v[key] * 100:.1f}%"
+        cons = rep.get("concerns") or []
+        bad = sum(c[0] == "심각" for c in cons)
+        seen = bool(last.get("reviewed_at"))
+        rows.append({"k": "개선: 차단 훅", "text": f"{last['id']} · 잘못 막음 {pct(vs[0], 'wrong_block_rate')}→{pct(vs[-1], 'wrong_block_rate')}"
+                     f" · 놓침 {pct(vs[0], 'miss_rate')}→{pct(vs[-1], 'miss_rate')} · 우려 {len(cons)}(심각 {bad})"
+                     + (" · 멈춤" if st.get("paused") else "") + (" · 확인함" if seen else " · 리포트 미확인(/guard-review)"),
+                     "warn": bad > 0 or not seen or bool(st.get("paused"))})
+    except (OSError, ValueError, KeyError, IndexError, TypeError):
+        pass
+    try:
+        board_log(m, force=log)
+    except OSError:
+        pass
+    return rows
+
+
+def board_trend(days):
+    hist = board_history()[-days:]
+    keys = [k for k in SERIES if any(k in h for h in hist)]
+    if not hist:
+        return "(기록 없음)"
+    out = ["날짜   " + " ".join(f"{SERIES[k]:>6}" for k in keys)]
+    for h in hist:
+        out.append(h["day"][5:] + "  " + " ".join(f"{h.get(k, '-'):>{6 + len(SERIES[k])}}" for k in keys))
+    return "\n".join(out)
+
+
+def patrol(read):
+    try:
+        board()  # 지표의 오늘 줄을 갱신(30분에 한 번만 쓴다)
+    except Exception:
+        pass
+    try:
+        st = json.load(open(PATROL))
+    except (OSError, ValueError):
+        st = None
+    ss = sessions()
+    desk = (desk_panel() or "").lower()
+    now = int(time.time())
+    snap = {x["panel"]: {"state": x["state"], "at": x["last_activity"], "title": x["title"]}
+            for x in ss}
+    first = st is None
+    st = st or {"snap": {}, "pending": {}, "notified": 0}
+    if not first:  # 지난 기록과 비교해 변화를 쌓는다. 같은 세션의 같은 변화는 하나로 합친다.
+        for panel, cur in snap.items():
+            if panel.lower() == desk:
+                continue
+            old = st["snap"].get(panel)
+            if old is None:
+                st["pending"][panel + ":new"] = {"panel": panel, "title": cur["title"], "what": "new", "at": now}
+            elif cur["state"] != "working" and (old["state"] == "working" or old["at"] != cur["at"]):
+                st["pending"][panel + ":turn_ended"] = {"panel": panel, "title": cur["title"], "what": "turn_ended", "at": now}
+        for panel, old in st["snap"].items():
+            if panel not in snap and panel.lower() != desk:
+                st["pending"] = {k: v for k, v in st["pending"].items() if v["panel"] != panel}
+                st["pending"][panel + ":closed"] = {"panel": panel, "title": old["title"], "what": "closed", "at": now}
+    st["snap"] = snap
+    if read:
+        rc, plan = recaps(ss), load_plan()
+        num = {it["panel"]: n for n, it in enumerate(plan["items"], 1) if not it["done"]}
+        live = {x["panel"]: x for x in ss}
+        out = []
+        for ev in sorted(st["pending"].values(), key=lambda e: e["at"]):
+            x = live.get(ev["panel"], {})
+            row = {"ev": ev["what"], "panel": ev["panel"], "title": ev["title"], "state": x.get("state", "closed"),
+                   "todo": num.get(ev["panel"]), "recap": rc.get(ev["panel"].lower())}
+            if ev["what"] == "new":
+                row["cwd"] = x.get("cwd")
+            out.append({k: v for k, v in row.items() if v is not None})
+        st["pending"] = {}
+        st["desk"] = desk  # 순찰을 읽은 데스크만 깨운다(이 기능을 모르는 예전 데스크는 건드리지 않는다)
+        for row in out:  # 한 줄에 한 건(JSONL)
+            print(json.dumps(row, ensure_ascii=False, separators=(",", ":")))
+    elif st["pending"] and desk and st.get("desk") == desk:
+        wait = st["notified"] + PATROL_MIN - now
+        if wait <= 0:
+            r = cmux("agent", "message", desk, "--from", "orch-patrol", "--",
+                     f"patrol {len(st['pending'])}")
+            if r.returncode == 0:
+                st["notified"] = now
+        elif now >= st.get("retry", 0):  # 아직 이르면, 때가 됐을 때 한 번 더 돌도록 예약한다
+            st["retry"] = now + int(wait) + 5
+            subprocess.Popen(["/bin/sh", "-c", f"sleep {int(wait) + 5}; exec \"$0\" patrol", os.path.realpath(__file__)],
+                             start_new_session=True, stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    os.makedirs(os.path.dirname(PATROL), exist_ok=True)
+    tmp = PATROL + ".tmp"
+    json.dump(st, open(tmp, "w"), ensure_ascii=False)
+    os.replace(tmp, PATROL)
+
+
+def review(days):
+    import glob, collections
+    proj = os.path.join(HOME, ".claude/projects", re.sub(r"[^A-Za-z0-9]", "-", DESK_DIR))
+    since = time.time() - days * 86400
+    used = collections.Counter()
+    one = lambda t, n: " ".join(str(t).split())[:n]
+    for path in sorted(glob.glob(proj + "/*.jsonl"), key=os.path.getmtime):
+        if os.path.getmtime(path) < since:
+            continue
+        rows, last_a = [], ""
+        for line in open(path, errors="ignore"):
+            try:
+                o = json.loads(line)
+            except ValueError:
+                continue
+            if o.get("isSidechain"):
+                continue
+            try:
+                ts = time.strftime("%m-%d %H:%M", time.localtime(
+                    __import__("calendar").timegm(time.strptime(o.get("timestamp", "")[:19], "%Y-%m-%dT%H:%M:%S"))))
+            except ValueError:
+                ts = ""
+            c = (o.get("message") or {}).get("content")
+            if isinstance(c, list):
+                c = " ".join(x.get("text", "") for x in c if isinstance(x, dict) and x.get("type") == "text")
+            if o.get("type") == "assistant" and c and c.strip():
+                last_a = one(c, 260)
+            elif o.get("type") == "system" and o.get("subtype") == "local_command":
+                m = re.search(r"<command-name>(/\S+)</command-name>", str(o.get("content", "")))
+                out = re.search(r"<local-command-stdout>(.*?)</local-command-stdout>", str(o.get("content", "")), re.S)
+                if m:
+                    used[m.group(1)] += 1
+                    rows.append(f"{ts} C {m.group(1)}")
+                elif out and rows and rows[-1].split(" ")[2:3] == ["C"]:
+                    rows[-1] += " -> " + one(out.group(1), 120)
+            elif o.get("type") == "user" and isinstance(c, str) and c.strip():
+                t = one(c, 300)
+                if t.startswith(("<", "Base directory for this skill", "You are helping")) or "<command-name>" in t:
+                    m = re.search(r"<command-name>(/\S+)</command-name>", t)
+                    if m:
+                        used[m.group(1)] += 1
+                        rows.append(f"{ts} C {m.group(1)}")
+                    continue
+                if last_a:
+                    rows.append(f"      A {last_a}")
+                    last_a = ""
+                rows.append(f"{ts} U {t}")
+        if rows:
+            print(f"== {os.path.basename(path)[:8]}")
+            print("\n".join(rows))
+    print("== used " + " ".join(f"{k}={v}" for k, v in used.most_common()))
+
+
+def resume_cmd(rec):
+    if not rec.get("session"):
+        return ""
+    tool = "codex resume " if rec.get("agent") == "codex" else "claude --resume "
+    return f"cd {rec['cwd']} && {tool}{rec['session']}"
+
+
+def desk_panel():
+    """데스크(☀ 워크스페이스)의 orch 세션 panel. 없으면 None."""
+    if os.environ.get("BRIEF_DESK_PANEL"):  # 시험용 재정의
+        return os.environ["BRIEF_DESK_PANEL"]
+    try:
+        wss = json.loads(cmux("list-workspaces", "--json").stdout).get("workspaces", [])
+    except ValueError:
+        return None
+    desks = {w["id"] for w in wss if str(w.get("custom_title") or w.get("title") or "").startswith("☀")}
+    cand = [x for x in sessions() if x["workspace"] in desks]
+    home = DESK_DIR.replace(HOME, "~")  # 데스크 워크스페이스에 다른 세션이 섞여 있어도 orch(데일리 폴더)를 고른다
+    return next((x["panel"] for x in cand if x["cwd"] == home), cand[0]["panel"] if cand else None)
+
+
+def request_close(s):
+    """세션에 완료 보고를 요청한다. 세션은 보고만 하고 닫지 않는다: 데스크가 보고를 실제와 대조한 뒤
+    `brief done <panel> --verified "<기록>"` 으로 완료 처리한다. 못 보냈으면 이유를 돌려준다."""
+    if s["agent"] != "claude":
+        return (f"보고 요청 못 보냄: {s['agent']} 세션은 메시지를 받지 못합니다. 데스크가 화면과 작업 폴더를 직접 "
+                "확인한 뒤 --verified 로 완료 처리하세요")
+    me = os.environ.get("CMUX_PANEL_ID")
+    desk = desk_panel() or me
+    to = f"`cmux agent message {desk} \"<reply>\"`" if desk and desk.lower() != s["panel"].lower() else "this pane"
+    text = ("done-request: the user considers this session's task finished. Before it is recorded as done and the pane "
+            "is closed, the desk agent cross-checks your report against reality, so report facts, not memory: run "
+            "`git status` (and `git log -3 --oneline`) in every directory this session created or edited files in.\n"
+            f"reply to {to} in this shape, then stay open (the desk closes the pane after checking; do not close it yourself):\n"
+            "`done-report: ready|not-ready` then one line each:\n"
+            "- did: <what was done and the result>\n"
+            "- artifacts: <absolute paths, commits, links>\n"
+            "- uncommitted: <paths per directory, or none> · unpushed: <commits, or none>\n"
+            "- running: <background jobs/pending answers, or none>\n"
+            "- remaining: <what is left or must be handed off, or none>")
+    r = cmux("agent", "message", s["panel"], "--", text)
+    return "보고 요청 못 보냄: " + (r.stderr or r.stdout).strip() if r.returncode else None
+
+
+def log_closed(s, note, closed):
+    """완료 기록: 무엇이 언제 어떻게 검토되어 끝났는지. `brief closed` 가 보여 준다."""
+    rec = {k: s[k] for k in ("title", "cwd", "agent", "session")} | {"at": int(time.time()), "closed": closed}
+    if note is not None:
+        rec["verified"] = note
+    os.makedirs(os.path.dirname(CLOSED), exist_ok=True)
+    with open(CLOSED, "a") as f:
+        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
+
+def close_session(s, force, note=None):
+    """세션의 pane 을 닫고 기록을 남긴다. 닫지 않았으면 이유(문자열)를 돌려준다."""
+    own = s["panel"].lower() == os.environ.get("CMUX_PANEL_ID", "").lower()  # 세션이 스스로 닫는 경우
+    if s["state"] != "idle" and not force and not own:
+        return f"닫지 않음: 세션이 {s['state']} 상태입니다 (그래도 닫으려면 --force)"
+    r = cmux("rpc", "surface.list", json.dumps({"workspace_id": s["workspace"]}))
+    try:
+        alone = len(json.loads(r.stdout).get("surfaces", [])) <= 1
+    except ValueError:
+        alone = False
+    if alone:  # 마지막 pane 이면 빈 워크스페이스가 남지 않게 워크스페이스째 닫는다
+        r = cmux("close-workspace", "--workspace", s["workspace"], "--force")
+    else:
+        r = cmux("close-surface", "--surface", s["panel"], "--workspace", s["workspace"], "--force")
+    if r.returncode:
+        return "닫기 실패: " + r.stderr.strip()
+    log_closed(s, note, True)
+    return None
+
+
+def main(argv):
+    cmd = argv[1] if len(argv) > 1 else "show"
+    if cmd == "sessions":
+        ss = sessions()
+        for g in teams(ss):  # collab 묶음에 속한 세션에 이름을 붙여 준다
+            for m in g["members"]:
+                for s in ss:
+                    if s["panel"] == m["panel"]:
+                        s["collab"] = g["name"]
+        rc = recaps(ss)
+        for x in ss:
+            if x["panel"].lower() in rc:
+                x["recap"] = rc[x["panel"].lower()]
+        print(json.dumps(ss, ensure_ascii=False, indent=1))
+    elif cmd == "teams":
+        print(json.dumps(teams(), ensure_ascii=False, indent=1))
+    elif cmd == "plan":
+        items = json.load(sys.stdin)
+        known = {s["panel"].lower(): s for s in sessions()}
+        plan = {"at": int(time.time()), "items": []}
+        for it in items:
+            s = known.get(str(it.get("panel", "")).lower())
+            if not s:
+                sys.exit("brief: 모르는 panel 입니다 (brief sessions 의 panel 값을 쓰세요): " + str(it.get("panel")))
+            plan["items"].append({"panel": s["panel"], "workspace": s["workspace"],
+                                  "title": s["title"], "do": str(it.get("do", "")).strip(), "done": False})
+        save_plan(plan)
+        print(f"TODO {len(plan['items'])}개를 Sessions 패널에 올렸습니다.")
+    elif cmd == "add" and len(argv) > 3:
+        s = resolve(argv[2])
+        plan = load_plan()
+        if any(it["panel"] == s["panel"] and not it["done"] for it in plan["items"]):
+            sys.exit("brief: 이미 목록에 있는 세션입니다: " + s["title"])
+        plan["at"] = int(time.time())
+        plan["items"].append({"panel": s["panel"], "workspace": s["workspace"],
+                              "title": s["title"], "do": " ".join(argv[3:]).strip(), "done": False})
+        save_plan(plan)
+        print(f"{len(plan['items'])}번으로 추가: {s['title']}")
+    elif cmd in ("go", "ping") and len(argv) > 2:
+        s = resolve(" ".join(argv[2:]).strip())
+        if cmd == "go":
+            r = cmux("select-workspace", "--workspace", s["workspace"])
+            r2 = cmux("focus-panel", "--panel", s["panel"], "--workspace", s["workspace"])
+            if r.returncode or r2.returncode:
+                sys.exit("brief: 이동 실패: " + (r.stderr + r2.stderr).strip())
+        r = flash(s)
+        if r.returncode:
+            sys.exit("brief: 깜빡이기 실패: " + r.stderr.strip())
+        print(("이동: " if cmd == "go" else "핑: ") + s["title"])
+    elif cmd == "done" and len(argv) > 2:
+        rest, note = argv[2:], None
+        if "--verified" in rest:  # --verified "<검토 기록>"
+            k = rest.index("--verified")
+            if k + 1 >= len(rest) or not rest[k + 1].strip() or rest[k + 1].startswith("--"):
+                sys.exit('brief: --verified 뒤에 검토 기록을 붙여 주세요. 예: --verified "git status 깨끗, PR #12 확인"')
+            note, rest = rest[k + 1], rest[:k] + rest[k + 2:]
+        flags = [a for a in rest if a.startswith("--")]
+        ref = " ".join(a for a in rest if not a.startswith("--")).strip()
+        undo = "--undo" in flags
+        final = undo or note is not None or "--now" in flags  # 검토를 거쳤거나(--verified) 내가 건너뛰었을 때(--now)만 끝낸다
+        plan = load_plan()
+        s = None
+        if ref.isdigit():
+            i = int(ref) - 1
+            if not 0 <= i < len(plan["items"]):
+                sys.exit(f"brief: 목록에 {ref}번이 없습니다")
+            idx, title = [i], plan["items"][i]["title"]
+            if not undo:
+                s = next((x for x in sessions() if x["panel"] == plan["items"][i]["panel"]), None)
+        else:
+            s = resolve(ref)
+            idx = [n for n, it in enumerate(plan["items"]) if it["panel"] == s["panel"] and it["done"] == undo]
+            title = s["title"]
+        if not final:  # 완료 표시 전에 세션의 보고를 받아 데스크가 대조한다
+            why = request_close(s) if s else "보고 요청 생략: 이미 닫힌 세션입니다 (데스크가 직접 확인 후 --verified)"
+            for i in idx:
+                plan["items"][i]["review"] = True
+            if idx:
+                save_plan(plan)
+            print(why or "완료 검토 요청 보냄: " + title + " (세션이 보고하면 데스크가 대조한 뒤 완료 처리합니다)")
+            render()
+            return
+        for i in idx:
+            plan["items"][i]["done"] = not undo
+            plan["items"][i].pop("review", None)
+        if idx:
+            save_plan(plan)
+            print(("되돌림: " if undo else "완료: ") + title + (f" (검토: {note})" if note else ""))
+        if undo:
+            pass
+        elif "--keep" in flags or not s:
+            if s:
+                log_closed(s, note, False)
+            print("세션은 열어 둡니다" if s else "세션은 이미 닫혀 있습니다")
+        else:
+            why = close_session(s, "--force" in flags, note)
+            print(why or "세션 닫음: " + title + " (기록·다시 열기: brief closed)")
+        render()
+    elif cmd == "patrol":
+        patrol("--read" in argv)
+    elif cmd == "doc":  # 가장 최근 데스크 문서의 절대 경로 (mod 가 읽는다. 세션의 cwd 와 무관해야 한다)
+        d = os.path.join(DESK_DIR, "Desk")
+        docs = sorted(f for f in os.listdir(d) if re.fullmatch(r"\d+\.md", f)) if os.path.isdir(d) else []
+        if docs:
+            print(os.path.join(d, docs[-1]))
+    elif cmd == "board":
+        if "--set" in argv:
+            k = argv.index("--set")
+            day = argv[argv.index("--day") + 1] if "--day" in argv else board_day()
+            board_set([a for a in argv[k + 1:] if "=" in a], day)
+            print(board_trend(7))
+            return
+        if "--trend" in argv:
+            k = argv.index("--trend")
+            print(board_trend(int(argv[k + 1]) if len(argv) > k + 1 and argv[k + 1].isdigit() else 14))
+            return
+        rows = board(log="--log" in argv)
+        if "--json" in argv:
+            print(json.dumps(rows, ensure_ascii=False))
+        else:
+            for r in rows:
+                print(("! " if r["warn"] else "  ") + r["k"] + ": " + r["text"])
+    elif cmd == "view":
+        print(desk_view(force=True) or "이미 열려 있습니다")
+    elif cmd == "review":
+        review(float(argv[2]) if len(argv) > 2 else 1)
+    elif cmd == "closed":
+        try:
+            recs = [json.loads(l) for l in open(CLOSED) if l.strip()][-10:]
+        except OSError:
+            recs = []
+        for rec in reversed(recs):
+            how = ("검토: " + rec["verified"]) if rec.get("verified") else "검토 없이 닫음"
+            print(f"{time.strftime('%m-%d %H:%M', time.localtime(rec['at']))}  {rec['title']}\n    {how}\n    {resume_cmd(rec)}")
+        if not recs:
+            print("(닫은 세션 기록 없음)")
+    elif cmd == "show":
+        plan = load_plan()
+        for n, it in enumerate(plan["items"], 1):
+            print(f"{n}. [{'x' if it['done'] else ' '}] {it['title']} — {it['do']}")
+        if not plan["items"]:
+            print("(TODO 목록 없음)")
+    elif cmd == "render":
+        render()
+    else:
+        sys.exit(__doc__)
+
+
+if __name__ == "__main__":
+    main(sys.argv)

@@ -50,6 +50,9 @@ change L1 behaviour, it goes back to L1 (not a local override).
 | `hooks/general/guard-cherry-pick.sh` | Warn on ad-hoc `git cherry-pick`; steer to `agent-promote.sh`. |
 | `hooks/general/turn-end-wip-commit.sh` | Auto-commit each turn inside a sib worker worktree so promote squashes cleanly. |
 | `agents/approver.md` | cmux approval-prompt auto-approver agent (daemon). |
+| `agents/orch.md` | cmux session desk agent (`claude --agent orch`): tracks open sessions, TODOs, patrols. |
+| `cmux/` | Session-desk runtime: `brief` CLI, `brief-mod` plugin, Sessions panel template, `morning-brief.sh` launcher (+ `morning-brief.d/*.sh` persona extension point), `sessions-toggle.sh`, orch seeds, L1 automation rules. |
+| `bin/cmux-automations-merge` | Merge a layer's rule fragment into `~/.cmuxterm/automations.json` by rule id. Every layer (L1, dotfiles, L2) merges only its own rules. |
 | `scripts/install.sh` | Pull L1 contents into `~/.claude/`, `~/.codex/`, `~/.local/bin/`. Atomic, overwrite. |
 | `scripts/check-update.sh` | git fetch + detect changes + trigger install. Driven by cron. |
 | `scripts/verify.sh` | Drift verify (checksum). Called from SessionStart hook. |

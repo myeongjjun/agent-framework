@@ -1,8 +1,7 @@
 # Agents
 
 Custom Claude Code agent definitions managed in this repo and deployed
-to `~/.claude/agents/` via `./sync-agents.sh` (or the canonical
-`./scripts/sync-all.sh`).
+to `~/.claude/agents/` as copies by `scripts/install.sh` (L1).
 
 These are NOT slash-command-invokable skills. They are agents in the
 Claude Code sense — separate identities with their own system prompt,
@@ -21,10 +20,10 @@ Source format follows the official spec:
 | Path | Purpose |
 |---|---|
 | `agents/<name>.md` | Source agent definition (YAML frontmatter + system prompt body) |
-| `~/.claude/agents/<name>.md` | Deployed copy (sync-agents.sh writes here) |
+| `~/.claude/agents/<name>.md` | Deployed copy (`scripts/install.sh` writes here) |
 
 Files must be flat at the top of `agents/` — no subdirectories.
-`README.md` and `INDEX.md` are skipped by the sync script.
+`README.md` and `INDEX.md` are skipped by `install.sh`.
 
 ## Conventions
 
@@ -40,31 +39,17 @@ Files must be flat at the top of `agents/` — no subdirectories.
 
 ## Current agents
 
-_None._ The previous `handoff-runner` agent was removed in Round 6 of
-the handoff-rotation work (see ADR-026 / ADR-027). The rotation flow is
-now orchestrated entirely by `scripts/handoff-rotate.sh` with no
-helper-agent layer.
+| Agent | Purpose |
+|---|---|
+| `approver` | Bash daemon that auto-approves safe cmux approval prompts. |
+| `orch` | cmux session desk. Runs in its own pane via `claude --agent orch`, launched each morning by `~/.config/cmux/morning-brief.sh` (see `cmux/`). |
 
-This directory and its sync tooling remain in place as infrastructure
-for future agent definitions.
-
-## Sync workflow
+## Deploy
 
 ```bash
-# Status (default)
-./sync-agents.sh
-
-# Push source → deployed
-./sync-agents.sh --push
-
-# Or via the canonical entry point
-./scripts/sync-all.sh
-
-# List discovered agents with model/tools summary
-./sync-agents.sh --list
-
-# Dry-run preview
-./sync-agents.sh --push --dry-run
+bash scripts/install.sh            # copy agents/*.md → ~/.claude/agents/
+bash scripts/install.sh --dry-run  # preview
+bash scripts/verify.sh             # drift check (deployed copy vs source)
 ```
 
 After deployment, restart any active claude sessions for changes to

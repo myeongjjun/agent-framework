@@ -1,0 +1,90 @@
+{
+  "version": 1,
+  "rules": [
+    {
+      "id": "morning-brief",
+      "when": {
+        "event": "window.keyed"
+      },
+      "rate_limit": {
+        "interval_seconds": 60,
+        "maximum": 1
+      },
+      "then": [
+        {
+          "action": "run",
+          "command": "$HOME/.config/cmux/morning-brief.sh",
+          "timeout_seconds": 30
+        }
+      ]
+    },
+    {
+      "id": "sessions-panel-refresh-start",
+      "when": {
+        "event": "agent.hook.SessionStart"
+      },
+      "rate_limit": {
+        "interval_seconds": 5,
+        "maximum": 1
+      },
+      "then": [
+        {
+          "action": "run",
+          "command": "$HOME/.local/bin/brief render",
+          "timeout_seconds": 20
+        }
+      ]
+    },
+    {
+      "id": "sessions-panel-refresh-close",
+      "when": {
+        "event": "surface.closed"
+      },
+      "rate_limit": {
+        "interval_seconds": 5,
+        "maximum": 1
+      },
+      "then": [
+        {
+          "action": "run",
+          "command": "$HOME/.local/bin/brief render",
+          "timeout_seconds": 20
+        }
+      ]
+    },
+    {
+      "id": "sessions-panel-refresh-turn",
+      "when": {
+        "event": "agent.hook.Stop"
+      },
+      "rate_limit": {
+        "interval_seconds": 5,
+        "maximum": 1
+      },
+      "then": [
+        {
+          "action": "run",
+          "command": "$HOME/.local/bin/brief render",
+          "timeout_seconds": 20
+        }
+      ]
+    },
+    {
+      "id": "orch-patrol",
+      "when": {
+        "event": "agent.hook.Stop"
+      },
+      "rate_limit": {
+        "interval_seconds": 5,
+        "maximum": 1
+      },
+      "then": [
+        {
+          "action": "run",
+          "command": "$HOME/.local/bin/brief patrol",
+          "timeout_seconds": 20
+        }
+      ]
+    }
+  ]
+}

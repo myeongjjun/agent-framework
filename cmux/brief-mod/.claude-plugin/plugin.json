@@ -1,0 +1,6 @@
+{
+  "name": "brief-nav",
+  "version": "0.2.0",
+  "description": "Desk session UI for cmux: a status band and Desk pane drawn from the desk document, plus slash commands that run without a model turn (/go, /ping, /done, /today, /desk).",
+  "types": "./types/index.d.ts"
+}

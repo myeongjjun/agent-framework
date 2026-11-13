@@ -45,10 +45,13 @@ current_sum="$(
       | sort -z | xargs -0 shasum -a 256
     find bin -type f -print0 \
       | sort -z | xargs -0 shasum -a 256
+    find agents -type f -name '*.md' -print0 \
+      | sort -z | xargs -0 shasum -a 256
     find agent-context/constraints -type f -name '*.md' -print0 \
       | sort -z | xargs -0 shasum -a 256
     [[ -f configs/claude/statusline.sh ]] && shasum -a 256 configs/claude/statusline.sh
     [[ -f AGENTS.md ]] && shasum -a 256 AGENTS.md
+    [[ -f cmux/automations.json ]] && shasum -a 256 cmux/automations.json
   }
 )"
 snapshot_sum="$(cat "${SUM_FILE}")"
@@ -110,6 +113,16 @@ for binfile in "${FRAMEWORK_ROOT}/bin"/*; do
   name="$(basename "${binfile}")"
   check_symlink "${HOME}/.local/bin/${name}" "${binfile}"
 done
+
+# Agents + cmux desk
+for agent in "${FRAMEWORK_ROOT}/agents"/*.md; do
+  case "$(basename "$agent")" in README.md|INDEX.md) continue ;; esac
+  check_hook_copy "${HOME}/.claude/agents/$(basename "$agent")" "${agent}"
+done
+if [[ -d "${FRAMEWORK_ROOT}/cmux" ]]; then
+  check_symlink "${HOME}/.local/bin/brief" "${FRAMEWORK_ROOT}/cmux/brief"
+  check_symlink "${HOME}/.config/cmux/morning-brief.sh" "${FRAMEWORK_ROOT}/cmux/morning-brief.sh"
+fi
 
 # NOTE: ~/.claude/statusline.sh is intentionally NOT checked against the L1
 # source here. Per ADR-043 the in-house L2 overlay (agent-workspace
