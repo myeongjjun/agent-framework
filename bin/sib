@@ -60,6 +60,45 @@ prune_if_dead() {
   if (( worktree_managed )); then echo kept-worktree; else rm -f "$f"; echo pruned; fi
 }
 
+# Pre-trust allowlisted start dirs so a claude sibling does not stop at Claude
+# Code's "trust this folder" dialog (nobody is at a desk-spawned pane to answer
+# it). The allowlist is user-owned: one pattern per line in $SIB_TRUST_FILE,
+# '~/' expands to $HOME, '#' starts a comment, '*' matches within ONE path
+# segment (so '~/dev/*' covers ~/dev/x but not ~/dev/x/y). Only dirs under
+# $HOME are eligible. Anything not listed keeps the dialog — sib then reports
+# it instead of claiming the session is ready.
+SIB_TRUST_FILE="${SIB_TRUST_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/sib/trusted-dirs}"
+# Echoes: "already" | "added" | nothing (not eligible / could not write).
+trust_allowlisted() {
+  local dir="$1" line pat hit=0 cfg tmp
+  [[ -f "${SIB_TRUST_FILE}" && "${dir}" == "${HOME}"/* ]] || return 0
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    line="${line%%#*}"
+    line="${line#"${line%%[![:space:]]*}"}"; line="${line%"${line##*[![:space:]]}"}"
+    [[ -n "${line}" ]] || continue
+    [[ "${line}" == "~/"* ]] && line="${HOME}/${line#\~/}"
+    pat="${line%/}"
+    # Same depth first, so '*' cannot swallow a '/'.
+    local ds="${dir//[^\/]/}" ps="${pat//[^\/]/}"
+    # shellcheck disable=SC2053  # $pat is intentionally a glob
+    if [[ ${#ds} -eq ${#ps} && "${dir}" == ${pat} ]]; then hit=1; break; fi
+  done < "${SIB_TRUST_FILE}"
+  (( hit )) || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  cfg="${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json"
+  [[ -f "${cfg}" ]] || return 0
+  if jq -e --arg d "${dir}" '.projects[$d].hasTrustDialogAccepted == true' "${cfg}" >/dev/null 2>&1; then
+    echo already; return 0
+  fi
+  tmp="$(mktemp "${cfg}.sib.XXXXXX")" || return 0
+  if jq --arg d "${dir}" \
+       '.projects[$d] = ((.projects[$d] // {}) + {hasTrustDialogAccepted: true})' \
+       "${cfg}" > "${tmp}" 2>/dev/null && [[ -s "${tmp}" ]]; then
+    chmod 600 "${tmp}" && mv -f "${tmp}" "${cfg}" && echo added && return 0
+  fi
+  rm -f "${tmp}"
+}
+
 cmd="${1:-}"; shift || true
 
 case "${cmd}" in
@@ -147,6 +186,11 @@ spawn)
     start_dir="${wt}"
   fi
   [[ -d "${start_dir}" ]] || die "start dir does not exist: ${start_dir}"
+  # Claude keys trust by its physical cwd, so resolve symlinks first.
+  trust=""
+  if [[ "${agent}" == "claude" ]]; then
+    trust="$(trust_allowlisted "$(cd "${start_dir}" && pwd -P)")"
+  fi
 
   # Place the sibling pane. Three modes:
   #   default        — split the caller's current workspace
@@ -215,8 +259,19 @@ spawn)
       grep -q "^${ready_marker}" <<<"${scr}" && grep -qF '──────────' <<<"${scr}"
     fi
   }
-  booted=0
+  # Claude's folder-trust dialog blocks the pane until a human answers it.
+  trust_dialog_up() {
+    [[ "${agent}" == "claude" ]] || return 1
+    cmux read-screen --surface "${surface}" --workspace "${ws}" --lines 60 2>/dev/null \
+      | grep -qiE 'trust this folder|do you trust the files'
+  }
+  booted=0; trust_blocked=0
   for i in $(seq 1 70); do
+    # Dialog first: its option list starts with '❯' and may sit under a rule
+    # line, so it can look like the input box.
+    if trust_dialog_up; then
+      trust_blocked=1; break
+    fi
     if agent_ui_ready; then
       booted=1; break
     fi
@@ -224,6 +279,12 @@ spawn)
     # immediately, then back off to 0.5s (≈30s ceiling) for a slow cold start.
     if (( i <= 10 )); then sleep 0.1; else sleep 0.5; fi
   done
+  if (( trust_blocked )); then
+    echo "✗ sib '${slug}' (${agent}) → ${ws} ${surface} — waiting at Claude's trust-folder dialog" >&2
+    echo "  ${start_dir} is not in ${SIB_TRUST_FILE}; confirm in the pane, or add it there (user decision)" >&2
+    [[ -n "${prompt}" ]] && echo "  prompt not sent; after confirming: sib send ${slug} \"...\"" >&2
+    exit 6
+  fi
   delivery=""
   if [[ -n "${prompt}" ]] && (( ! booted )); then
     # Typing into a pane whose agent never drew its input box is the
@@ -315,6 +376,7 @@ spawn)
   fi
   echo "✓ sib '${slug}' (${agent}) → ${ws} ${surface} $([[ ${booted} == 1 ]] && echo '[booted]' || echo '[booting…]')"
   echo "  workdir: ${start_dir}$( (( new_ws )) && echo '  (dedicated workspace)'; (( do_worktree )) && echo '  (worktree)')"
+  [[ "${trust}" == added ]] && echo "  trust: pre-trusted from ${SIB_TRUST_FILE}"
   echo "  talk: focus the pane, or  sib send ${slug} \"...\""
   ;;
 

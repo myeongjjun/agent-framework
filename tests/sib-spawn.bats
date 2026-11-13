@@ -367,3 +367,64 @@ BOOT_SCREEN=$'❯ \n───────────────────�
   [ "$status" -eq 0 ]
   grep -q "exec codex --dangerously-bypass-approvals-and-sandbox" "$CMUX_STUB_LOG"
 }
+
+# --- folder-trust pre-acceptance (allowlist) --------------------------------
+# HOME is sandboxed so the real ~/.claude.json is never read or written.
+
+trust_setup() {
+  export HOME="$BATS_TEST_TMPDIR/home"
+  export XDG_CONFIG_HOME="$HOME/.config"
+  unset CLAUDE_CONFIG_DIR SIB_TRUST_FILE
+  mkdir -p "$HOME/work/proj/deep" "$HOME/other" "$XDG_CONFIG_HOME/sib"
+  echo '{"projects":{}}' > "$HOME/.claude.json"
+  printf '# comment\n~/work/*\n' > "$XDG_CONFIG_HOME/sib/trusted-dirs"
+}
+trusted() { jq -e --arg d "$1" '.projects[$d].hasTrustDialogAccepted == true' "$HOME/.claude.json" >/dev/null; }
+
+@test "an allowlisted workdir is pre-trusted before claude launches" {
+  trust_setup
+  run "$SIB" spawn tr-ok --workdir "$HOME/work/proj"
+  [ "$status" -eq 0 ]
+  trusted "$(cd "$HOME/work/proj" && pwd -P)"
+  [[ "$output" == *"pre-trusted"* ]]
+}
+
+@test "a workdir outside the allowlist is left untrusted" {
+  trust_setup
+  run "$SIB" spawn tr-no --workdir "$HOME/other"
+  [ "$status" -eq 0 ]
+  ! trusted "$(cd "$HOME/other" && pwd -P)"
+}
+
+@test "'*' in the allowlist does not cross a path segment" {
+  trust_setup
+  run "$SIB" spawn tr-deep --workdir "$HOME/work/proj/deep"
+  [ "$status" -eq 0 ]
+  ! trusted "$(cd "$HOME/work/proj/deep" && pwd -P)"
+}
+
+@test "existing project settings survive pre-trust" {
+  trust_setup
+  d="$(cd "$HOME/work/proj" && pwd -P)"
+  jq --arg d "$d" '.projects[$d] = {allowedTools: ["x"]} | .keep = 1' "$HOME/.claude.json" > "$HOME/c" && mv "$HOME/c" "$HOME/.claude.json"
+  run "$SIB" spawn tr-keep --workdir "$HOME/work/proj"
+  [ "$status" -eq 0 ]
+  trusted "$d"
+  jq -e --arg d "$d" '.projects[$d].allowedTools == ["x"] and .keep == 1' "$HOME/.claude.json"
+}
+
+@test "codex siblings never touch claude's trust state" {
+  trust_setup
+  run "$SIB" spawn tr-codex --codex --workdir "$HOME/work/proj"
+  ! trusted "$(cd "$HOME/work/proj" && pwd -P)"
+}
+
+@test "a pane stuck at the trust dialog is reported, not claimed ready" {
+  trust_setup
+  export CMUX_STUB_SCREEN="Do you trust the files in this folder?
+❯ 1. Yes, I trust this folder"
+  run "$SIB" spawn tr-stuck --workdir "$HOME/other" -- "do the thing"
+  [ "$status" -eq 6 ]
+  [[ "$output" == *"trust-folder dialog"* ]]
+  ! grep -q "cmux send .*do the thing" "$CMUX_STUB_LOG"
+}
