@@ -84,7 +84,10 @@ const entries = computed(() => {
   const byPanel = {};
   for (const w of data.workspaces() ?? []) {
     for (const a of w.agents ?? []) {
-      const tab = (w.tabs ?? []).find((t) => t.id === a.panelId) ?? {};
+      // 탭이 없는 에이전트는 pane 이 아니다(pane 에서 띄운 데스크톱 앱이 pane 환경을 물려받아 잡힌 프로세스 등).
+      // 이동할 곳이 없으므로 목록에 넣지 않는다.
+      const tab = (w.tabs ?? []).find((t) => t.id === a.panelId);
+      if (!tab) continue;
       const title = oneLine(tab.title || a.title || a.name);
       const rawPrompt = oneLine(tab.latestPrompt);
       const prompt = rawPrompt.startsWith("<") ? "" : rawPrompt; // 에이전트 간 전달 메시지는 숨김
