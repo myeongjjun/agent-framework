@@ -1,6 +1,6 @@
 ---
 name: dispatch
-version: 0.8.0
+version: 0.9.0
 description: >
   Spawn a scoped sibling agent session via `sib` (cmux pane, shared
   working tree — no worktree by default), placing it in the workspace
@@ -79,6 +79,15 @@ Do not use this skill for:
   task: when the sibling finishes, it sends a `done-report:` to the desk
   (orch) and stays open; the desk cross-checks it and closes the pane.
   Without it, finished siblings stay open indefinitely.
+- Never tell the user a workspace "does not exist" until the reference
+  has gone through stableId resolution (Step 3a.0). A
+  `cmux://workspace/<UUID>` link carries a stableId that every cmux CLI
+  command and `sib --workspace` reject with `not_found`, even for an
+  open workspace.
+- Never report "Dispatch 실행 완료" unless `sib spawn` exited 0 with its
+  `✓` line. Exit 5 (`✗ … prompt not sent / not submitted / unconfirmed`)
+  means the sibling is up but did not start the task — recover per
+  Step 6.
 
 ## Workflow
 
@@ -93,6 +102,8 @@ Do not use this skill for:
 - Any of these explicit targets — `--workspace`, `--workdir`, or a
   workspace/repo named in the description — is a **go-signal**: resolve
   it and spawn without asking (see Step 3 confirmation policy).
+- A `cmux://workspace/<UUID>` link anywhere in the input is a placement
+  target, equivalent to `--workspace <UUID>` (normalize it in Step 3a.0).
 - Extract description text (everything after the trigger, minus flags)
 
 ### Step 2 — Verify environment
@@ -108,6 +119,32 @@ If either check fails, surface the error and stop.
 
 A sibling must start where the work lives, not wherever the caller
 happens to be.
+
+**3a.0 — Normalize an explicit workspace reference** (`--workspace <x>`
+or a `cmux://workspace/<UUID>` link). cmux has two UUIDs per workspace:
+the runtime `workspaceId` (what `cmux workspace list --json` prints as
+`id`, and what every CLI command and `sib --workspace` accept) and a
+persistent `stableId` (what a copied `cmux://workspace/…` link holds).
+If `<x>` is a `workspace:N` ref, or a UUID that appears as an `id` in
+`cmux workspace list --json`, use it as is. Otherwise translate it
+through cmux's session file:
+
+```bash
+python3 -I - "$uuid" <<'EOF'
+import json, os, sys
+u = sys.argv[1].upper()
+p = os.path.expanduser('~/Library/Application Support/cmux/session-com.cmuxterm.app.json')
+for w in json.load(open(p)).get('windows', []):
+    for ws in w.get('tabManager', {}).get('workspaces', []):
+        if ws.get('stableId', '').upper() == u:
+            print(ws['workspaceId'], ws.get('currentDirectory', ''))
+EOF
+```
+
+A hit gives the runtime id (and the workspace cwd). The file is saved
+periodically, so a workspace created moments ago may be missing — only
+then ask the user for the workspace title or the `$CMUX_WORKSPACE_ID`
+printed in one of its panes. See also `docs/cmux-cli-reference.md`.
 
 **3a — Determine the workdir.** In priority order. Track whether the
 result was **explicit** (1–3) or **inferred** (4) — it decides whether
@@ -226,12 +263,28 @@ WORKER_FLAG=""
 YOLO_FLAG=""
 [[ "$yolo" == "true" ]] && YOLO_FLAG="--yolo"
 
-# Placement flag from Step 3c (exactly one of the three):
-#   PLACEMENT=""                          # split the caller's workspace
-#   PLACEMENT="--workspace $TARGET_WS"    # reuse an existing workspace
-#   PLACEMENT="--workdir $WORKDIR --new-workspace"   # dedicated workspace
+# Placement flags from Step 3c (exactly one of the three). An array so
+# paths with spaces survive:
+#   PLACEMENT=()                                       # split the caller's workspace
+#   PLACEMENT=(--workspace "$TARGET_WS")               # reuse an existing workspace
+#   PLACEMENT=(--workdir "$WORKDIR" --new-workspace)   # dedicated workspace
 
-sib spawn "$slug" --report $WORKER_FLAG $YOLO_FLAG $PLACEMENT -- "$description"
+# Brief delivery — sib types the first message into the agent's input
+# box flattened to one line (newlines become spaces). A multi-line
+# description, or one over ~1000 bytes, goes into a brief file instead
+# (structure preserved, audit trail kept) and the sibling gets a
+# one-line pointer. sib itself does not do this.
+first_msg="$description"
+if [[ "$description" == *$'\n'* ]] || (( $(printf '%s' "$description" | wc -c) > 1000 )); then
+  brief_dir="${XDG_DATA_HOME:-$HOME/.local/share}/sib/briefs"
+  mkdir -p "$brief_dir"
+  brief="$brief_dir/$slug.md"
+  printf '%s\n' "$description" > "$brief"
+  first_msg="$brief 를 읽고 그 작업을 진행해줘."
+fi
+
+sib spawn "$slug" --report $WORKER_FLAG $YOLO_FLAG "${PLACEMENT[@]}" -- "$first_msg"
+rc=$?
 ```
 
 `sib spawn` then:
@@ -240,17 +293,39 @@ sib spawn "$slug" --report $WORKER_FLAG $YOLO_FLAG $PLACEMENT -- "$description"
 2. Places the pane per the placement flag (split caller / split named
    workspace / new dedicated workspace rooted at workdir)
 3. `cd`s into the start dir and `exec`s the agent in the pane
-4. Waits up to 20 s for the agent prompt marker (`❯` claude, `›` codex),
-   then sends the task — with the completion contract appended
-   (`--report`) — as the first message
-5. Persists state to `~/.local/share/sib/state/<slug>.env` (slug, agent,
+4. Persists state to `~/.local/share/sib/state/<slug>.env` (slug, agent,
    surface, workspace, worktree, workdir, worktree_managed,
    workspace_managed)
+5. Waits up to ~30 s for the agent's own input box (marker at line
+   start, plus claude's input-box rule line — a shell prompt's `❯` does
+   not count), types the task — with the completion contract appended
+   (`--report`) — confirms its head AND tail are visible, submits, and
+   confirms a work signal
+6. Exits 0 with `✓ … [booted]` only when all of that held. Otherwise
+   exits 5 with `✗ … prompt <not sent | not submitted | unconfirmed>` —
+   the pane and state file stay up
 
-### Step 6 — Report to the user
+### Step 6 — Verify, then report to the user
 
-On success, sib prints a one-line summary; surface it verbatim plus a
-short note:
+Branch on `rc`:
+
+- **`rc == 0`** (`✓` line) — the task was submitted. Report below.
+- **`rc == 5`** (`✗` line) — the sibling exists but did not start. Do not
+  report success. Recover:
+  1. `cmux read-screen --surface <surface> --workspace <ws> --lines 60`
+     to see the input box.
+  2. If text is sitting in the input box, clear it:
+     `cmux send-key --surface <surface> --workspace <ws> ctrl+c`.
+  3. Re-deliver with `sib send "$slug" "$first_msg"` — it delegates to
+     `/pane-msg`'s verified delivery and exits 0 only on a confirmed
+     submit. (The completion contract is not re-appended; if `--report`
+     mattered, send it again after the task or `sib kill` and respawn.)
+  4. If that also fails, tell the user the sibling is up but idle, with
+     the surface ref and what the screen shows.
+- **other non-zero** — spawn itself failed; print sib's error verbatim
+  (common cases below).
+
+On success, surface sib's `✓` line verbatim plus a short note:
 
 ```markdown
 ## Dispatch 실행 완료
@@ -261,6 +336,7 @@ short note:
 - Workdir: {workdir}
 - Placement: {workspace:N 재사용 | 전용 워크스페이스 신규 | 현재 split}
 - Surface: {surface from sib output}
+- Brief: {brief path, if the description went through a file}
 
 Talk to the sibling by focusing its cmux pane, or:
   sib send {slug} "..."
