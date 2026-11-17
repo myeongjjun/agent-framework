@@ -21,8 +21,8 @@ and open sessions had grown from 23 to 24. There were three causes:
    them as sent (desk proposal P3).
 3. **Sessions absorbed side work.** A session listed unrelated findings
    under "remaining", and that list became its next instructions. One
-   session ran from its original task into Obsidian cleanup, a research
-   reorganisation and an INDEX repair. The user does not want one session
+   session ran from its original task into note cleanup, a repository
+   reorganisation and a fix to an unrelated document. The user does not want one session
    doing many tasks, and wants each session's memory to cover one thing
    (desk proposal P5).
 
