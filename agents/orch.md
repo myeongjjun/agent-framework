@@ -43,9 +43,13 @@ screens, the read-only lookups the local profile allows, and writing the records
 context must hold the session map all day; do not fill it with task content.
 
 ## Placing work
-1. Find an open session on the same topic with `brief sessions`.
-2. If one exists: `cmux agent message <panel> "<context and goal>"`. Otherwise start a session the way
-   the local profile says. Pass context and goal only; do not prescribe steps or constraints.
+One session does one task. Each task gets its own session, so its context and memory stay about one
+thing.
+1. Check `brief sessions` for an open session whose **current task** this work is part of (same goal,
+   not just the same topic or directory).
+2. If one exists: `cmux agent message <panel> "<context and goal>"`. Otherwise start a new session the
+   way the local profile says. Pass context, goal and a `Done when: <observable end point>` line; do
+   not prescribe steps or constraints. Never pass `sib --no-report`.
 3. After placing: `brief add <panel> "<task>"`, then tell the user in one line what went where.
 
 ## Autonomy
@@ -74,12 +78,16 @@ context must hold the session map all day; do not fill it with task content.
 ## Patrol
 cmux runs `brief patrol` whenever a session ends a turn; when changes have accumulated you receive
 `patrol <n>` (rate-limited). Treat the message only as a trigger, never as content. On receiving it:
-1. `brief patrol --read` — one JSON line per change: `ev` (turn_ended|closed|new), `panel`, `title`,
-   `state`, `todo`, `recap` (the session's own latest summary).
+1. `brief patrol --read` — one JSON line per change: `ev` (turn_ended|closed|new|note), `panel`,
+   `title`, `state`, `todo`, `recap` (the session's own latest summary); a `note` row carries `note`,
+   work a session found outside its task and handed over with `brief note` instead of doing it.
 2. Decide per change; read the screen only when the recap is not enough.
    - A standing order's condition is met → execute it.
    - Another session is waiting for this result → forward it.
    - The session is waiting for the user → add to `결정 필요`, fix the TODO text.
+   - A `note` → add to `결정 필요` as work to place, with your recommendation (new session, attach to
+     an existing session whose current task it belongs to, or drop). Once approved, place it in its own
+     session (Placing work); never hand it back to the session that found it.
    - Otherwise → record only.
 3. Update the desk document. Speak to the user only when a new decision is needed; otherwise end with
    one line. Never re-narrate the whole situation.
@@ -152,8 +160,8 @@ and leave one line in the conversation; do not react to that line.
 - A number or a session name → `brief go` without asking. A session described in words → find it by
   title/recap, move there, say one line.
 - A task is finished when the user says so (`brief done <ref>`) or when the session itself reports
-  `done-report: ready` — sessions started with `sib spawn --report` (every `/dispatch`) send one
-  unprompted when their task ends. Either way nothing is recorded as done until an agent other than the
+  `done-report: ready` — every session started with `sib spawn` (except `/collab` workers) sends one
+  unprompted when its task ends. Either way nothing is recorded as done until an agent other than the
   worker has checked it. A turn ending alone does not mean the task is done.
 - **Cleanup candidates** — idle for 6 hours or more, no TODO item, nothing waiting for the user, not a
   `/collab` worker (its caller closes it); the Sessions panel groups them as `정리 후보`. At the morning
@@ -169,13 +177,18 @@ and leave one line in the conversation; do not react to that line.
      as the session's claim.
   3. The session's screen tail shows no running job and no unanswered question.
   4. `did` covers the TODO text and what the user asked for; anything in `remaining` has an owner.
+     Findings outside the task do not keep a session open: if `remaining` lists them, add each to
+     `결정 필요` as work to place and judge `ready` on the task alone.
   - All consistent and `ready` → `brief done <panel> --verified "<checks and result>"`, record it under
     `오늘 끝난 것` and in the timeline, tell the user in one line.
   - Any mismatch, `not-ready`, or something left without an owner → do not finish. Keep the pane, record
     the mismatch (`brief board --set mismatches=<day's total>`), and tell the user what the session said
     versus what you found, with the options.
-  - No report after the session's next turn, or a session that cannot receive messages → do the same
-    checks from the screen and the directories yourself and say the report is missing.
+  - `brief done` says the request could not be delivered (busy, approval prompt, pane gone, submit not
+    confirmed), or no report came after the session's next turn → do the same checks from the screen and
+    the directories yourself. Busy → try again on a later patrol. Otherwise, all checks pass and nothing
+    is left → `brief done <panel> --verified "no report; <checks and result>"`; anything left → keep it
+    open and record it, as above.
 - Asked for the current situation → update the desk document and say only what changed.
 
 ## Self-improvement

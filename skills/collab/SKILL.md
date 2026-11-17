@@ -1,6 +1,6 @@
 ---
 name: collab
-version: 4.1.0
+version: 4.1.1
 description: >
   Orchestrate dual-agent collaboration (Claude worker + Codex worker) on
   the same task by spawning two sib siblings, each in its own git
@@ -85,8 +85,9 @@ Identify the type in Phase 1 and follow the matching flow:
 - Slug collision: if `<base>-claude.env` or `<base>-codex.env` already
   exists in `~/.local/share/sib/state/`, fail with the existing-slug
   message and ask the user to pick a different base.
-- Workers are spawned **without** `--report`: the caller owns their
-  lifecycle, so they must not report to the desk on their own.
+- Workers get no completion contract: sib omits it for `--worktree`
+  spawns because the caller owns their lifecycle, so they never report
+  to the desk on their own. Do not add `--report`.
 - **The caller tears both workers down, always.** Every run ends with
   `sib kill` on both workers — after Phase 5, or as soon as the run
   stops early (see "Stopping early"). A collab that leaves its panes

@@ -5,6 +5,7 @@
 - **Deciders**: maintainer (with Claude)
 - **Supersedes**: none
 - **Amends**: [ADR-003](./2026-11-13-cmux-session-desk-l1.md)
+- **Amended by**: [ADR-005](./2026-11-17-one-session-one-task.md)
 
 ## Context
 

@@ -6,13 +6,16 @@
                             Claude·Codex 가 함께 묶인 세션에는 collab 이름이 붙는다.
   brief teams               collab 묶음 목록(JSON).
   brief desk                데스크(orch) 세션의 panel id. 워커가 done-report 를 보낼 주소(없으면 exit 1).
+  brief note <한 줄>         목표 밖에서 발견한 일을 고치지 않고 데스크에 넘긴다. 다음 순찰에서 데스크가
+                            `결정 필요`에 올리고, 승인되면 새 세션에 배치한다.
   brief plan < plan.json    TODO 목록을 Sessions 패널 맨 위에 올린다.
                             입력: [{"panel": "<panel id>", "do": "다음 한 수"}, ...] (우선순위 순)
   brief add <panel> <할 일>  목록 끝에 항목 하나를 추가한다.
   brief go <번호|panel|이름> 그 세션의 pane 으로 이동하고 깜빡인다. 이름은 제목 일부면 된다.
   brief ping <번호|panel>   이동 없이 깜빡이기만 한다.
   brief done <번호|panel|이름|here>
-                            완료 검토를 시작한다: 그 세션에 완료 보고를 요청한다. 세션은 한 일·산출물·
+                            완료 검토를 시작한다: 그 세션의 입력창에 완료 보고 요청을 직접 넣는다(멈춘 세션도
+                            바로 턴을 시작한다. 못 넣으면 이유를 바로 알린다). 세션은 한 일·산출물·
                             미커밋·남은 일을 데스크(orch)에 보고하고 열린 채로 기다린다.
                             --verified "<검토 기록>"  데스크가 보고를 실제와 대조한 뒤 부른다: 완료 표시,
                                     기록, pane 닫기 (--keep 을 같이 주면 pane 은 둔다).
@@ -60,6 +63,7 @@ def local_env(key, default):
 
 DESK_DIR = local_env("BRIEF_DESK_DIR", os.path.join(HOME, ".local/share/cmux/desk"))  # 데스크가 뜨는 폴더
 PATROL = os.path.join(HOME, ".cache/cmux/brief-patrol.json")
+NOTES = os.path.join(HOME, ".cache/cmux/brief-notes.jsonl")  # 세션이 `brief note` 로 데스크에 올린 곁가지
 VIEW = os.path.join(HOME, ".cache/cmux/brief-view.json")
 NO_MAX = os.path.join(HOME, ".cache/cmux/no-maximize")
 PATROL_MIN = float(os.environ.get("BRIEF_PATROL_MIN", "10")) * 60
@@ -518,6 +522,10 @@ def patrol(read):
                 st["pending"] = {k: v for k, v in st["pending"].items() if v["panel"] != panel}
                 st["pending"][panel + ":closed"] = {"panel": panel, "title": old["title"], "what": "closed", "at": now}
     st["snap"] = snap
+    try:
+        notes = [json.loads(l) for l in open(NOTES) if l.strip()]
+    except (OSError, ValueError):
+        notes = []
     if read:
         rc, plan = recaps(ss), load_plan()
         num = {it["panel"]: n for n, it in enumerate(plan["items"], 1) if not it["done"]}
@@ -530,15 +538,20 @@ def patrol(read):
             if ev["what"] == "new":
                 row["cwd"] = x.get("cwd")
             out.append({k: v for k, v in row.items() if v is not None})
+        for n in notes:  # 세션이 목표 밖에서 발견해 데스크에 넘긴 일
+            out.append({k: v for k, v in {"ev": "note", "panel": n.get("panel"), "title": n.get("title"),
+                                          "cwd": n.get("cwd"), "note": n.get("text")}.items() if v})
+        if notes:
+            open(NOTES, "w").close()
         st["pending"] = {}
         st["desk"] = desk  # 순찰을 읽은 데스크만 깨운다(이 기능을 모르는 예전 데스크는 건드리지 않는다)
         for row in out:  # 한 줄에 한 건(JSONL)
             print(json.dumps(row, ensure_ascii=False, separators=(",", ":")))
-    elif st["pending"] and desk and st.get("desk") == desk:
+    elif (st["pending"] or notes) and desk and st.get("desk") == desk:
         wait = st["notified"] + PATROL_MIN - now
         if wait <= 0:
             r = cmux("agent", "message", desk, "--from", "orch-patrol", "--",
-                     f"patrol {len(st['pending'])}")
+                     f"patrol {len(st['pending']) + len(notes)}")
             if r.returncode == 0:
                 st["notified"] = now
         elif now >= st.get("retry", 0):  # 아직 이르면, 때가 됐을 때 한 번 더 돌도록 예약한다
@@ -626,29 +639,45 @@ def desk_panel():
     return next((x["panel"] for x in cand if x["cwd"] == home), cand[0]["panel"] if cand else None)
 
 
+DELIVER = next((p for p in (
+    os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "skills", "pane-msg", "scripts", "pane-deliver.sh"),
+    os.path.join(HOME, ".claude/skills/pane-msg/scripts/pane-deliver.sh")) if os.access(p, os.X_OK)), None)
+DELIVER_FAIL = {3: "승인 대기 화면이 떠 있습니다", 4: "세션이 일하는 중입니다(끝난 뒤 다시)",
+                5: "입력은 했지만 턴 시작을 확인하지 못했습니다(화면 확인)", 6: "pane 이 없습니다"}
+
+
 def request_close(s):
     """세션에 완료 보고를 요청한다. 세션은 보고만 하고 닫지 않는다: 데스크가 보고를 실제와 대조한 뒤
-    `brief done <panel> --verified "<기록>"` 으로 완료 처리한다. 못 보냈으면 이유를 돌려준다."""
-    if s["agent"] != "claude":
-        return (f"보고 요청 못 보냄: {s['agent']} 세션은 메시지를 받지 못합니다. 데스크가 화면과 작업 폴더를 직접 "
-                "확인한 뒤 --verified 로 완료 처리하세요")
-    me = os.environ.get("CMUX_PANEL_ID")
-    desk = desk_panel() or me
+    `brief done <panel> --verified "<기록>"` 으로 완료 처리한다. 못 보냈으면 이유를 돌려준다.
+
+    요청은 cmux 메시지가 아니라 그 pane 의 입력창에 직접 넣는다(pane-deliver). 메시지 대기열은 받는
+    세션의 턴이 끝날 때만 비워져, 멈춘 세션에는 끝내 도착하지 않는다(11-16: 4건 모두 queued).
+    입력은 멈춘 세션에 바로 새 턴을 시작시키고, 실패하면 그 자리에서 이유를 돌려준다."""
+    me = (os.environ.get("CMUX_PANEL_ID") or "").lower()
+    desk = desk_panel()
     to = f"`cmux agent message {desk} \"<reply>\"`" if desk and desk.lower() != s["panel"].lower() else "this pane"
     text = ("done-request: this session's task looks finished (the user called it done, or it has been idle for hours and "
             "the desk is closing finished sessions). Reply `ready` only if nothing the user asked for is left; otherwise "
-            "`not-ready` and the pane stays open. Before it is recorded as done and the pane is closed, the desk agent "
-            "cross-checks your report against reality, so report facts, not memory: run "
-            "`git status` (and `git log -3 --oneline`) in every directory this session created or edited files in.\n"
-            f"reply to {to} in this shape, then stay open (the desk closes the pane after checking; do not close it yourself):\n"
-            "`done-report: ready|not-ready` then one line each:\n"
-            "- did: <what was done and the result>\n"
-            "- artifacts: <absolute paths, commits, links>\n"
-            "- uncommitted: <paths per directory, or none> · unpushed: <commits, or none>\n"
-            "- running: <background jobs/pending answers, or none>\n"
-            "- remaining: <what is left or must be handed off, or none>")
-    r = cmux("agent", "message", s["panel"], "--", text)
-    return "보고 요청 못 보냄: " + (r.stderr or r.stdout).strip() if r.returncode else None
+            "`not-ready` and the pane stays open. Findings outside the task do not count as remaining: register each with "
+            "`brief note \"<one line>\"` and leave them. Before it is recorded as done and the pane is closed, the desk "
+            "agent cross-checks your report against reality, so report facts, not memory: run `git status` (and "
+            "`git log -3 --oneline`) in every directory this session created or edited files in. "
+            f"Reply to {to} in this shape, then stay open (the desk closes the pane after checking; do not close it "
+            "yourself): `done-report: ready|not-ready` then one line each: did: <what was done and the result> / "
+            "artifacts: <absolute paths, commits, links> / uncommitted: <paths per directory, or none> · unpushed: "
+            "<commits, or none> / running: <background jobs, pending answers, or none> / remaining: <what is left of "
+            "this task, or none>")
+    if s["panel"].lower() == me:  # 자기 자신: 입력창에 넣으면 지금 턴과 엉킨다. 출력으로 돌려준다
+        print(text)
+        return None
+    if not DELIVER:
+        return "보고 요청 못 보냄: pane-deliver.sh 가 없습니다(L1 install 확인). 데스크가 직접 확인 후 --verified"
+    r = subprocess.run([DELIVER, "--surface", s["panel"], "--workspace", s["workspace"], "--", text],
+                       capture_output=True, text=True)
+    if r.returncode == 0:
+        return None
+    why = DELIVER_FAIL.get(r.returncode) or (r.stderr or r.stdout).strip()
+    return f"보고 요청 못 보냄: {why}. 데스크가 화면과 작업 폴더를 직접 확인한 뒤 --verified 로 완료 처리하세요"
 
 
 def log_closed(s, note, closed):
@@ -695,6 +724,17 @@ def main(argv):
             if x["panel"].lower() in rc:
                 x["recap"] = rc[x["panel"].lower()]
         print(json.dumps(ss, ensure_ascii=False, indent=1))
+    elif cmd == "note" and len(argv) > 2:  # 목표 밖의 발견을 데스크에 넘긴다(고치지 않고)
+        text = " ".join(argv[2:]).strip()
+        me = os.environ.get("CMUX_PANEL_ID", "")
+        s = next((x for x in sessions() if x["panel"].lower() == me.lower()), {}) if me else {}
+        os.makedirs(os.path.dirname(NOTES), exist_ok=True)
+        with open(NOTES, "a") as f:
+            f.write(json.dumps({"at": int(time.time()), "panel": s.get("panel") or me, "title": s.get("title", ""),
+                                "cwd": s.get("cwd") or os.getcwd().replace(HOME, "~"), "text": text},
+                               ensure_ascii=False) + "\n")
+        patrol(False)
+        print("데스크에 넘김: " + text + " (이 세션은 본래 일을 계속하세요)")
     elif cmd == "desk":  # 데스크(orch) panel id. 워커가 done-report 를 보낼 주소. 없으면 exit 1
         d = desk_panel()
         if not d:

@@ -1,6 +1,6 @@
 ---
 name: dispatch
-version: 0.9.0
+version: 0.10.0
 description: >
   Spawn a scoped sibling agent session via `sib` (cmux pane, shared
   working tree — no worktree by default), placing it in the workspace
@@ -75,10 +75,14 @@ Do not use this skill for:
   there. Resolve the target workspace explicitly (Step 3) before spawning.
 - Do not pass `--worktree` to sib — that's reserved for /collab. A
   dispatched sibling shares the target directory's working tree.
-- Always pass `--report`. sib appends the completion contract to the
-  task: when the sibling finishes, it sends a `done-report:` to the desk
-  (orch) and stays open; the desk cross-checks it and closes the pane.
-  Without it, finished siblings stay open indefinitely.
+- Never pass `--no-report`. sib appends the completion contract by
+  default: the sibling stays inside its task, hands findings outside it
+  to the desk with `brief note`, and when finished sends a
+  `done-report:` to the desk (orch) and stays open; the desk
+  cross-checks it and closes the pane.
+- Every task ends with a `Done when: <observable end point>` line
+  (Step 4). It is where the sibling stops; without it a session keeps
+  absorbing follow-up work.
 - Never tell the user a workspace "does not exist" until the reference
   has gone through stableId resolution (Step 3a.0). A
   `cmux://workspace/<UUID>` link carries a stableId that every cmux CLI
@@ -237,10 +241,16 @@ detached `keep_alive` daemon. So:
 - **fire-and-forget** = the user does not plan to look at the pane; the
   report + desk review is the only follow-up
 
-Both modes use the same sib invocation (`--report` included); the
+Both modes use the same sib invocation (completion contract included); the
 difference is post-task intent, recorded in the message to the user.
 A pane outlives its task only while the desk review finds something
 left (`not-ready`).
+
+**End point** — append one line to the description: `Done when:
+<observable end point>` — an artifact that exists, a test that passes, a
+report that was sent, a PR that is open. Derive it from the request;
+never ask. If the request names several outcomes, name all of them in
+that one line; anything beyond it is a new task for the desk.
 
 Mode is **always derived, never prompted** — proceed immediately with a
 one-line status update before the request:
@@ -283,7 +293,8 @@ if [[ "$description" == *$'\n'* ]] || (( $(printf '%s' "$description" | wc -c) >
   first_msg="$brief 를 읽고 그 작업을 진행해줘."
 fi
 
-sib spawn "$slug" --report $WORKER_FLAG $YOLO_FLAG "${PLACEMENT[@]}" -- "$first_msg"
+# The completion contract is sib's default; never pass --no-report here.
+sib spawn "$slug" $WORKER_FLAG $YOLO_FLAG "${PLACEMENT[@]}" -- "$first_msg"
 rc=$?
 ```
 
@@ -299,7 +310,7 @@ rc=$?
 5. Waits up to ~30 s for the agent's own input box (marker at line
    start, plus claude's input-box rule line — a shell prompt's `❯` does
    not count), types the task — with the completion contract appended
-   (`--report`) — confirms its head AND tail are visible, submits, and
+   (sib's default) — confirms its head AND tail are visible, submits, and
    confirms a work signal
 6. Exits 0 with `✓ … [booted]` only when all of that held. Otherwise
    exits 5 with `✗ … prompt <not sent | not submitted | unconfirmed>` —
@@ -316,10 +327,9 @@ Branch on `rc`:
      to see the input box.
   2. If text is sitting in the input box, clear it:
      `cmux send-key --surface <surface> --workspace <ws> ctrl+c`.
-  3. Re-deliver with `sib send "$slug" "$first_msg"` — it delegates to
-     `/pane-msg`'s verified delivery and exits 0 only on a confirmed
-     submit. (The completion contract is not re-appended; if `--report`
-     mattered, send it again after the task or `sib kill` and respawn.)
+  3. `sib kill "$slug"` and run Step 5 once more. A respawn re-appends
+     the completion contract; `sib send` would deliver the task without
+     it, leaving a session that never reports or closes.
   4. If that also fails, tell the user the sibling is up but idle, with
      the surface ref and what the screen shows.
 - **other non-zero** — spawn itself failed; print sib's error verbatim

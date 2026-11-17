@@ -20,7 +20,7 @@
 # Subcommands:
 #   sib spawn <slug> [--codex] [--yolo] [--base <branch>] [--worktree]
 #             [--workdir <path>] [--workspace <id|ref> | --new-workspace]
-#             [--report] [-- <prompt...>]
+#             [--no-report] [-- <prompt...>]
 #   sib list          (also prunes state of panes that are gone)
 #   sib send <slug> [--queue] <text...>
 #   sib kill <slug> [--keep-worktree]
@@ -71,7 +71,7 @@ spawn)
   # --yolo opts into autonomous mode (skip gates) — only for unattended work.
   agent="claude"; yolo=0
   base="HEAD"; do_worktree=0; prompt=""
-  workdir=""; target_ws=""; new_ws=0; report=0
+  workdir=""; target_ws=""; new_ws=0; report=1
   while (($#)); do case "$1" in
     --codex)            agent="codex" ;;
     --yolo)             yolo=1 ;;
@@ -80,7 +80,8 @@ spawn)
     --workdir|--cwd)    shift; workdir="${1:?--workdir needs a path}" ;;
     --workspace)        shift; target_ws="${1:?--workspace needs an id|ref}" ;;
     --new-workspace)    new_ws=1 ;;
-    --report)           report=1 ;;
+    --report)           report=1 ;;   # default; kept for older callers
+    --no-report)        report=0 ;;
     --)                 shift; prompt="$*"; break ;;
     *)                  die "unknown spawn arg: $1" ;;
   esac; shift || true; done
@@ -98,15 +99,18 @@ spawn)
       || die "sib '${slug}' already exists (sib kill ${slug} first)"
   fi
 
-  # --report: append the completion contract. The sibling reports to the desk
-  # (orch) when its task is done and stays open; the desk cross-checks the
-  # report and closes the pane. This is what keeps finished siblings from
-  # piling up. /collab workers do not use it — the collab caller owns their
-  # lifecycle (sib kill in its final phase).
+  # Completion contract (default on; --no-report or --worktree turns it off).
+  # The sibling stays inside its task, hands findings outside it to the desk
+  # with `brief note`, and reports to the desk (orch) when the task is done;
+  # the desk cross-checks the report and closes the pane. This is what keeps
+  # finished siblings from piling up and one session from absorbing many tasks.
+  # It lives here, not in /dispatch, because callers often run sib directly.
+  # --worktree siblings are /collab workers: the collab caller owns them.
+  (( do_worktree )) && report=0
   if (( report )) && [[ -n "${prompt}" ]]; then
     prompt="${prompt}
 
---- completion contract (from sib) --- When this task is finished — or nothing is left that you can do without the user — report once and stay open: run \`git status --short\` and \`git log -3 --oneline\` in every directory you edited, then send \`cmux agent message \"\$(brief desk)\" \"done-report: ready|not-ready\"\` with one line each: did / artifacts (absolute paths, commits, links) / uncommitted · unpushed / running (background jobs, pending questions) / remaining (what is left, and who owns it). Use not-ready when anything the user asked for is left undone. If \`brief desk\` prints nothing or the send fails, print the same report in this pane instead. Never close your own pane: the desk checks the report against reality and closes it."
+--- completion contract (from sib) --- Scope: this session does one task — the one above; if it has a 'Done when:' line, that is where it ends. Anything you find outside it (unrelated bugs, docs to fix, follow-up ideas) you do not fix and do not list as remaining: register each with \`brief note \"<one line: what and where>\"\` and carry on. When the task is finished — or nothing is left that you can do without the user — report once and stay open: run \`git status --short\` and \`git log -3 --oneline\` in every directory you edited, then send \`cmux agent message \"\$(brief desk)\" \"done-report: ready|not-ready\"\` with one line each: did / artifacts (absolute paths, commits, links) / uncommitted · unpushed / running (background jobs, pending questions) / remaining (what is left of this task, or none). Use not-ready when anything the user asked for is left undone. If \`brief desk\` prints nothing or the send fails, print the same report in this pane instead. Never close your own pane: the desk checks the report against reality and closes it."
   fi
 
   # Resolve the sibling's start directory.

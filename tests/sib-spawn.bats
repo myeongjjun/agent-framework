@@ -185,7 +185,7 @@ EOF
   # 'cd && exec' line has its own earlier enter — we check the PROMPT send is
   # followed by an enter, i.e. there is an enter AFTER the prompt send line.)
   export CMUX_STUB_PROMPT_ECHO="do the thing"
-  run "$SIB" spawn submit-order --workdir "$WORKDIR" -- "do the thing"
+  run "$SIB" spawn submit-order --workdir "$WORKDIR" --no-report -- "do the thing"
   [ "$status" -eq 0 ]
   send_line=$(grep -n "cmux send .*do the thing" "$CMUX_STUB_LOG" | head -1 | cut -d: -f1)
   last_enter=$(grep -n "cmux send-key .* enter" "$CMUX_STUB_LOG" | tail -1 | cut -d: -f1)
@@ -202,7 +202,7 @@ EOF
 do the thing
 tab to queue message
 working"
-  run "$SIB" spawn queued --codex --workdir "$WORKDIR" -- "do the thing"
+  run "$SIB" spawn queued --codex --workdir "$WORKDIR" --no-report -- "do the thing"
   [ "$status" -eq 0 ]
   # prompt text was placed in the box
   grep -q "cmux send .*do the thing" "$CMUX_STUB_LOG"
@@ -225,7 +225,7 @@ working"
   # starship's default prompt ends in '❯'. Typing the task into the shell
   # before claude takes the pty truncates it at MAX_CANON (1024 bytes).
   export CMUX_STUB_SCREEN="host  repo  main ❯ cd /x && exec claude"
-  run "$SIB" spawn shell-glyph --workdir "$WORKDIR" -- "do the thing"
+  run "$SIB" spawn shell-glyph --workdir "$WORKDIR" --no-report -- "do the thing"
   [ "$status" -eq 5 ]
   [[ "$output" == *"input box never appeared"* ]]
   # the prompt was never typed
@@ -235,7 +235,7 @@ working"
 @test "a prompt whose tail never shows up is not submitted" {
   export CMUX_STUB_SCREEN="❯ do the thing and then
 ──────────────────────"
-  run "$SIB" spawn truncated --workdir "$WORKDIR" -- "do the thing and then a long tail that got cut off"
+  run "$SIB" spawn truncated --workdir "$WORKDIR" --no-report -- "do the thing and then a long tail that got cut off"
   [ "$status" -eq 5 ]
   [[ "$output" == *"did not fully appear"* ]]
   # only the launch enter — no submit enter for a partial prompt
@@ -245,7 +245,7 @@ working"
 
 @test "newlines in the prompt are flattened (cmux send treats \\n as enter)" {
   export CMUX_STUB_PROMPT_ECHO="line one line two"
-  run "$SIB" spawn multiline --workdir "$WORKDIR" -- "line one
+  run "$SIB" spawn multiline --workdir "$WORKDIR" --no-report -- "line one
 line two"
   [ "$status" -eq 0 ]
   grep -q "cmux send .*line one line two" "$CMUX_STUB_LOG"
@@ -291,16 +291,34 @@ line two"
   [[ "$output" == *"wt "*"(dead)"* ]]
 }
 
-# --- --report completion contract --------------------------------------------
+# --- completion contract (default on) ---------------------------------------
 
-@test "--report appends the completion contract to the prompt" {
-  CMUX_STUB_PROMPT_ECHO="do the thing" CMUX_STUB_SCREEN=$'❯\n──────────\ndothething--- completioncontract ... closes it.\nworking' \
-    run "$SIB" spawn rep-on --report -- "do the thing"
-  grep -q "cmux send .*do the thing.*completion contract.*done-report" "$CMUX_STUB_LOG"
+# A screen that shows the head and tail of "do the thing" + contract, so the
+# landed check passes without waiting out its 30s cap.
+CONTRACT_SCREEN=$'❯\n──────────\ndothething---comple … trealityandclosesit.\nworking (esc to interrupt)'
+
+@test "the completion contract is appended by default" {
+  CMUX_STUB_SCREEN="$CONTRACT_SCREEN" run "$SIB" spawn rep-on -- "do the thing"
+  [ "$status" -eq 0 ]
+  grep -q "cmux send .*do the thing.*completion contract.*Done when.*brief note.*done-report" "$CMUX_STUB_LOG"
 }
 
-@test "without --report the prompt is sent unchanged" {
-  run "$SIB" spawn rep-off -- "the task prompt"
+@test "--report is still accepted (no-op, default)" {
+  CMUX_STUB_SCREEN="$CONTRACT_SCREEN" run "$SIB" spawn rep-old --report -- "do the thing"
+  [ "$status" -eq 0 ]
+  grep -q "completion contract" "$CMUX_STUB_LOG"
+}
+
+@test "--no-report sends the prompt unchanged" {
+  run "$SIB" spawn rep-off --no-report -- "the task prompt"
+  [ "$status" -eq 0 ]
+  ! grep -q "completion contract" "$CMUX_STUB_LOG"
+}
+
+@test "a --worktree sibling (collab worker) gets no contract" {
+  git -C "$WORKDIR" init -q && git -C "$WORKDIR" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+  cd "$WORKDIR"
+  run "$SIB" spawn rep-wt --worktree -- "the task prompt"
   [ "$status" -eq 0 ]
   ! grep -q "completion contract" "$CMUX_STUB_LOG"
 }
