@@ -87,7 +87,14 @@ spawn)
   esac; shift || true; done
   [[ -n "${target_ws}" ]] && (( new_ws )) && die "--workspace and --new-workspace are mutually exclusive"
   if [[ "${agent}" == "codex" ]]; then
-    agent_cmd="codex"; (( yolo )) && agent_cmd="codex --dangerously-bypass-approvals-and-sandbox"
+    # --approve-for-me (approvals_reviewer=auto_review): Codex's sandbox blocks
+    # network, so every kubectl/gh/ClickHouse read escalates; without this each
+    # one waits on the user pressing y. The auto-reviewer approves escalations
+    # it judges in-policy and asks the user only on rejection — Codex's
+    # counterpart to Claude's auto mode. ~/.codex/hooks.json guard hooks still
+    # run first (prod kubectl writes, ClickHouse DDL, ...).
+    agent_cmd="codex --approve-for-me"
+    (( yolo )) && agent_cmd="codex --dangerously-bypass-approvals-and-sandbox"
     ready_marker="›"
   else
     agent_cmd="claude"; (( yolo )) && agent_cmd="claude --dangerously-skip-permissions"

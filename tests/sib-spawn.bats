@@ -355,3 +355,15 @@ BOOT_SCREEN=$'❯ \n───────────────────�
   # confirmed on the first check: no retry enter
   [ "$(grep -c "cmux send-key .* enter" "$CMUX_STUB_LOG")" -eq 2 ]
 }
+
+@test "codex sibling boots with the auto-reviewer, not per-command y/n prompts" {
+  run "$SIB" spawn rev --codex --workdir "$WORKDIR" --no-report
+  [ "$status" -eq 0 ]
+  grep -q "exec codex --approve-for-me" "$CMUX_STUB_LOG"
+}
+
+@test "codex --yolo still bypasses sandbox and approvals" {
+  run "$SIB" spawn rev-yolo --codex --yolo --workdir "$WORKDIR" --no-report
+  [ "$status" -eq 0 ]
+  grep -q "exec codex --dangerously-bypass-approvals-and-sandbox" "$CMUX_STUB_LOG"
+}

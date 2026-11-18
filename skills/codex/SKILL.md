@@ -72,7 +72,8 @@ sib spawn "codex-<slug>" --codex -- "<task description>"
 
 `sib spawn` does:
 1. Open a new cmux pane (right split) in the caller's working directory
-2. Boot `codex` in that pane
+2. Boot `codex --approve-for-me` in that pane (escalations go to Codex's
+   auto-reviewer, not a y/n prompt; `--yolo` bypasses sandbox + approvals)
 3. Poll for the codex marker `›` (race-prevention)
 4. Send the initial prompt
 5. Persist state to `~/.local/share/sib/state/<slug>.env`
