@@ -25,7 +25,8 @@
 #   4 refused: pane busy (no --queue) 5 submitted but unconfirmed — inspect pane
 #   6 target pane gone
 set -euo pipefail
-export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+# SIB_EXTRA_PATH: test seam (a cmux stub dir), same as bin/sib.
+export PATH="${SIB_EXTRA_PATH:+${SIB_EXTRA_PATH}:}/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 export CMUX_QUIET=1
 
 STATE_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/sib/state"
@@ -116,6 +117,17 @@ if (( dry_run )); then
   exit 0
 fi
 
+# Paste placeholders on screen. A long send arrives in chunks and the agent
+# folds a big chunk into one ("[Pasted text #1]" claude, "[Pasted Content
+# 1234 chars]" codex), so the message head is never drawn (2026-11-18
+# incident: every long done-request and spawn prompt failed the landed check).
+# A placeholder that was not there before the send proves the head reached
+# the agent's TUI — a pty still in a shell never draws one.
+paste_ids() { tr -d ' \n' | grep -oE '\[Paste(dtext#[0-9]+|dContent[0-9]+chars)' | sort -u || true; }
+# Claude's input box drawn empty (marker + U+00A0/space only): the text left it.
+input_empty() { LC_ALL=C grep -qE $'^\xe2\x9d\xaf(\xc2\xa0| )*$'; }
+pastes_before="$(read_screen 200 | paste_ids || true)"
+
 # 1) Put the text in the input box (no enter yet).
 cmux send --surface "${surface}" --workspace "${workspace}" "${msg_flat}" >/dev/null
 
@@ -132,8 +144,16 @@ landed=0
 for i in $(seq 1 60); do
   scr="$(read_screen 200 || true)"
   scr_ns="$(printf '%s' "${scr}" | tr -d ' \n')"
-  if grep -qF -- "${head_needle}" <<<"${scr_ns}" && grep -qF -- "${tail_needle}" <<<"${scr_ns}" \
-     && ! grep -qF 'tab to queue message' <<<"${scr}"; then
+  new_paste="$(comm -13 <(printf '%s\n' "${pastes_before}") <(paste_ids <<<"${scr}") | grep . || true)"
+  head_ok=0 tail_ok=0
+  grep -qF -- "${head_needle}" <<<"${scr_ns}" && head_ok=1
+  grep -qF -- "${tail_needle}" <<<"${scr_ns}" && tail_ok=1
+  if [[ -n "${new_paste}" ]]; then
+    head_ok=1
+    # The whole message folded: the input ends with the placeholder.
+    grep -qE '\[Paste(dtext#[0-9]+|dContent[0-9]+chars)[^]]*\]─' <<<"${scr_ns}" && tail_ok=1
+  fi
+  if (( head_ok && tail_ok )) && ! grep -qF 'tab to queue message' <<<"${scr}"; then
     landed=1; break
   fi
   if (( i <= 10 )); then sleep 0.1; else sleep 0.5; fi
@@ -157,12 +177,15 @@ fi
 # late-clearing queue can eat the first enter), then keep polling up to
 # ~8s — prompt-submit hooks (e.g. agentmemory) can delay the work signal
 # by several seconds after a successful submit (observed live).
+# An emptied input box also proves the submit: a short turn can finish before
+# the first check, leaving no work signal to see.
+submitted() { local s; s="$(read_screen 20)"; busy_signal "$s" || input_empty <<<"$s"; }
 sleep 1
-if ! busy_signal "$(read_screen 20)"; then
+if ! submitted; then
   cmux send-key --surface "${surface}" --workspace "${workspace}" enter >/dev/null
 fi
 for _ in $(seq 1 14); do
-  if busy_signal "$(read_screen 20)"; then
+  if submitted; then
     echo "DELIVERED: submitted to ${surface} in ${workspace} (work signal confirmed)."
     exit 0
   fi

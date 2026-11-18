@@ -642,8 +642,8 @@ def desk_panel():
 DELIVER = next((p for p in (
     os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "skills", "pane-msg", "scripts", "pane-deliver.sh"),
     os.path.join(HOME, ".claude/skills/pane-msg/scripts/pane-deliver.sh")) if os.access(p, os.X_OK)), None)
-DELIVER_FAIL = {3: "승인 대기 화면이 떠 있습니다", 4: "세션이 일하는 중입니다(끝난 뒤 다시)",
-                5: "입력은 했지만 턴 시작을 확인하지 못했습니다(화면 확인)", 6: "pane 이 없습니다"}
+DELIVER_FAIL = {3: "승인 대기 화면이 떠 있습니다", 4: "세션이 일하는 중입니다(끝난 뒤 다시)", 6: "pane 이 없습니다"}
+# 5 는 두 경우(글이 입력 칸에 다 안 보임 / 제출 뒤 턴 시작 미확인)라 pane-deliver 의 설명을 그대로 붙인다
 
 
 def request_close(s):
@@ -676,7 +676,7 @@ def request_close(s):
                        capture_output=True, text=True)
     if r.returncode == 0:
         return None
-    why = DELIVER_FAIL.get(r.returncode) or (r.stderr or r.stdout).strip()
+    why = DELIVER_FAIL.get(r.returncode) or (r.stderr or r.stdout).strip() or f"pane-deliver rc={r.returncode}"
     return f"보고 요청 못 보냄: {why}. 데스크가 화면과 작업 폴더를 직접 확인한 뒤 --verified 로 완료 처리하세요"
 
 

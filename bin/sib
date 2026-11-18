@@ -225,6 +225,14 @@ spawn)
   elif [[ -n "${prompt}" ]]; then
     # cmux send treats \n as Enter, which would submit a partial prompt.
     prompt="$(printf '%s' "${prompt}" | tr '\n\t' '  ')"
+    # Paste placeholders on screen. A long send arrives in chunks and the
+    # agent folds a big chunk into one ("[Pasted text #1]" claude, "[Pasted
+    # Content 1234 chars]" codex), so the prompt head is never drawn
+    # (2026-11-18 incident: long spawn prompts failed the landed check). A
+    # placeholder that was not there before the send proves the head reached
+    # the agent's TUI — a pty still in a shell never draws one.
+    paste_ids() { tr -d ' \n' | grep -oE '\[Paste(dtext#[0-9]+|dContent[0-9]+chars)' | sort -u || true; }
+    pastes_before="$(cmux read-screen --surface "${surface}" --workspace "${ws}" --lines 200 2>/dev/null | paste_ids || true)"
     # Put the prompt in the input box first (no enter yet).
     cmux send --surface "${surface}" --workspace "${ws}" "${prompt}"
     # Confirm the text landed, then submit. Three traps this guards against:
@@ -247,7 +255,16 @@ spawn)
     for i in $(seq 1 60); do
       scr="$(cmux read-screen --surface "${surface}" --workspace "${ws}" --lines 200 2>/dev/null || true)"
       scr_ns="$(printf '%s' "${scr}" | tr -d ' \n')"
-      if grep -qF -- "${head_needle}" <<<"${scr_ns}" && grep -qF -- "${tail_needle}" <<<"${scr_ns}"; then
+      new_paste="$(comm -13 <(printf '%s\n' "${pastes_before}") <(paste_ids <<<"${scr}") | grep . || true)"
+      head_ok=0 tail_ok=0
+      grep -qF -- "${head_needle}" <<<"${scr_ns}" && head_ok=1
+      grep -qF -- "${tail_needle}" <<<"${scr_ns}" && tail_ok=1
+      if [[ -n "${new_paste}" ]]; then
+        head_ok=1
+        # The whole prompt folded: the input ends with the placeholder.
+        grep -qE '\[Paste(dtext#[0-9]+|dContent[0-9]+chars)[^]]*\]─' <<<"${scr_ns}" && tail_ok=1
+      fi
+      if (( head_ok && tail_ok )); then
         landed=1
         if [[ "${agent}" == "codex" ]]; then
           grep -qF "tab to queue message" <<<"${scr}" || break
@@ -266,9 +283,13 @@ spawn)
       # Confirm submission; if no work signal appeared (queue cleared a beat
       # late, autocomplete ate the first enter), send one more enter. Newer
       # claude builds show only a spinner line ('✻ Thinking…') while working.
+      # An emptied claude input box (marker + U+00A0/space only) also proves
+      # the submit: a short turn can finish before the first check.
       work_signal() {
-        cmux read-screen --surface "${surface}" --workspace "${ws}" --lines 20 2>/dev/null \
-          | grep -qiE 'working|esc to interrupt|^[[:space:]]*(·|✢|✳|✶|✻|✽|\*|\+|•)[[:space:]]+[A-Z][a-z]+(…|\.\.\.)'
+        local s
+        s="$(cmux read-screen --surface "${surface}" --workspace "${ws}" --lines 20 2>/dev/null)" || return 1
+        grep -qiE 'working|esc to interrupt|^[[:space:]]*(·|✢|✳|✶|✻|✽|\*|\+|•)[[:space:]]+[A-Z][a-z]+(…|\.\.\.)' <<<"${s}" \
+          || { [[ "${agent}" != codex ]] && LC_ALL=C grep -qE $'^\xe2\x9d\xaf(\xc2\xa0| )*$' <<<"${s}"; }
       }
       sleep 1
       work_signal || cmux send-key --surface "${surface}" --workspace "${ws}" enter

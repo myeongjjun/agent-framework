@@ -48,7 +48,12 @@ case "$sub" in
     while (($#)); do [[ "$1" == --surface ]] && { touch "${log}.closed-$2"; break; }; shift; done
     ;;
   send|send-key|close-workspace)
-    : # no stdout needed; the log line above is the assertion target
+    # no stdout needed; the log line above is the assertion target. Count
+    # sends and enters so read-screen can change what the pane shows after
+    # them (CMUX_STUB_SCREEN_AFTER_SENDS / _AFTER_ENTERS below).
+    [[ "$sub" == send ]] && echo x >> "${log}.sends"
+    [[ "$sub" == send-key && " $* " == *" enter "* ]] && echo x >> "${log}.enters"
+    :
     ;;
   read-screen)
     for a in "$@"; do [[ -e "${log}.closed-${a}" ]] && exit 1; done
@@ -58,7 +63,15 @@ case "$sub" in
     # (b) a work signal ("working") after enter. Emit a screen that satisfies
     # all three by default. Override via CMUX_STUB_SCREEN to simulate states
     # (e.g. a queued codex pane).
-    if [[ -n "${CMUX_STUB_SCREEN:-}" ]]; then
+    # Staged screens: after N enters show CMUX_STUB_SCREEN3, else after N
+    # sends show CMUX_STUB_SCREEN2 (e.g. the text appears only once typed).
+    sends=$( (cat "${log}.sends" 2>/dev/null || true) | wc -l | tr -d ' ')
+    enters=$( (cat "${log}.enters" 2>/dev/null || true) | wc -l | tr -d ' ')
+    if [[ -n "${CMUX_STUB_SCREEN_AFTER_ENTERS:-}" ]] && (( enters >= CMUX_STUB_SCREEN_AFTER_ENTERS )); then
+      printf '%s\n' "${CMUX_STUB_SCREEN3}"
+    elif [[ -n "${CMUX_STUB_SCREEN_AFTER_SENDS:-}" ]] && (( sends >= CMUX_STUB_SCREEN_AFTER_SENDS )); then
+      printf '%s\n' "${CMUX_STUB_SCREEN2}"
+    elif [[ -n "${CMUX_STUB_SCREEN:-}" ]]; then
       printf '%s\n' "${CMUX_STUB_SCREEN}"
     else
       printf '%s\n' "${CMUX_STUB_READY:-❯}"

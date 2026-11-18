@@ -322,3 +322,36 @@ CONTRACT_SCREEN=$'❯\n──────────\ndothething---comple … t
   [ "$status" -eq 0 ]
   ! grep -q "completion contract" "$CMUX_STUB_LOG"
 }
+
+# --- folded paste + fast turn (2026-11-18 incident) --------------------------
+# A long prompt arrives in chunks; claude folds a big chunk into
+# "[Pasted text #N]", so the head is never drawn. Stage the screens: boot box
+# (before the prompt send), folded input (after it), finished turn (after the
+# submit enter).
+BOOT_SCREEN=$'❯ \n──────────────────────'
+
+@test "a folded paste (new placeholder + tail) counts as landed" {
+  export CMUX_STUB_SCREEN="$BOOT_SCREEN" CMUX_STUB_SCREEN_AFTER_SENDS=2 \
+    CMUX_STUB_SCREEN2=$'❯ [Pasted text #1]way and the tail end of it\n──────────────────────' \
+    CMUX_STUB_SCREEN_AFTER_ENTERS=2 CMUX_STUB_SCREEN3=$'✻ Cooking…\n──────────────────────\n❯ '
+  run "$SIB" spawn folded --workdir "$WORKDIR" --no-report -- "a long head that the agent folded away and the tail end of it"
+  [ "$status" -eq 0 ]
+  [ "$(grep -c "cmux send-key .* enter" "$CMUX_STUB_LOG")" -eq 2 ]
+}
+
+@test "a placeholder already on screen before the send proves nothing" {
+  export CMUX_STUB_SCREEN=$'❯ [Pasted text #1]way and the tail end of it\n──────────────────────'
+  run "$SIB" spawn stale-paste --workdir "$WORKDIR" --no-report -- "a long head that the agent folded away and the tail end of it"
+  [ "$status" -eq 5 ]
+  [[ "$output" == *"did not fully appear"* ]]
+}
+
+@test "an emptied input box confirms a turn that ended before the check" {
+  export CMUX_STUB_SCREEN="$BOOT_SCREEN" CMUX_STUB_SCREEN_AFTER_SENDS=2 \
+    CMUX_STUB_SCREEN2=$'❯ quick one\n──────────────────────' \
+    CMUX_STUB_SCREEN_AFTER_ENTERS=2 CMUX_STUB_SCREEN3=$'⏺ OK\n✻ Cooked for 1s · done\n──────────────────────\n❯ \n──────────────────────'
+  run "$SIB" spawn quick --workdir "$WORKDIR" --no-report -- "quick one"
+  [ "$status" -eq 0 ]
+  # confirmed on the first check: no retry enter
+  [ "$(grep -c "cmux send-key .* enter" "$CMUX_STUB_LOG")" -eq 2 ]
+}
