@@ -13,6 +13,7 @@
 | [003](2026-11-13-cmux-session-desk-l1.md) | 2026-11-13 | cmux session desk (orch) promoted to L1 |
 | [004](2026-11-13-session-cleanup-self-report.md) | 2026-11-13 | Finished sessions report themselves and the desk closes them |
 | [005](2026-11-17-one-session-one-task.md) | 2026-11-17 | One session, one task — contract by default, direct done-requests, `brief note` |
+| [006](2026-11-13-sib-trust-allowlist.md) | 2026-11-13 | sib pre-trusts allowlisted start dirs for claude siblings |
 
 ### Proposed
 
