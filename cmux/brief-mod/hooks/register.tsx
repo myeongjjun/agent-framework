@@ -113,6 +113,13 @@ async function refresh($: EngineInterface): Promise<void> {
 // 결정 줄이 가리키는 TODO 번호("…(1번)"). 없으면 0.
 export const todoOf = (text: string): number => Number(/\((\d+)번\)/.exec(text)?.[1] ?? 0)
 
+// 결정 줄의 머리. 결정에는 따로 번호를 매기지 않는다: 화면에 보이는 번호는 TODO 번호 하나뿐이라
+// 사용자가 "N번"이라고 하면 늘 같은 세션을 가리킨다. 세션 없는 결정은 번호 없이 글머리표만 둔다.
+export const decisionHead = (text: string, full = false): string => {
+  const n = todoOf(text)
+  return `${n > 0 ? `${n}번 ` : ''}${full ? text : text.split(' — ')[0]}`
+}
+
 // brief 를 실행하고 한 줄 결과를 알림으로 보여 준다(패널·띠에서 눌렀을 때).
 async function press($: EngineInterface, argv: string[]): Promise<void> {
   try {
@@ -181,7 +188,7 @@ export const register: Register = on => {
           </Text>
         )}
         {shown.map((text, i) => {
-          const label = `▸ ${i + 1}. ${text.split(' — ')[0]}`
+          const label = `▸ ${decisionHead(text)}`
           const n = todoOf(text)
           // 세션이 딸린 결정은 누르면 그 pane 으로 간다. 띠에는 단축키를 두지 않는다(빈 프롬프트의 숫자 입력을 가로챈다).
           return n > 0
@@ -250,7 +257,7 @@ export const register: Register = on => {
           {view.decisions.length === 0 && <Text dimColor>  없음</Text>}
           {view.decisions.map((text, i) => (
             <Box flexDirection="column">
-              <Text wrap="wrap" color="warning">{`${i + 1}. ${text}`}</Text>
+              <Text wrap="wrap" color="warning">{`· ${decisionHead(text, true)}`}</Text>
               {todoOf(text) > 0 && (
                 <Button key={`dec-go-${i}`} plain dimColor onPress={go(todoOf(text))}>{`   → ${todoOf(text)}번 세션으로 가기`}</Button>
               )}

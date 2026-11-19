@@ -4,6 +4,10 @@
   brief sessions            열려 있는 에이전트 세션 요약(JSON). panel 이 세션의 고유 키.
                             recap 은 그 세션이 마지막으로 남긴 요약(어디까지 했고 다음이 뭔지).
                             Claude·Codex 가 함께 묶인 세션에는 collab 이름이 붙는다.
+                            사실 항목(추측 없이 기록에서 읽은 값): input_at(그 pane 의 마지막 사용자 입력),
+                            desk_msg_at·started(데스크가 마지막으로 일을 넘긴 시각과 그 뒤 턴이 시작됐는지),
+                            question(마지막 답이 질문으로 끝났고 그 뒤 입력이 없을 때 그 줄),
+                            uncommitted·unpushed(cwd 저장소의 미커밋 파일 수·미push 커밋 수).
   brief teams               collab 묶음 목록(JSON).
   brief desk                데스크(orch) 세션의 panel id. 워커가 done-report 를 보낼 주소(없으면 exit 1).
   brief note <한 줄>         목표 밖에서 발견한 일을 고치지 않고 데스크에 넘긴다. 다음 순찰에서 데스크가
@@ -24,9 +28,12 @@
   brief patrol              순찰 신호. 지난번 이후 턴이 끝났거나 닫히거나 새로 생긴 세션을 모아 두고,
                             바뀐 것이 있으면 데스크(orch)에 `patrol <건수>` 를 보낸다(기본 10분에 한 번,
                             BRIEF_PATROL_MIN).
-                            cmux 자동화가 세션의 턴이 끝날 때마다 부른다.
+                            cmux 자동화가 세션의 턴이 끝날 때와 pane 이 닫힐 때마다 부른다. 데스크 검토 없이
+                            닫힌 pane 은 그 자리에서 대조해(cwd 의 미커밋·미push, 마지막 답의 미응답 질문)
+                            `brief closed` 에 검토 없이 닫힌 것으로 남긴다.
   brief patrol --read       모아 둔 변화를 한 줄에 한 건(JSONL)으로 내보내고 비운다(데스크가 읽는다). 한 번이라도 읽은
-                            데스크만 순찰 신호를 받는다.
+                            데스크만 순찰 신호를 받는다. 살아 있는 세션의 줄에는 `brief sessions` 와 같은 사실
+                            항목이, 닫힌 세션의 줄에는 닫힐 때의 대조(check) 또는 검토 기록(verified)이 붙는다.
   brief review [일수]        데스크 세션에서 내가 한 말·쓴 명령·그 직전 데스크의 답을 시간순으로 뽑는다
                             (기본 1일, 자기 개선용). 맨 끝에 명령별 사용 횟수.
   brief board [--json]      에이전트 전체 지표: 세션 수·상태, 오늘 완료(검토 여부), 결정 대기, 개선 루프 둘(orch 교훈,
@@ -43,7 +50,7 @@
 """
 import json, os, re, subprocess, sys, time
 
-CMUX = "/Applications/cmux.app/Contents/Resources/bin/cmux"
+CMUX = os.environ.get("BRIEF_CMUX", "/Applications/cmux.app/Contents/Resources/bin/cmux")  # 시험용 재정의
 HOME = os.path.expanduser("~")
 PLAN = os.path.join(HOME, ".cache/cmux/brief-plan.json")
 CLOSED = os.path.join(HOME, ".cache/cmux/brief-closed.jsonl")
@@ -227,6 +234,164 @@ def recaps(ss):
                 if text:
                     out[x["panel"].lower()] = text[:300]
                     break
+    return out
+
+
+def tail(path, size=3_000_000):
+    """파일 끝 size 바이트의 줄들. 못 읽으면 빈 목록."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(max(0, os.path.getsize(path) - size))
+            return f.read().decode("utf-8", "ignore").splitlines()
+    except OSError:
+        return []
+
+
+def transcript(x):
+    """세션의 대화 기록 파일(Claude: ~/.claude/projects, Codex: ~/.codex/sessions). 없으면 None."""
+    import glob
+    sid = x.get("session")
+    if not sid:
+        return None
+    pat = (os.path.join(HOME, ".codex/sessions/*/*/*", f"rollout-*{sid}.jsonl") if x.get("agent") == "codex"
+           else os.path.join(HOME, ".claude/projects/*", sid + ".jsonl"))
+    hits = glob.glob(pat)
+    return max(hits, key=os.path.getmtime) if hits else None
+
+
+def epoch(iso):
+    """'2026-11-19T02:01:44.265Z' → epoch 초. 못 읽으면 0."""
+    import calendar
+    try:
+        return calendar.timegm(time.strptime((iso or "")[:19], "%Y-%m-%dT%H:%M:%S"))
+    except ValueError:
+        return 0
+
+
+def hhmm(t):
+    return time.strftime("%m-%d %H:%M", time.localtime(t)) if t else None
+
+
+# 데스크·sib 가 세션 입력창에 넣은 글: 사용자 입력이 아니라 데스크가 맡긴 일로 센다.
+HANDOFF = ("done-request:", "completion contract (from sib)")
+QUESTION = re.compile(r"[?？]|할까요|주세요|골라|선택해")
+
+
+def turns(x):
+    """대화 기록에서 사실 몇 개: 마지막 사용자 입력, 마지막으로 맡겨진 일(데스크·sib 가 넣은 글),
+    마지막 에이전트 활동, 그리고 그 뒤로 입력이 없는 마지막 답이 질문으로 끝났는지.
+    시각은 epoch 초(없으면 0)."""
+    out = {"input": 0, "handoff": 0, "active": 0, "question": None}
+    path = transcript(x)
+    if not path:
+        return out
+    codex = x.get("agent") == "codex"
+    last_text = None  # 가장 마지막 에이전트 답의 글 (질문 판정용)
+    for line in reversed(tail(path)):
+        if codex:
+            if '"user"' not in line and '"assistant"' not in line and '"task_started"' not in line:
+                continue
+        elif '"type":"user"' not in line and '"type":"assistant"' not in line:
+            continue
+        try:
+            o = json.loads(line)
+        except ValueError:
+            continue
+        if codex:
+            p = o.get("payload") or {}
+            role = p.get("role") if p.get("type") == "message" else ("assistant" if p.get("type") == "task_started" else None)
+            body = " ".join(c.get("text", "") for c in p.get("content") or [] if isinstance(c, dict))
+            pending_ask = False
+        else:
+            role = o.get("type")
+            c = (o.get("message") or {}).get("content")
+            if role == "user" and (o.get("isMeta") or (o.get("origin") or {}).get("kind", "human") != "human"):
+                continue
+            if isinstance(c, list):
+                if any(isinstance(b, dict) and b.get("type") == "tool_result" for b in c):
+                    continue  # 도구 결과는 입력이 아니다
+                body = " ".join(b.get("text", "") for b in c if isinstance(b, dict) and b.get("type") == "text")
+                pending_ask = any(isinstance(b, dict) and b.get("type") == "tool_use" and b.get("name") == "AskUserQuestion" for b in c)
+            else:
+                body, pending_ask = str(c or ""), False
+        t = epoch(o.get("timestamp"))
+        if role == "assistant":
+            if not out["active"]:
+                out["active"] = t
+            if last_text is None and (body.strip() or pending_ask):
+                last_text = "(AskUserQuestion)" if pending_ask and not body.strip() else body
+        elif role == "user":
+            text = body.strip()
+            if not text or text.startswith("<") or text.startswith("# AGENTS.md"):
+                continue  # 명령·환경 주입
+            if any(h in text for h in HANDOFF):
+                out["handoff"] = out["handoff"] or t
+            elif not out["input"]:
+                out["input"] = t
+            if last_text is None:
+                last_text = ""  # 답보다 입력이 나중이다: 남은 질문 없음
+        if out["input"] and out["handoff"] and out["active"] and last_text is not None:
+            break
+    if last_text:
+        tail_lines = [l.strip() for l in last_text.strip().splitlines() if l.strip()][-2:]
+        asked = [l for l in tail_lines if QUESTION.search(l)]
+        if asked or last_text == "(AskUserQuestion)":
+            out["question"] = asked[-1][:160] if asked else last_text
+    return out
+
+
+def git_facts(cwd):
+    """cwd 저장소의 미커밋 파일 수와 미push 커밋 수. 저장소가 아니면 빈 dict, upstream 이 없으면 unpushed 없음."""
+    d = os.path.expanduser(cwd or "")
+    if not d or not os.path.isdir(d):
+        return {}
+    try:
+        r = subprocess.run(["git", "-C", d, "status", "--porcelain"], capture_output=True, text=True, timeout=10)
+        if r.returncode:
+            return {}
+        out = {"uncommitted": len([l for l in r.stdout.splitlines() if l.strip()])}
+        r = subprocess.run(["git", "-C", d, "rev-list", "--count", "@{u}..HEAD"], capture_output=True, text=True, timeout=10)
+        if r.returncode == 0 and r.stdout.strip().isdigit():
+            out["unpushed"] = int(r.stdout.strip())
+        return out
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+
+
+def facts(ss, desk=None):
+    """세션별 사실 항목(P1). 데스크가 recap·화면을 훑어 추측하지 않고 이 값을 옮긴다.
+      input_at     그 pane 에 사용자가 마지막으로 입력한 시각 (데스크·sib 가 넣은 글은 빼고)
+      desk_msg_at  데스크가 마지막으로 일을 넘긴 시각 (cmux 메시지, 데스크가 넣은 done-request, sib 브리프)
+      started      그 뒤에 세션이 턴을 시작했는지 (메시지가 읽히고 그 뒤에 에이전트 활동이 있음)
+      question     마지막 답이 질문으로 끝났고 그 뒤로 사용자 입력이 없으면 그 마지막 줄
+      uncommitted  cwd 저장소의 미커밋 파일 수,  unpushed  upstream 에 없는 커밋 수
+    반환: {panel(소문자): {...}}"""
+    from concurrent.futures import ThreadPoolExecutor
+    desk = (desk if desk is not None else desk_panel() or "").lower()
+    sent = {}  # panel -> (보낸 시각, 읽힌 시각)
+    for m in messages():
+        if (m.get("sender_surface_id") or "").lower() != desk or not desk:
+            continue
+        to = (m.get("recipient_surface_id") or "").lower()
+        if to and (to not in sent or m.get("created_at", 0) > sent[to][0]):
+            sent[to] = (m.get("created_at") or 0, m.get("read_at") or 0)
+    with ThreadPoolExecutor(8) as pool:
+        cwds = sorted({x.get("cwd") or "" for x in ss})
+        git = dict(zip(cwds, pool.map(git_facts, cwds)))
+        tr = list(pool.map(turns, ss))
+    out = {}
+    for x, t in zip(ss, tr):
+        f = {"input_at": hhmm(t["input"])}
+        msg, read = sent.get(x["panel"].lower(), (0, 0))
+        if t["handoff"] > msg:  # 입력창에 직접 넣은 글은 넣는 순간 턴이 된다
+            msg, read = t["handoff"], t["handoff"]
+        if msg:
+            f["desk_msg_at"] = hhmm(msg)
+            f["started"] = bool(read) and t["active"] >= read
+        if t["question"] and x.get("state") != "working":
+            f["question"] = t["question"]
+        f.update(git.get(x.get("cwd") or "", {}))
+        out[x["panel"].lower()] = {k: v for k, v in f.items() if v is not None}
     return out
 
 
@@ -493,6 +658,16 @@ def board_trend(days):
 
 
 def patrol(read):
+    """순찰. 턴 끝(Stop)과 pane 닫힘(surface.closed)이 동시에 부를 수 있어 한 번에 하나만 돈다
+    (닫힌 세션이 두 번 기록되지 않게)."""
+    import fcntl
+    os.makedirs(os.path.dirname(PATROL), exist_ok=True)
+    with open(PATROL + ".lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        _patrol(read)
+
+
+def _patrol(read):
     try:
         board()  # 지표의 오늘 줄을 갱신(30분에 한 번만 쓴다)
     except Exception:
@@ -504,7 +679,8 @@ def patrol(read):
     ss = sessions()
     desk = (desk_panel() or "").lower()
     now = int(time.time())
-    snap = {x["panel"]: {"state": x["state"], "at": x["last_activity"], "title": x["title"]}
+    snap = {x["panel"]: {"state": x["state"], "at": x["last_activity"], "title": x["title"],
+                         "cwd": x["cwd"], "agent": x["agent"], "session": x["session"]}
             for x in ss}
     first = st is None
     st = st or {"snap": {}, "pending": {}, "notified": 0}
@@ -520,14 +696,22 @@ def patrol(read):
         for panel, old in st["snap"].items():
             if panel not in snap and panel.lower() != desk:
                 st["pending"] = {k: v for k, v in st["pending"].items() if v["panel"] != panel}
-                st["pending"][panel + ":closed"] = {"panel": panel, "title": old["title"], "what": "closed", "at": now}
+                ev = {"panel": panel, "title": old["title"], "what": "closed", "at": now}
+                rec = closed_record(panel, old.get("session"))
+                if rec is None:  # 데스크 검토 없이 닫혔다(사용자가 pane 을 닫음): 그 자리에서 대조해 남긴다
+                    old = {"panel": panel, "title": old["title"], "cwd": old.get("cwd"), "agent": old.get("agent"),
+                           "session": old.get("session"), "state": "closed"}
+                    rec = log_closed(old, None, True, check=close_check(old))
+                ev["check"] = rec.get("check") if not rec.get("verified") else None
+                ev["verified"] = rec.get("verified")
+                st["pending"][panel + ":closed"] = ev
     st["snap"] = snap
     try:
         notes = [json.loads(l) for l in open(NOTES) if l.strip()]
     except (OSError, ValueError):
         notes = []
     if read:
-        rc, plan = recaps(ss), load_plan()
+        rc, plan, fx = recaps(ss), load_plan(), facts(ss, desk)
         num = {it["panel"]: n for n, it in enumerate(plan["items"], 1) if not it["done"]}
         live = {x["panel"]: x for x in ss}
         out = []
@@ -537,6 +721,10 @@ def patrol(read):
                    "todo": num.get(ev["panel"]), "recap": rc.get(ev["panel"].lower())}
             if ev["what"] == "new":
                 row["cwd"] = x.get("cwd")
+            if ev["what"] == "closed":  # 닫힐 때 대조한 기록(검토를 거쳐 닫혔으면 그 검토)
+                row.update(check=ev.get("check"), verified=ev.get("verified"))
+            elif x:
+                row.update(fx.get(ev["panel"].lower(), {}))
             out.append({k: v for k, v in row.items() if v is not None})
         for n in notes:  # 세션이 목표 밖에서 발견해 데스크에 넘긴 일
             out.append({k: v for k, v in {"ev": "note", "panel": n.get("panel"), "title": n.get("title"),
@@ -680,14 +868,38 @@ def request_close(s):
     return f"보고 요청 못 보냄: {why}. 데스크가 화면과 작업 폴더를 직접 확인한 뒤 --verified 로 완료 처리하세요"
 
 
-def log_closed(s, note, closed):
-    """완료 기록: 무엇이 언제 어떻게 검토되어 끝났는지. `brief closed` 가 보여 준다."""
-    rec = {k: s[k] for k in ("title", "cwd", "agent", "session")} | {"at": int(time.time()), "closed": closed}
+def log_closed(s, note, closed, check=None):
+    """완료 기록: 무엇이 언제 어떻게 검토되어 끝났는지. `brief closed` 가 보여 준다.
+    check 는 검토 없이 닫힌 pane 을 도구가 닫힌 자리에서 대조한 결과다(close_check)."""
+    rec = {k: s.get(k) for k in ("panel", "title", "cwd", "agent", "session")} | {"at": int(time.time()), "closed": closed}
     if note is not None:
         rec["verified"] = note
+    if check is not None:
+        rec["check"] = check
     os.makedirs(os.path.dirname(CLOSED), exist_ok=True)
     with open(CLOSED, "a") as f:
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    return rec
+
+
+def closed_record(panel, session):
+    """그 pane(또는 세션)의 최근 이틀 완료 기록. 없으면 None."""
+    try:
+        recs = [json.loads(l) for l in open(CLOSED) if l.strip()]
+    except (OSError, ValueError):
+        return None
+    cut = time.time() - 2 * 86400
+    return next((r for r in reversed(recs) if r.get("at", 0) >= cut and (
+        (r.get("panel") or "").lower() == panel.lower() or (session and r.get("session") == session))), None)
+
+
+def close_check(s):
+    """검토 없이 닫힌 세션을 닫힌 자리에서 대조한다(P4): cwd 의 미커밋·미push, 마지막 답의 미응답 질문."""
+    out = git_facts(s.get("cwd"))
+    q = turns(s)["question"]
+    if q:
+        out["question"] = q
+    return out
 
 
 def close_session(s, force, note=None):
@@ -719,10 +931,11 @@ def main(argv):
                 for s in ss:
                     if s["panel"] == m["panel"]:
                         s["collab"] = g["name"]
-        rc = recaps(ss)
+        rc, fx = recaps(ss), facts(ss)
         for x in ss:
             if x["panel"].lower() in rc:
                 x["recap"] = rc[x["panel"].lower()]
+            x.update(fx.get(x["panel"].lower(), {}))
         print(json.dumps(ss, ensure_ascii=False, indent=1))
     elif cmd == "note" and len(argv) > 2:  # 목표 밖의 발견을 데스크에 넘긴다(고치지 않고)
         text = " ".join(argv[2:]).strip()
@@ -859,6 +1072,11 @@ def main(argv):
             recs = []
         for rec in reversed(recs):
             how = ("검토: " + rec["verified"]) if rec.get("verified") else "검토 없이 닫음"
+            if "check" in rec:
+                c = rec["check"]
+                got = [f"{name} {c[k]}" for k, name in (("uncommitted", "미커밋"), ("unpushed", "미push")) if k in c]
+                got += [f"미응답 질문 \"{c['question']}\""] if c.get("question") else []
+                how += " · 닫힐 때 대조: " + (", ".join(got) or "git 저장소 아님, 질문 없음")
             print(f"{time.strftime('%m-%d %H:%M', time.localtime(rec['at']))}  {rec['title']}\n    {how}\n    {resume_cmd(rec)}")
         if not recs:
             print("(닫은 세션 기록 없음)")

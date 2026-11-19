@@ -85,6 +85,23 @@
           "timeout_seconds": 20
         }
       ]
+    },
+    {
+      "id": "orch-patrol-close",
+      "when": {
+        "event": "surface.closed"
+      },
+      "rate_limit": {
+        "interval_seconds": 5,
+        "maximum": 1
+      },
+      "then": [
+        {
+          "action": "run",
+          "command": "$HOME/.local/bin/brief patrol",
+          "timeout_seconds": 20
+        }
+      ]
     }
   ]
 }

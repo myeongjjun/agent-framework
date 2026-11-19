@@ -75,7 +75,8 @@ test('the band shows the desk document: now line, decisions, counts', async ($, 
     '# Desk 11-12  ·  갱신 14:20',
     '**지금**: 2번 세션이 결정을 기다린다. 미루면 다음 일이 밀린다.',
     '## 결정 필요',
-    '1. **정할 것 하나** — `세션 A` · 권고: 고정',
+    '- **정할 것 하나** — `세션 A` · 권고: 고정',
+    '- **정할 것 둘** — `세션 B`(2번) · 권고: 시험',
     '## 진행 중',
     '- `세션 B` — 작업 중',
     '## 예약',
@@ -96,8 +97,10 @@ test('the band shows the desk document: now line, decisions, counts', async ($, 
   } as any)
 
   expect((await ui.find({ type: 'Text', text: /2번 세션이 결정을/ }))?.text).toContain('지금')
-  expect((await ui.find({ type: 'Text', text: /정할 것/ }))?.text).toBe('▸ 1. 정할 것 하나')
-  expect((await ui.find({ type: 'Text', text: /TODO/ }))?.text).toBe('결정 1 · 진행 1 · 예약 0 · 끝남 0 · TODO 1/2 · 갱신 14:20')
+  // 결정에는 자기 번호가 없다: 세션이 딸린 결정은 그 세션의 TODO 번호로, 아니면 번호 없이 보인다.
+  expect((await ui.find({ type: 'Text', text: /정할 것 하나/ }))?.text).toBe('▸ 정할 것 하나')
+  expect((await ui.find({ type: 'Text', text: /정할 것 둘/ }))?.text).toBe('▸ 2번 정할 것 둘')
+  expect((await ui.find({ type: 'Text', text: /TODO/ }))?.text).toBe('결정 2 · 진행 1 · 예약 0 · 끝남 0 · TODO 1/2 · 갱신 14:20')
   expect(await ui.find({ type: 'Text', text: /무시되어야/ })).toBeFalsy()
   await ui.unmount()
 })
@@ -122,7 +125,7 @@ test('desk document edits fold to one line; other edits and ctrl+o stay as they 
 
 test('pressing a TODO row in the Desk pane runs `brief go <n>`', async ($, on) => {
   const doc = ['Desk/261112.md', '# Desk 11-12  ·  갱신 14:20', '**지금**: x.', '## 결정 필요',
-    '1. **시험 먼저 할지** — `리뷰`(2번) · 권고: 시험', '\u001e',
+    '- **시험 먼저 할지** — `리뷰`(2번) · 권고: 시험', '\u001e',
     JSON.stringify({ items: [{ title: 'A', do: 'x', done: false }, { title: 'B', do: 'y', done: false }] })].join('\n')
   const calls: string[][] = []
   harness(on, calls, { exitCode: 0, stdout: doc, stderr: '' })
@@ -133,5 +136,6 @@ test('pressing a TODO row in the Desk pane runs `brief go <n>`', async ($, on) =
   await ui.press({ key: 'dec-go-0' } as any)
 
   expect(calls.filter(c => c.includes('go')).map(c => c.slice(-2))).toEqual([['go', '2'], ['go', '2']])
+  expect((await ui.find({ type: 'Text', text: /시험 먼저/ }))?.text).toBe('· 2번 시험 먼저 할지 — 리뷰(2번) · 권고: 시험')
   await ui.unmount()
 })
