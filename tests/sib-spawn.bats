@@ -174,7 +174,21 @@ EOF
   [[ "$output" != *"killed"* ]]
   [ -f "$STATE/stuck-kill.env" ]
   # the forced retry was attempted
-  grep -q "cmux close-surface .*--force true" "$CMUX_STUB_LOG"
+  grep -qE "cmux close-surface .*--force( |$)" "$CMUX_STUB_LOG"
+}
+
+@test "kill force-closes a live sibling with a bare --force (pane and workspace)" {
+  run "$SIB" spawn live-pane
+  [ "$status" -eq 0 ]
+  CMUX_STUB_CLOSE_LIVE=1 run "$SIB" kill live-pane
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"killed live-pane"* ]]
+  CMUX_STUB_WS="workspace:42" run "$SIB" spawn live-ws --workdir "$WORKDIR" --new-workspace
+  [ "$status" -eq 0 ]
+  CMUX_STUB_CLOSE_LIVE=1 run "$SIB" kill live-ws
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"killed live-ws"* ]]
+  ! grep -q -- "--force true" "$CMUX_STUB_LOG"
 }
 
 # --- prompt submission (cmux-cli-reference §9) ------------------------------

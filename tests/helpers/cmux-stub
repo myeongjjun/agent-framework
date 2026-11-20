@@ -40,14 +40,24 @@ case "$sub" in
     echo "cwd=${CMUX_STUB_WS_CWD:-/stub/workspace/cwd}"
     echo "focused_cwd=${CMUX_STUB_WS_CWD:-/stub/workspace/cwd}"
     ;;
-  close-surface)
+  close-surface|close-workspace)
+    # Real cmux: `--force` is a bare flag; a value after it ("--force true")
+    # is an unexpected argument and the close fails.
+    prev=""; for a in "$@"; do
+      [[ "${prev}" == --force && "${a}" != --* ]] && { echo "Error: ${sub}: unexpected argument ${a}" >&2; exit 2; }
+      prev="${a}"
+    done
+    # CMUX_STUB_CLOSE_LIVE=1 simulates a live process: only a forced close works.
+    [[ "${CMUX_STUB_CLOSE_LIVE:-0}" == 1 && " $* " != *" --force "* ]] \
+      && { echo "Error: confirmation_required" >&2; exit 1; }
+    [[ "${sub}" == close-workspace ]] && exit 0
     # CMUX_STUB_CLOSE_FAIL=1 simulates cmux refusing the close. Otherwise
     # record the surface as gone so a later read-screen on it fails, the
     # way sib kill's post-close check sees a really closed pane.
     [[ "${CMUX_STUB_CLOSE_FAIL:-0}" == 1 ]] && exit 1
     while (($#)); do [[ "$1" == --surface ]] && { touch "${log}.closed-$2"; break; }; shift; done
     ;;
-  send|send-key|close-workspace)
+  send|send-key)
     # no stdout needed; the log line above is the assertion target. Count
     # sends and enters so read-screen can change what the pane shows after
     # them (CMUX_STUB_SCREEN_AFTER_SENDS / _AFTER_ENTERS below).

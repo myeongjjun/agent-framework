@@ -444,17 +444,18 @@ kill)
   # workspace holds only this one surface, and cmux refuses to close the last
   # surface — close the whole workspace instead. Otherwise just close the pane.
   # cmux asks for confirmation before closing a surface with a live process
-  # (`confirmation_required … force=true`); kill is that confirmation, so
-  # retry with --force true. Then verify, so a swallowed close error never
+  # (`confirmation_required`); kill is that confirmation, so retry with
+  # `--force` (a bare flag — cmux rejects `--force true` as an unexpected
+  # argument, which made the retry a silent no-op). Then verify, so a swallowed close error never
   # reports `✓ killed` while the agent pane is still open.
   if (( workspace_managed )); then
     cmux close-workspace --workspace "${workspace}" >/dev/null 2>&1 \
-      || cmux close-workspace --workspace "${workspace}" --force true >/dev/null 2>&1 || true
+      || cmux close-workspace --workspace "${workspace}" --force >/dev/null 2>&1 || true
     cmux workspace list 2>/dev/null | grep -qwF -- "${workspace}" \
       && die "workspace ${workspace} is still open — state kept; close it in cmux, then re-run sib kill ${slug}"
   else
     cmux close-surface --surface "${surface}" --workspace "${workspace}" >/dev/null 2>&1 \
-      || cmux close-surface --surface "${surface}" --workspace "${workspace}" --force true >/dev/null 2>&1 || true
+      || cmux close-surface --surface "${surface}" --workspace "${workspace}" --force >/dev/null 2>&1 || true
     surface_alive "${surface}" "${workspace}" \
       && die "pane ${surface} is still open — state kept; close it in cmux, then re-run sib kill ${slug}"
   fi
