@@ -52,6 +52,7 @@ override what an upper layer installs.
 |---|---|
 | `~/.claude/skills/{acp-*,codex}` | symlink to this repo's `skills/` |
 | `~/.codex/skills/{acp-*,codex}` | same source |
+| `~/.local/bin/req-lint` | requirement-sentence checker (RFC 2119 + ASD-STE100) |
 | `~/.local/bin/sib` | cmux sibling-agent launcher (git-worktree opt-in via `--worktree`) |
 | `~/.claude/hooks/guard-acp-direct-edit.sh` | block agent edits to `agent-context/` |
 | `~/.claude/hooks/guard-deployed-artifact-edit.sh` | block agent edits to deployed runtime |
@@ -113,6 +114,11 @@ strategy into another.
 - **Skill Language Convention** — English for workflow/logic sections,
   Korean reserved for output examples and trigger phrases. See
   [`agent-context/constraints/code-style-skill-language-convention.md`](agent-context/constraints/code-style-skill-language-convention.md).
+- **Requirement Sentences** — an English requirement sentence uses
+  one uppercase RFC 2119 keyword (`MUST`/`MUST NOT`/`SHOULD`/`MAY`),
+  the form `[If|When ..., ]<subject> <keyword> <verb> ...`, and 20
+  words or fewer (ASD-STE100); check with `req-lint`. See
+  [`agent-context/constraints/code-style-requirement-sentences.md`](agent-context/constraints/code-style-requirement-sentences.md).
 - **Hook Source of Truth** — hook source lives here; deployed copies
   under `~/.claude/hooks/` are read-only artefacts of `install.sh`.
   See [`agent-context/constraints/hook-source-of-truth.md`](agent-context/constraints/hook-source-of-truth.md).

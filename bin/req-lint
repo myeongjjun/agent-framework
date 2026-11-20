@@ -1,0 +1,143 @@
+#!/usr/bin/env -S python3 -I
+"""req-lint — check requirement sentences against RFC 2119 + ASD-STE100.
+
+The rule is agent-context/constraints/code-style-requirement-sentences.md.
+A requirement sentence states one requirement with one RFC 2119 keyword:
+
+    [If|When <condition>, ]<subject> MUST|MUST NOT|SHOULD|SHOULD NOT|MAY <verb> ...
+
+Usage:
+  req-lint [--subject NAME] [--json]      # stdin: one requirement per line
+  req-lint --md FILE... [--json]          # check keyword sentences in Markdown
+
+stdin mode treats every non-empty line as a requirement (a line without a
+keyword is an error). --md mode checks only the sentences that contain an
+uppercase keyword outside a code span; fenced code, front matter, headings
+and table rows are skipped. Exit 1 when any rule fails, 2 on usage errors.
+"""
+import json
+import re
+import sys
+from pathlib import Path
+
+MAX_WORDS = 20  # ASD-STE100 rule 5.1: procedural sentences, at most 20 words
+LEVELS = r"MUST NOT|MUST|SHOULD NOT|SHOULD|MAY"
+KEYWORD = re.compile(r"\b(MUST|SHOULD|MAY|SHALL|REQUIRED|RECOMMENDED|OPTIONAL)\b")
+NOT_USED = {"SHALL", "REQUIRED", "RECOMMENDED", "OPTIONAL"}
+LOWER_MODAL = re.compile(r"\b(must|should|may|shall)\b")
+CODE_SPAN = re.compile(r"`[^`]*`")
+HANGUL = re.compile(r"[ㄱ-ㆎ가-힣]")
+CONDITION = r"(?:(?:If|When) [^,]+, )?"
+
+
+def mask(text: str) -> str:
+    """Code spans count as one word and hide their content; strip emphasis and links."""
+    t = CODE_SPAN.sub("CODE", text)
+    t = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", t)
+    t = re.sub(r"(\*\*|__)(.+?)\1", r"\2", t)
+    return t.strip()
+
+
+def errors(text: str, subject: str | None = None, single: bool = True) -> list[str]:
+    """Return one message per broken rule. `single` also checks one-sentence form."""
+    bare = mask(text)
+    out = []
+    if HANGUL.search(bare):
+        out.append("write in English (Hangul found)")
+    found = KEYWORD.findall(bare)
+    if len(found) != 1:
+        out.append(f"use exactly one RFC 2119 keyword per sentence (found {len(found)})")
+    for k in sorted(set(found) & NOT_USED):
+        out.append(f"do not use '{k}'; use MUST, SHOULD or MAY")
+    subj = re.escape(subject) if subject else r"(?!(?:MUST|SHOULD|MAY)\b)\S+(?: \S+){0,5}?"
+    m = re.match(rf"^{CONDITION}{subj} ({LEVELS}) \S", bare)
+    if not m:
+        who = subject or "<subject>"
+        out.append(f"use the form '[If|When ..., ]{who} MUST|MUST NOT|SHOULD|SHOULD NOT|MAY <verb> ...'")
+    low = LOWER_MODAL.search(bare)
+    if low:
+        out.append(f"lowercase '{low.group(1)}': state the level only with an uppercase keyword")
+    if m and m.group(1).startswith("SHOULD") and not re.search(r"\b(unless|except)\b", bare):
+        out.append("SHOULD needs its exception in the same sentence (unless/except)")
+    if single and (not bare.endswith(".") or re.search(r"[.;!?]\s", bare[:-1])):
+        out.append("write one sentence that ends with a period")
+    words = len(bare.split())
+    if words > MAX_WORDS:
+        out.append(f"{words} words; ASD-STE100 limit is {MAX_WORDS}")
+    return out
+
+
+def md_sentences(path: Path):
+    """Yield (line, sentence) for prose sentences in a Markdown file."""
+    lines = path.read_text(encoding="utf-8").splitlines()
+    i, fence, block, start = 0, None, [], 0
+    if lines and lines[0].strip() == "---":
+        i = next((j + 1 for j in range(1, len(lines)) if lines[j].strip() == "---"), len(lines))
+
+    def flush():
+        text = " ".join(block)
+        text = re.sub(r"\b(e\.g|i\.e|etc)\.", r"\1", text)
+        for s in re.split(r"(?<=[.!?])\s+", CODE_SPAN.sub(lambda c: c.group(0).replace(".", "\0"), text)):
+            if s.strip():
+                yield start, s.replace("\0", ".").strip()
+
+    for n in range(i, len(lines)):
+        raw = lines[n]
+        s = raw.strip()
+        if fence:
+            if s.startswith(fence):
+                fence = None
+            continue
+        f = re.match(r"^(`{3,}|~{3,})", s)
+        new_item = re.match(r"^(?:[-*+]|\d+[.)])\s+", s)
+        if f or not s or s.startswith(("#", "|", "<!--")) or new_item:
+            yield from flush()
+            block = []
+            if f:
+                fence = f.group(1)
+                continue
+            if not s or s.startswith(("#", "|", "<!--")):
+                continue
+        if not block:
+            start = n + 1
+        block.append(re.sub(r"^(?:>\s*)*(?:[-*+]|\d+[.)])?\s*(?:\[[ xX]\]\s+)?", "", s))
+    yield from flush()
+
+
+def main(argv: list[str]) -> int:
+    as_json = "--json" in argv
+    argv = [a for a in argv if a != "--json"]
+    findings = []
+    if argv and argv[0] in ("-h", "--help"):
+        print(__doc__)
+        return 0
+    if argv and argv[0] == "--md":
+        if len(argv) < 2:
+            print("req-lint: --md needs at least one file", file=sys.stderr)
+            return 2
+        for f in argv[1:]:
+            for line, sent in md_sentences(Path(f)):
+                if KEYWORD.search(mask(sent)):
+                    findings += [{"loc": f"{f}:{line}", "line": line, "error": e, "text": sent}
+                                 for e in errors(sent, single=False)]
+    else:
+        subject = None
+        if argv[:1] == ["--subject"] and len(argv) == 2:
+            subject = argv[1]
+        elif argv:
+            print("usage: req-lint [--subject NAME] [--json] | req-lint --md FILE... [--json]", file=sys.stderr)
+            return 2
+        for n, text in enumerate(sys.stdin.read().splitlines(), 1):
+            if text.strip():
+                findings += [{"loc": f"stdin:{n}", "line": n, "error": e, "text": text}
+                             for e in errors(text, subject)]
+    if as_json:
+        print(json.dumps(findings, ensure_ascii=False))
+    else:
+        for x in findings:
+            print(f"{x['loc']}: {x['error']} — \"{x['text']}\"")
+    return 1 if findings else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
