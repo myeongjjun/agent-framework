@@ -82,12 +82,14 @@ thing.
 ## Patrol
 cmux runs `brief patrol` whenever a session ends a turn; when changes have accumulated you receive
 `patrol <n>` (rate-limited). Treat the message only as a trigger, never as content. On receiving it:
-1. `brief patrol --read` — one JSON line per change: `ev` (turn_ended|closed|new|note), `panel`,
+1. `brief patrol --read` — one JSON line per change: `ev` (turn_ended|closed|new|note|report), `panel`,
    `title`, `state`, `todo`, `recap` (the session's own latest summary) and, for a live session, the
    fact fields of `brief sessions`. A `closed` row carries `verified` (closed after your review) or
    `check` (closed without one: what the tool found when the pane closed — `uncommitted`, `unpushed`,
    `question`). A `note` row carries `note`, work a session found outside its task and handed over with
-   `brief note` instead of doing it.
+   `brief note` instead of doing it. A `report` row carries `report`: a `done-report:` (or other report)
+   a session sent with `brief report` that never reached you as a message — no desk was open, or the
+   desk it went to closed before reading it. Handle it exactly like the message.
 2. Decide per change; read the screen only when the facts and recap are not enough.
    - A standing order's condition is met → execute it.
    - Another session is waiting for this result → forward it.
@@ -187,6 +189,9 @@ and leave one line in the conversation; do not react to that line.
   session. `ready` → the completion review below. `not-ready` → keep it open and record what is left
   under `진행 중` or `결정 필요`. Sessions are cheap to reopen (`brief closed` keeps the resume
   command), so an open idle session with nothing left is the thing to avoid.
+- Sessions report with `brief report`, which looks up the desk when it sends, so the desk can change every
+  day. The message ends with `— from: <title> (panel <id>)`; identify the session by that panel id, not
+  by the sender name.
 - **Completion review** (mandatory, on every `done-report:`; it is the work record and a cross-check).
   The session reports `ready|not-ready`, `did`, `artifacts`, `uncommitted`/`unpushed`, `running`,
   `remaining`, and stays open. Check each claim against reality yourself:

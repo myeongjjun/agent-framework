@@ -1,6 +1,6 @@
 # Decisions Index
 
-> Last updated: 2026-11-13
+> Last updated: 2026-11-20
 
 ## By Status
 
@@ -14,6 +14,7 @@
 | [004](2026-11-13-session-cleanup-self-report.md) | 2026-11-13 | Finished sessions report themselves and the desk closes them |
 | [005](2026-11-17-one-session-one-task.md) | 2026-11-17 | One session, one task — contract by default, direct done-requests, `brief note` |
 | [006](2026-11-13-sib-trust-allowlist.md) | 2026-11-13 | sib pre-trusts allowlisted start dirs for claude siblings |
+| [007](2026-11-20-brief-report-desk-address.md) | 2026-11-20 | Sessions reach the desk with `brief report`, not a panel id |
 
 ### Proposed
 
