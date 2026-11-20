@@ -99,8 +99,7 @@ invocations).
 Preconditions (verify before invoking):
 1. **Model**: `grep '^model' ~/.codex/config.toml` — accept that value.
    Do NOT hard-code `-m`.
-2. **Trust**: the current repo path must have `trust_level = "trusted"`
-   in `~/.codex/config.toml`.
+2. **Trust**: The current repo path MUST have `trust_level = "trusted"` in `~/.codex/config.toml`.
 3. **No pipe**: do NOT append `| tail`, `| head`, or any pipe to
    `codex exec` — output is structured and pipes mangle it.
 

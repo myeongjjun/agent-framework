@@ -49,7 +49,7 @@ agents same task), not a dispatch concern.
 
 Use this skill when:
 
-- The current session must keep running while a sibling agent picks up a
+- The current session needs to keep running while a sibling agent picks up a
   bounded scoped task
 - The work is single-agent — one sibling continues from the same
   working tree without competing with the base session
@@ -65,9 +65,9 @@ Do not use this skill for:
 
 ## Non-negotiable Requirements
 
-- Must run from inside a cmux pane (`$CMUX_WORKSPACE_ID` set). `sib spawn`
+- `/dispatch` MUST run inside a cmux pane (`$CMUX_WORKSPACE_ID` set). `sib spawn`
   refuses without it.
-- Slug must be lowercase kebab-case (`[a-z0-9-]+`). sib enforces this.
+- The slug MUST be lowercase kebab-case (`[a-z0-9-]+`). sib enforces this.
 - The base slot is not a target — `/dispatch` always creates a NEW
   cmux pane via `sib spawn`, never injects into the base.
 - **Never split an unrelated workspace.** If the task's working directory
@@ -121,8 +121,8 @@ If either check fails, surface the error and stop.
 
 ### Step 3 — Resolve the target workdir + workspace
 
-A sibling must start where the work lives, not wherever the caller
-happens to be.
+A sibling MUST start in the directory where the work lives, not where the
+caller is.
 
 **3a.0 — Normalize an explicit workspace reference** (`--workspace <x>`
 or a `cmux://workspace/<UUID>` link). cmux has two UUIDs per workspace:
@@ -146,7 +146,7 @@ EOF
 ```
 
 A hit gives the runtime id (and the workspace cwd). The file is saved
-periodically, so a workspace created moments ago may be missing — only
+periodically, so a workspace created moments ago can be missing — only
 then ask the user for the workspace title or the `$CMUX_WORKSPACE_ID`
 printed in one of its panes. See also `docs/cmux-cli-reference.md`.
 
@@ -236,7 +236,7 @@ explicit fire-and-forget signal overrides it:
 Note on the sib model: closing the cmux pane ends the agent. There is no
 detached `keep_alive` daemon. So:
 
-- **interactive** (default) = the user may keep talking to the sibling
+- **interactive** (default) = the user can keep talking to the sibling
   while it works; when the task is done it reports and the desk closes it
 - **fire-and-forget** = the user does not plan to look at the pane; the
   report + desk review is the only follow-up

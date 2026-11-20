@@ -55,7 +55,7 @@ Use this skill when:
 
 - The user names an existing session/pane/sibling and wants it told
   something ("agent-framework 세션에 이거 전달해", "그 sib한테 물어봐")
-- A skill/agent must route work to a repo and needs to know whether an
+- A skill/agent routes work to a repo and needs to know whether an
   open workspace already covers it (**placement reuse check**)
 
 Do not use this skill for:
@@ -73,8 +73,8 @@ Do not use this skill for:
   (sib slug, explicit `surface:N`+`workspace:N`, exact cwd with exactly
   one match) or the user's explicit pick from presented candidates.
 - **Never inject into a busy pane by default.** An active session is doing
-  real work; a mid-run message steers it. Only when the user explicitly
-  chose that target may delivery proceed (`--queue`).
+  real work; a mid-run message steers it. If the user did not
+  explicitly choose that target, the skill MUST NOT deliver (`--queue` overrides).
 - **Never self-deliver.** `pane-deliver.sh` hard-refuses the caller's own
   pane (from `cmux identify --json` `.caller`).
 - **Never touch an approval prompt.** If the target screen shows an
@@ -104,7 +104,7 @@ Output: one tab-separated line per match —
 `busy` (esc-to-interrupt hint OR an agent spinner line like
 `· Orchestrating… (12m …)` — newer Claude Code builds show only the
 spinner while working, keeping the `❯` marker drawn, so the marker alone
-must never be read as idle), `approval` (approval prompt visible), `idle`
+is not a sign of idle), `approval` (approval prompt visible), `idle`
 (input marker, no busy signal), `unknown`.
 
 **Selector reliability order** (use the strongest available):
@@ -118,13 +118,13 @@ must never be read as idle), `approval` (approval prompt visible), `idle`
 | `--title` | weakest | titles are auto-named per turn and flip between task summary and path (cmux title dual-source problem); a match is a *candidate*, never an identity |
 
 **cwd caveat (documented divergence)**: `.current_directory` is the
-workspace's launch/root directory. A long-running shell or agent may have
+workspace's launch/root directory. A long-running shell or agent can have
 `cd`'d elsewhere since — a cwd match means "this workspace is rooted
 there", not "the process is currently there". For placement decisions this
 is exactly the right key; for "which repo is that agent editing right
 now" it is not a guarantee.
 
-**Reuse is not automatic.** A cwd-matched workspace may hold an unrelated,
+**Reuse is not automatic.** A cwd-matched workspace can hold an unrelated,
 busy, or stale session (real case: a workspace rooted at agent-framework
 held an idle 251k-token session on a completely different topic). The
 match lines carry `state`, `ws_title`, `last_at`, and `last_msg` precisely
@@ -137,7 +137,7 @@ user rather than inject or create.
 
 - Accept free-form: `/pane-msg <target hint> <message>` or structured
   `--slug/--surface+--workspace/--cwd/--title` plus the message after `--`.
-- Classify the intent: **delivery** (a message must reach a pane) vs
+- Classify the intent: **delivery** (a message goes to a pane) vs
   **placement query** (a caller — usually `/dispatch` — asks "is there an
   open workspace for path X?").
 
@@ -157,7 +157,7 @@ cwd > title) and run `pane-resolve.sh`. Then branch on the verdict:
 |---|---|---|
 | `MATCH:1` via slug/refs/cwd | proceed to Step 4 | evaluate reuse (below) |
 | `MATCH:1` via title | show the candidate, **ask before injecting** | same |
-| `MATCH:0` | report "no such pane" — offer `/dispatch` to create one; never spawn from this skill | **safe to create** — caller may spawn/`--new-workspace` |
+| `MATCH:0` | report "no such pane" — offer `/dispatch` to create one; never spawn from this skill | **safe to create** — caller can spawn/`--new-workspace` |
 | `MATCH:2+` | present candidates (state + titles + last_msg), ask the user to pick | same — never silently create-new |
 
 **Reuse evaluation** (placement, `MATCH:1`): reuse only if the matched
@@ -228,7 +228,7 @@ the landed-check are the reliability fix this skill exists for.
 ## Relationship to other skills
 
 - **`/dispatch`** — spawns NEW panes. Its Step 3b ("find a workspace
-  already rooted at the workdir") should call
+  already rooted at the workdir") calls
   `pane-resolve.sh --cwd <workdir>`: `MATCH:0` is the only case where
   `--new-workspace` is justified. /pane-msg never spawns.
 - **`sib send <slug>`** — *delegates* to `pane-deliver.sh` when the
@@ -236,7 +236,7 @@ the landed-check are the reliability fix this skill exists for.
   source: same gates, same verification, same exit codes; `sib send
   <slug> --queue` passes the busy-override through. sib itself stays
   lifecycle-only (spawn/list/kill).
-- **`/collab`** — orchestrates its own workers via sib; may use
+- **`/collab`** — orchestrates its own workers via sib; it uses
   `pane-deliver.sh` for mid-flight nudges to a worker.
 
 ## Notes
@@ -258,7 +258,7 @@ the landed-check are the reliability fix this skill exists for.
   hooks (e.g. agentmemory) can delay the post-submit work signal by
   several seconds — the confirmation polls up to ~8s before reporting
   `UNCONFIRMED`. Residual limit: a message delivered in the moment an
-  agent finishes one task and before its screen settles may still race;
+  agent finishes one task and before its screen settles can still race;
   `UNCONFIRMED` therefore means "inspect", never "failed".
 - sib state files record `workspace=` as a ref (`workspace:N`) for
   `--workspace`/`--new-workspace` spawns but as a raw UUID for default

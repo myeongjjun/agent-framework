@@ -3,7 +3,7 @@ name: acp-decision
 version: 1.2.0
 description: >
   Record an architectural decision to /agent-context/decisions/ directory.
-  Use when a significant technical decision has been made that future agents should know about.
+  Use when a significant technical decision has been made that future agents need to know.
 trigger_phrases:
   - "record decision"
   - "ADR"

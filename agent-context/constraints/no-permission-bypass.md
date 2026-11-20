@@ -1,4 +1,4 @@
-# Constraint: Agent must not bypass permission/hook denials
+# Constraint: No Permission Bypass (permission and hook denials)
 
 - **Status**: Active
 - **Severity**: Critical

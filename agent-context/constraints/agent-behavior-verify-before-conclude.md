@@ -4,11 +4,13 @@
 - **Category**: agent-behavior
 - **Severity**: high
 - **Created**: 2026-04-02
-- **Last Verified**: 2026-04-02
+- **Last Verified**: 2026-11-20
 
 ## Description
 
-When performing analysis, comparison, or decision-making tasks, the agent must present both quantitative evidence and qualitative reasoning before stating a conclusion. Do not skip verification steps or jump to conclusions without supporting data.
+When the agent analyzes, compares or decides, it MUST give quantitative evidence and qualitative reasoning before the conclusion.
+The agent MUST NOT skip a verification step.
+The agent MUST NOT state a conclusion without supporting data.
 
 ## Scope
 

@@ -57,9 +57,8 @@ Avoid `/collab` when:
 - The task is tiny (a few-line change) where orchestration overhead dominates — use `/dispatch` or just do it in the base session.
 - The task requires shared mutable state — the pattern assumes dedicated worktrees.
 
-**Invocation rule**: `/collab` must only activate on an explicit user command
-(`/collab` or a trigger phrase). The agent must NEVER auto-initiate the collab
-workflow based on its own assessment of task suitability.
+**Invocation rule**: `/collab` MUST start only on an explicit user command (`/collab` or a trigger phrase).
+The agent MUST NOT start the collab workflow from its own view of the task.
 
 ## Task Type Variants
 
@@ -70,10 +69,10 @@ Identify the type in Phase 1 and follow the matching flow:
 
 ## Non-negotiable Requirements
 
-- Base slug must be lowercase kebab-case, **max 28 chars** (the two
-  worker slugs are `<base>-claude` and `<base>-codex`; a 28-char base
-  leaves room for the longest suffix).
-- Both `sib spawn` calls must pass `--worktree` — that is the entire
+- The base slug MUST be lowercase kebab-case with 28 characters or fewer.
+  The two worker slugs are `<base>-claude` and `<base>-codex`, and a
+  28-character base leaves room for the longest suffix.
+- Both `sib spawn` calls MUST pass `--worktree`. That is the entire
   reason `/collab` exists on top of `/dispatch`. Forgetting it makes
   the two workers fight over the same checkout.
 - Every first call is a **dry-run preview** (default). The skill writes
@@ -81,7 +80,7 @@ Identify the type in Phase 1 and follow the matching flow:
   proceeds after explicit approval. Dry-run is skipped only when the
   user has already given a go-signal in the same turn (see Phase 2 table).
 - Both worker panes are created in the caller's cmux workspace. The
-  caller must be running inside a cmux pane (`$CMUX_WORKSPACE_ID` set).
+  caller MUST run inside a cmux pane (`$CMUX_WORKSPACE_ID` set).
 - Slug collision: if `<base>-claude.env` or `<base>-codex.env` already
   exists in `~/.local/share/sib/state/`, fail with the existing-slug
   message and ask the user to pick a different base.
@@ -102,7 +101,7 @@ Identify the type in Phase 1 and follow the matching flow:
 **Actions**:
 
 1. Choose a short, descriptive `base_slug` (e.g., `rename-skill`, `add-tests`,
-   `fix-auth`). Must be ≤28 chars.
+   `fix-auth`). The slug MUST have 28 characters or fewer.
 2. Identify task type: code production or review/analysis.
 3. Write a 5–10 line task plan (scope, constraints, expected outputs).
 4. Select reasoning effort for Codex based on task complexity:
@@ -118,8 +117,8 @@ Identify the type in Phase 1 and follow the matching flow:
    - Required outputs (patch, commands run, files changed)
    - What to do if blocked (ask vs assume)
    - Definition-of-done checklist
-6. **Precondition**: all target files must be committed to HEAD before
-   dispatch — sib worktrees branch from HEAD, and uncommitted changes
+6. **Precondition**: The caller MUST commit all target files to HEAD before dispatch.
+   sib worktrees branch from HEAD, and uncommitted changes
    on the caller branch will NOT be visible to workers. Commit first if
    needed:
 

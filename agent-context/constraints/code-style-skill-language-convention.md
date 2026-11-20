@@ -4,11 +4,12 @@
 - **Category**: code-style
 - **Severity**: critical
 - **Created**: 2026-03-05
-- **Last Verified**: 2026-03-05
+- **Last Verified**: 2026-11-20
 
 ## Description
 
-Skill instructions must follow the language convention: English for workflow/logic sections, Korean only for output format examples and trigger phrases.
+A skill MUST use English in its workflow and logic sections.
+A skill MUST use Korean only for output format examples and trigger phrases.
 
 ## Scope
 
@@ -29,7 +30,7 @@ Manual review checklist:
 
 ## Exceptions
 
-- **Never**: All skill files must follow this convention without exception.
+- **Never**: The convention has no exceptions for skill files.
 
 ## Examples
 

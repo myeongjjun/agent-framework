@@ -3,7 +3,7 @@ name: acp-constraint
 version: 1.3.1
 description: >
   Add or review constraints in /agent-context/constraints/ directory.
-  Use to define rules that must not be violated.
+  Use to define rules that agents never break.
 trigger_phrases:
   - "add constraint"
   - "check constraints"
@@ -35,7 +35,7 @@ This skill follows the ACP rules defined in AGENTS.md.
 
 ## Purpose
 
-Create and manage immutable constraints in the `/agent-context/constraints/` directory. Constraints are rules that must always be followed.
+Create and manage immutable constraints in the `/agent-context/constraints/` directory. Constraints are rules that agents always follow.
 
 This skill is the only supported way to create constraints.
 
@@ -117,8 +117,8 @@ Location: immediately after `<!-- ACP:TEMPLATE_END -->`, before `## Project Info
 **Severity levels:**
 | Severity | Meaning |
 |----------|---------|
-| `critical` | Must never be violated |
-| `high` | Should not be violated |
+| `critical` | Never broken (`MUST`) |
+| `high` | Broken only with a stated exception (`SHOULD`) |
 | `medium` | Prefer to follow |
 
 **Required fields:** Category, Severity, Description, Scope, Rationale
@@ -129,9 +129,9 @@ For detailed constraint template, see [templates.md](templates.md).
 
 ## Notes
 
-- Constraints are immutable rules; they should rarely change
+- Constraints are immutable rules; they rarely change
 - Use decisions (ADR) for choices; use constraints for rules
 - Review constraints periodically (update `Last Verified` date)
 - **Sync on deletion/demotion**: if a constraint is deleted or demoted (`critical`→`high`), remove it from the AGENTS.md inline block as well. If unsure, run Mode 3 to re-sync.
-- **Scoped block update**: updates are marker-based (`<!-- ACP:CRITICAL_CONSTRAINTS -->`) and should not affect other sections.
+- **Scoped block update**: updates are marker-based (`<!-- ACP:CRITICAL_CONSTRAINTS -->`) and leave other sections unchanged.
 - **Validation checklist**: verify all 4 scenarios: `critical create`, `critical→high demotion`, `critical delete`, `critical count = 0`.

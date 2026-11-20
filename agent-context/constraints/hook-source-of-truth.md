@@ -7,7 +7,8 @@
 
 ## Rule
 
-Hook scripts MUST be managed in `hooks/<category>/` and deployed via `sync-hooks.sh` only.
+The source of each hook script MUST live in `hooks/<category>/`.
+Only `scripts/install.sh` MAY deploy a hook script.
 
 ## Violations
 

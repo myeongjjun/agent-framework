@@ -55,7 +55,7 @@ is managed-settings only, and project `minimumVersion` only gates auto-updates
 | Repo type | CLAUDE.md |
 |---|---|
 | **Personal / single-owner** | None. Do not create one; `AGENTS.md` loads natively. |
-| **Team-shared** (others may run older Claude Code) | A `CLAUDE.md` containing just `@AGENTS.md` — works on every version, Windows-safe, never double-loaded. |
+| **Team-shared** (others can run older Claude Code) | A `CLAUDE.md` containing just `@AGENTS.md` — works on every version, Windows-safe, never double-loaded. |
 | **Team-shared, org enforces `requiredMinimumVersion` >= 2.1.281 via managed settings** | None (same as personal). |
 
 Never create a `CLAUDE.md → AGENTS.md` symlink.

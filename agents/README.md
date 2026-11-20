@@ -22,7 +22,7 @@ Source format follows the official spec:
 | `agents/<name>.md` | Source agent definition (YAML frontmatter + system prompt body) |
 | `~/.claude/agents/<name>.md` | Deployed copy (`scripts/install.sh` writes here) |
 
-Files must be flat at the top of `agents/` — no subdirectories.
+Each file MUST sit at the top level of `agents/`, not in a subdirectory.
 `README.md` and `INDEX.md` are skipped by `install.sh`.
 
 ## Conventions

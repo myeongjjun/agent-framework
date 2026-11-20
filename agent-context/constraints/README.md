@@ -1,10 +1,10 @@
 # Project Constraints
 
-This directory contains immutable constraints that must not be violated.
+This directory contains immutable constraints that agents never break.
 
 ## What is a Constraint?
 
-A constraint is a rule that must always be followed. Unlike decisions (which explain why), constraints define hard boundaries.
+A constraint is a rule that agents always follow. Unlike decisions (which explain why), constraints define hard boundaries.
 
 ## File Naming Convention
 
