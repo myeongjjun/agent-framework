@@ -9,11 +9,14 @@ A requirement sentence states one requirement with one RFC 2119 keyword:
 Usage:
   req-lint [--subject NAME] [--json]      # stdin: one requirement per line
   req-lint --md FILE... [--json]          # check keyword sentences in Markdown
+  req-lint --lang FILE... [--json]        # flag Korean prose in agent-facing Markdown
 
 stdin mode treats every non-empty line as a requirement (a line without a
 keyword is an error). --md mode checks only the sentences that contain an
 uppercase keyword outside a code span; fenced code, front matter, headings
-and table rows are skipped. Exit 1 when any rule fails, 2 on usage errors.
+and table rows are skipped. --lang mode flags prose blocks with Hangul
+outside code, quotes, glosses like **정체됨 (stale)** and sections whose
+heading names output, examples or triggers. Exit 1 when any rule fails, 2 on usage errors.
 """
 import json
 import re
@@ -67,41 +70,78 @@ def errors(text: str, subject: str | None = None, single: bool = True) -> list[s
     return out
 
 
-def md_sentences(path: Path):
-    """Yield (line, sentence) for prose sentences in a Markdown file."""
+EXEMPT_SECTION = re.compile(r"output|example|trigger|출력|예시", re.I)
+QUOTED = re.compile(r'"[^"]*"|\u201c[^\u201d]*\u201d|\u300c[^\u300d]*\u300d')
+GLOSS = re.compile(r"[\u3131-\u318e\uac00-\ud7a3][^()\n]*?\s?\([A-Za-z][^)]*\)")
+
+
+def md_blocks(path: Path):
+    """Yield (line, text, exempt) per prose block: a paragraph or a list item.
+
+    Front matter, fenced code, headings and table rows are skipped. `exempt` is
+    True inside a section whose heading names output, examples or triggers.
+    """
     lines = path.read_text(encoding="utf-8").splitlines()
     i, fence, block, start = 0, None, [], 0
+    exempt_level = None  # heading level that opened an exempt section
     if lines and lines[0].strip() == "---":
         i = next((j + 1 for j in range(1, len(lines)) if lines[j].strip() == "---"), len(lines))
 
     def flush():
-        text = " ".join(block)
-        text = re.sub(r"\b(e\.g|i\.e|etc)\.", r"\1", text)
-        for s in re.split(r"(?<=[.!?])\s+", CODE_SPAN.sub(lambda c: c.group(0).replace(".", "\0"), text)):
-            if s.strip():
-                yield start, s.replace("\0", ".").strip()
+        if block:
+            yield start, " ".join(block), exempt_level is not None
 
     for n in range(i, len(lines)):
-        raw = lines[n]
-        s = raw.strip()
+        s = lines[n].strip()
         if fence:
             if s.startswith(fence):
                 fence = None
             continue
         f = re.match(r"^(`{3,}|~{3,})", s)
+        h = re.match(r"^(#{1,6})\s+(.*)", s)
         new_item = re.match(r"^(?:[-*+]|\d+[.)])\s+", s)
-        if f or not s or s.startswith(("#", "|", "<!--")) or new_item:
+        if f or h or not s or s.startswith(("|", "<!--")) or new_item:
             yield from flush()
             block = []
             if f:
                 fence = f.group(1)
                 continue
-            if not s or s.startswith(("#", "|", "<!--")):
+            if h:
+                level = len(h.group(1))
+                if exempt_level is not None and level <= exempt_level:
+                    exempt_level = None
+                if exempt_level is None and EXEMPT_SECTION.search(h.group(2)):
+                    exempt_level = level
+                continue
+            if not s or s.startswith(("|", "<!--")):
                 continue
         if not block:
             start = n + 1
-        block.append(re.sub(r"^(?:>\s*)*(?:[-*+]|\d+[.)])?\s*(?:\[[ xX]\]\s+)?", "", s))
+        block.append(re.sub(r"^(?:>\s*)*(?:(?:[-*+]|\d+[.)])\s+)?(?:\[[ xX]\]\s+)?", "", s))
     yield from flush()
+
+
+def md_sentences(path: Path):
+    """Yield (line, sentence) for prose sentences in a Markdown file."""
+    for start, text, _ in md_blocks(path):
+        text = re.sub(r"\b(e\.g|i\.e|etc)\.", r"\1", text)
+        for s in re.split(r"(?<=[.!?])\s+", CODE_SPAN.sub(lambda c: c.group(0).replace(".", "\0"), text)):
+            if s.strip():
+                yield start, s.replace("\0", ".").strip()
+
+
+def lang_errors(path: Path):
+    """Yield (line, text) for prose blocks with Hangul outside the allowed places.
+
+    Allowed: front matter, code, quoted text, Output/Example/Trigger sections,
+    and a Korean term glossed in English, e.g. **정체됨 (stale)**.
+    """
+    for start, text, exempt in md_blocks(path):
+        if exempt:
+            continue
+        bare = GLOSS.sub("", QUOTED.sub("", CODE_SPAN.sub("", text)))
+        if HANGUL.search(bare):
+            yield start, text
 
 
 def main(argv: list[str]) -> int:
@@ -111,7 +151,15 @@ def main(argv: list[str]) -> int:
     if argv and argv[0] in ("-h", "--help"):
         print(__doc__)
         return 0
-    if argv and argv[0] == "--md":
+    if argv and argv[0] == "--lang":
+        if len(argv) < 2:
+            print("req-lint: --lang needs at least one file", file=sys.stderr)
+            return 2
+        for f in argv[1:]:
+            findings += [{"loc": f"{f}:{line}", "line": line, "text": text,
+                          "error": "write agent-facing prose in English (Hangul outside code, quotes, glosses, output/example sections)"}
+                         for line, text in lang_errors(Path(f))]
+    elif argv and argv[0] == "--md":
         if len(argv) < 2:
             print("req-lint: --md needs at least one file", file=sys.stderr)
             return 2
@@ -125,7 +173,7 @@ def main(argv: list[str]) -> int:
         if argv[:1] == ["--subject"] and len(argv) == 2:
             subject = argv[1]
         elif argv:
-            print("usage: req-lint [--subject NAME] [--json] | req-lint --md FILE... [--json]", file=sys.stderr)
+            print("usage: req-lint [--subject NAME] [--json] | req-lint --md|--lang FILE... [--json]", file=sys.stderr)
             return 2
         for n, text in enumerate(sys.stdin.read().splitlines(), 1):
             if text.strip():

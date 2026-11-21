@@ -13,7 +13,7 @@ A skill MUST use Korean only for output format examples and trigger phrases.
 
 ## Scope
 
-- **Applies to**: `skills/*/SKILL.md`
+- **Applies to**: `skills/*/SKILL.md`, `agents/*.md`
 - **Excludes**: none
 
 ## Rationale
@@ -21,6 +21,14 @@ A skill MUST use Korean only for output format examples and trigger phrases.
 This convention exists to prevent style drift: without it, agents default to Korean when the project language is Korean, which breaks consistency in workflow sections across skills. Keep workflow logic English so skills are portable across projects and reviewers; keep user-facing output Korean so end-users see their expected language.
 
 ## Verification
+
+```bash
+req-lint --lang agents/*.md skills/*/SKILL.md   # also the CI job `req-lint`
+```
+
+`req-lint --lang` flags Hangul in prose outside front matter, code,
+quoted text, glosses like **정체됨 (stale)**, and sections whose heading
+names output, examples or triggers.
 
 Manual review checklist:
 - [ ] Frontmatter trigger_phrases: Korean allowed
@@ -56,4 +64,4 @@ Manual review checklist:
 
 ## References
 
-- `skills/*/SKILL.md` — enforce on every skill at review time
+- `skills/*/SKILL.md`, `agents/*.md` — enforced by `req-lint --lang` in CI

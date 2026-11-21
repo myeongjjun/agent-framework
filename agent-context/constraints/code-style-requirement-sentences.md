@@ -87,7 +87,8 @@ req-lint --md agents/*.md skills/*/SKILL.md agent-context/constraints/*.md
 printf '%s\n' "claw MUST NOT write a secret to a log." | req-lint --subject claw
 ```
 
-`req-lint` is `bin/req-lint`; `scripts/install.sh` links it to
+The CI job `req-lint` (`.github/workflows/ci.yml`) runs the Markdown check on
+every push to `main`. `req-lint` is `bin/req-lint`; `scripts/install.sh` links it to
 `~/.local/bin/req-lint`. A persona lint that depends on it fails when
 it is missing.
 

@@ -112,7 +112,8 @@ strategy into another.
   modify settings.json / hooks / MCP config. See
   [`agent-context/constraints/no-permission-bypass.md`](agent-context/constraints/no-permission-bypass.md).
 - **Skill Language Convention** — English for workflow/logic sections,
-  Korean reserved for output examples and trigger phrases. See
+  Korean reserved for output examples and trigger phrases; applies to
+  `skills/*/SKILL.md` and `agents/*.md`, checked by `req-lint --lang` in CI. See
   [`agent-context/constraints/code-style-skill-language-convention.md`](agent-context/constraints/code-style-skill-language-convention.md).
 - **Requirement Sentences** — an English requirement sentence uses
   one uppercase RFC 2119 keyword (`MUST`/`MUST NOT`/`SHOULD`/`MAY`),

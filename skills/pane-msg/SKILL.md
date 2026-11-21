@@ -24,7 +24,7 @@ trigger_phrases:
 
 ## ACP Integration
 
-> 이 스킬은 AGENTS.md의 ACP 규칙을 준수합니다.
+> This skill follows the ACP rules in AGENTS.md.
 
 - Follows the L1 language convention: English for workflow/logic, Korean
   only for trigger phrases and output format examples.
@@ -222,8 +222,8 @@ the landed-check are the reliability fix this skill exists for.
 - 메시지: "..."
 ```
 
-`UNCONFIRMED`(exit 5) 시 그대로 보고하고 화면 스냅샷(`cmux read-screen`)을
-첨부한다 — 성공으로 보고하지 않는다.
+On `UNCONFIRMED` (exit 5), report it as is and attach a screen snapshot
+(`cmux read-screen`). The skill MUST NOT report it as a success.
 
 ## Relationship to other skills
 

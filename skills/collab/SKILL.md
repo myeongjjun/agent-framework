@@ -22,7 +22,7 @@ output_dir: "~/.local/share/sib"
 
 ## ACP Integration
 
-> 이 스킬은 AGENTS.md의 ACP 규칙을 준수합니다.
+> This skill follows the ACP rules in AGENTS.md.
 
 - Follows the **Dual-Agent Worktree Review** pattern: two independent
   workers solve the same task in isolated worktrees, then cross-review.

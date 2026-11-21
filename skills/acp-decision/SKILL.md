@@ -18,23 +18,23 @@ trigger_phrases:
 
 ## ACP Integration
 
-> 이 스킬은 AGENTS.md의 ACP 규칙을 준수합니다.
+This skill follows the ACP rules in AGENTS.md.
 
-**⚠️ 중요:**
-- `agent-context/decisions/` 직접 수정 금지
-- 반드시 이 스킬(`/acp-decision`)을 통해 ADR 생성
-- 직접 수정 시 context 동기화 깨짐
+**Important:**
+- The agent MUST NOT edit `agent-context/decisions/` directly.
+- The agent MUST create an ADR through this skill (`/acp-decision`).
+- A direct edit breaks context synchronization.
 
 **Workflow:**
-1. 세션 중 아키텍처 결정 발생
-2. `/acp-decision` 스킬 호출
-3. ADR 자동 생성 및 INDEX.md 업데이트
+1. An architectural decision comes up during the session.
+2. Invoke the `/acp-decision` skill.
+3. The skill creates the ADR and updates `INDEX.md`.
 
 ## Purpose
 
 Create an Architecture Decision Record (ADR) in the `/agent-context/decisions/` directory so future agents understand why certain choices were made.
 
-**이 스킬이 ADR 생성의 유일한 방법입니다.**
+**This skill is the only way to create an ADR.**
 
 ## When to Use
 

@@ -9,7 +9,7 @@
 | Constraint | Category | Scope |
 |------------|----------|-------|
 | [no-permission-bypass](no-permission-bypass.md) | security | All personas |
-| [code-style-skill-language-convention](code-style-skill-language-convention.md) | code-style | `skills/*/SKILL.md` |
+| [code-style-skill-language-convention](code-style-skill-language-convention.md) | code-style | `skills/*/SKILL.md`, `agents/*.md` |
 
 ### High
 

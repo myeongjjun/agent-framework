@@ -20,10 +20,10 @@ trigger_phrases:
 
 Set up the ACP directory structure in a project so any agent can share context through standard files.
 
-**핵심 원칙:**
-- AGENTS.md = 순수 ACP 가이드 (프로젝트 정보 없음)
-- agent-context/ = READ-ONLY (스킬로만 수정)
-- `<!-- ACP:TEMPLATE_END -->` 마커로 템플릿/커스텀 영역 구분
+**Core principles:**
+- AGENTS.md is a pure ACP guide, with no project information.
+- `agent-context/` is READ-ONLY; only the ACP skills change it.
+- The `<!-- ACP:TEMPLATE_END -->` marker divides the template part from the custom part.
 
 ## What Gets Created
 
@@ -65,30 +65,30 @@ Never modify or delete a real (non-symlink) `CLAUDE.md` file.
 
 ### Init Mode (default)
 
-- **조건**: AGENTS.md 없음
-- **동작**: 템플릿으로 새로 생성 (마커 포함)
+- **Condition**: AGENTS.md does not exist.
+- **Action**: Create it from the template, with the marker.
 
 ### Upgrade Mode
 
-- **조건**: AGENTS.md 있음
-- **동작**:
-  1. `<!-- ACP:TEMPLATE_END -->` 마커 찾기
-  2. 마커 이후 내용 추출 (프로젝트 커스텀 영역)
-  3. 최신 템플릿 생성 (마커까지)
-  4. 추출한 커스텀 내용 붙이기
+- **Condition**: AGENTS.md exists.
+- **Action**:
+  1. Find the `<!-- ACP:TEMPLATE_END -->` marker.
+  2. Extract the content after the marker (the project custom part).
+  3. Generate the latest template, up to the marker.
+  4. Append the extracted custom content.
 
-**경계선**: `<!-- ACP:TEMPLATE_END -->` 마커
+**Boundary**: the `<!-- ACP:TEMPLATE_END -->` marker.
 
-**Fallback** (마커 없는 구버전):
-- `## Project-Specific Sections` 헤더 찾기
-- 또는 첫 번째 `---` 구분선 찾기
-- 없으면 전체 교체 + 경고
+**Fallback** (old version without the marker):
+- Find the `## Project-Specific Sections` header.
+- If there is none, find the first `---` divider.
+- If there is neither, replace the whole file and warn the user.
 
 ## Actions
 
 ### Init Mode
 
-1. **Check if already initialized** - AGENTS.md 있으면 → Upgrade Mode로 전환
+1. **Check if already initialized** - if AGENTS.md exists, switch to Upgrade Mode
 2. **Create directories** - `mkdir -p agent-context/decisions agent-context/constraints`
 3. **Create AGENTS.md** - Use template from [templates.md](templates.md)
 4. **Apply CLAUDE.md policy** - Ask the user: personal/single-owner or team-shared (and, if team-shared, whether the org enforces `requiredMinimumVersion` >= 2.1.281). See [CLAUDE.md policy](#claude-code-loading-claudemd-policy).
@@ -105,16 +105,16 @@ Never modify or delete a real (non-symlink) `CLAUDE.md` file.
 ### Upgrade Mode
 
 1. **Read existing AGENTS.md**
-2. **Find marker** - `<!-- ACP:TEMPLATE_END -->` 찾기
-3. **Extract custom content** - 마커 이후 내용 보존
-4. **Generate new template** - 최신 템플릿 (마커까지)
-5. **Append custom content** - 보존한 내용 붙이기
+2. **Find marker** - find `<!-- ACP:TEMPLATE_END -->`
+3. **Extract custom content** - keep the content after the marker
+4. **Generate new template** - the latest template, up to the marker
+5. **Append custom content** - append the kept content
 6. **Review CLAUDE.md** - Ask which repo type applies (see [CLAUDE.md policy](#claude-code-loading-claudemd-policy)), then:
    - `CLAUDE.md` is a symlink to `AGENTS.md`: offer to replace it — remove it (personal / enforced minimum version) or replace it with a file containing `@AGENTS.md` (team-shared). Change nothing without the user's yes.
    - `CLAUDE.md` is a real file: never modify or delete it. If it lacks `@AGENTS.md`, warn that `AGENTS.md` is not loaded by Claude Code.
    - No `CLAUDE.md` and team-shared without enforced minimum version: offer to create one containing `@AGENTS.md`.
-7. **Update other ACP files if needed** - decisions/constraints 디렉터리 확인
-8. **Report changes** - 업데이트 완료 보고
+7. **Update other ACP files if needed** - check the `decisions/` and `constraints/` directories
+8. **Report changes** - report the completed update
 
 ## Templates
 
@@ -122,6 +122,6 @@ For detailed templates, see [templates.md](templates.md).
 
 ## Notes
 
-- AGENTS.md에 프로젝트 정보 없음 (README.md, package.json 참조)
-- agent-context/ 직접 수정 금지 → 스킬 사용 강제
-- 마커 이후 영역에 프로젝트별 커스텀 내용 추가 가능
+- AGENTS.md has no project information; that lives in README.md or package.json.
+- The agent MUST NOT edit `agent-context/` directly; it uses the ACP skills.
+- A project MAY add its own content after the marker.

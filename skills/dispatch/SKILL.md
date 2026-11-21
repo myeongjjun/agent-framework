@@ -22,7 +22,7 @@ output_dir: "~/.local/share/sib"
 
 ## ACP Integration
 
-> 이 스킬은 AGENTS.md의 ACP 규칙을 준수합니다.
+> This skill follows the ACP rules in AGENTS.md.
 
 When new constraints or architecture decisions are discovered during
 dispatch, record them via `/acp-constraint` or `/acp-decision` (do not
