@@ -64,6 +64,7 @@ Trigger: "add constraint"
 3. **Generate filename** - `<category>-<name-slug>.md`
 4. **Create constraint file** - Use template from [templates.md](templates.md)
 5. **Update INDEX.md** - Add entry to constraints index
+5a. **Check IDs and trace** - Run `req-lint --trace` and `req-lint --md agent-context/constraints/*.md`; fix every finding.
 6. **Sync to AGENTS.md** (critical only) - if severity is `critical`:
    - Find the `<!-- ACP:CRITICAL_CONSTRAINTS -->` to `<!-- ACP:CRITICAL_CONSTRAINTS_END -->` block in `AGENTS.md`.
    - If the block is missing, create it right below `<!-- ACP:TEMPLATE_END -->`.

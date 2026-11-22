@@ -7,8 +7,15 @@
 
 ## Rule
 
-The source of each hook script MUST live in `hooks/<category>/`.
-Only `scripts/install.sh` MAY deploy a hook script.
+- **R1** The source of each hook script MUST live in `hooks/<category>/`.
+- **R2** A writer MUST NOT deploy a hook script except through `scripts/install.sh`.
+
+## Trace
+
+| ID | Check |
+|---|---|
+| R1 | manual: `scripts/verify.sh` reports drift between source and deployed copies |
+| R2 | manual: `scripts/verify.sh` reports drift between source and deployed copies |
 
 ## Violations
 

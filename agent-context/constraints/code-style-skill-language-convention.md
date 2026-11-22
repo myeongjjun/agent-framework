@@ -4,12 +4,12 @@
 - **Category**: code-style
 - **Severity**: critical
 - **Created**: 2026-03-05
-- **Last Verified**: 2026-11-20
+- **Last Verified**: 2026-11-23
 
 ## Description
 
-A skill MUST use English in its workflow and logic sections.
-A skill MUST use Korean only for output format examples and trigger phrases.
+- **R1** A skill MUST use English in its workflow and logic sections.
+- **R2** A skill MUST use Korean only for output format examples and trigger phrases.
 
 ## Scope
 
@@ -35,6 +35,13 @@ Manual review checklist:
 - [ ] Workflow, Edge Cases, Notes sections: English
 - [ ] Output Format examples: Korean
 - [ ] Korean terms in English text: inline with translation (e.g., **정체됨 (stale)**)
+
+## Trace
+
+| ID | Check |
+|---|---|
+| R1 | `tests/req-lint.bats` |
+| R2 | `tests/req-lint.bats` |
 
 ## Exceptions
 

@@ -4,13 +4,13 @@
 - **Category**: agent-behavior
 - **Severity**: high
 - **Created**: 2026-04-02
-- **Last Verified**: 2026-11-20
+- **Last Verified**: 2026-11-23
 
 ## Description
 
-When the agent analyzes, compares or decides, it MUST give quantitative evidence and qualitative reasoning before the conclusion.
-The agent MUST NOT skip a verification step.
-The agent MUST NOT state a conclusion without supporting data.
+- **R1** When the agent analyzes, compares or decides, it MUST give quantitative evidence and qualitative reasoning before the conclusion.
+- **R2** The agent MUST NOT skip a verification step.
+- **R3** The agent MUST NOT state a conclusion without supporting data.
 
 ## Scope
 
@@ -28,6 +28,14 @@ Before presenting a conclusion in analysis tasks, check:
 - [ ] Qualitative reasoning provided (trade-offs, context, implications)
 - [ ] Alternatives considered (at least briefly, when choosing between options)
 - [ ] Evidence precedes conclusion in the response (not appended after)
+
+## Trace
+
+| ID | Check |
+|---|---|
+| R1 | manual: review the analysis output |
+| R2 | manual: review the analysis output |
+| R3 | manual: review the analysis output |
 
 ## Exceptions
 

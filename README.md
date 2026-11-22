@@ -43,7 +43,7 @@ change L1 behaviour, it goes back to L1 (not a local override).
 | `skills/dispatch` | Single-agent sibling launch via sib, with workspace targeting. Used in every persona. |
 | `skills/collab` | Dual-agent same-task cross-review via sib worktrees. Used in every persona. |
 | `bin/sib` | cmux + worktree sibling-agent launcher. Used in every persona. |
-| `bin/req-lint` | Check English requirement sentences (RFC 2119 keyword + ASD-STE100 rules) from stdin or in Markdown. Persona lints call it. |
+| `bin/req-lint` | Check English requirement sentences (RFC 2119 keyword + ASD-STE100 rules) from stdin or in Markdown, English-only agent prose (`--lang`), and that every constraint requirement ID traces to a test (`--trace`). Persona lints call it. |
 | `bin/agent-promote.sh` | Squash-merge a sib worker branch (`sib/<slug>`) into the base branch with a risk scan. Backs `/collab` merges. |
 | `hooks/general/guard-acp-direct-edit.sh` | Block agent edits to `agent-context/`. Force ACP skill use. |
 | `hooks/general/guard-deployed-artifact-edit.sh` | Block agent edits to deployed runtime (~/.claude/skills, ~/.codex/skills, ...). |

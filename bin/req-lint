@@ -10,13 +10,18 @@ Usage:
   req-lint [--subject NAME] [--json]      # stdin: one requirement per line
   req-lint --md FILE... [--json]          # check keyword sentences in Markdown
   req-lint --lang FILE... [--json]        # flag Korean prose in agent-facing Markdown
+  req-lint --trace [ROOT] [--json]        # requirement IDs in constraints -> checks
 
 stdin mode treats every non-empty line as a requirement (a line without a
 keyword is an error). --md mode checks only the sentences that contain an
 uppercase keyword outside a code span; fenced code, front matter, headings
 and table rows are skipped. --lang mode flags prose blocks with Hangul
 outside code, quotes, glosses like **정체됨 (stale)** and sections whose
-heading names output, examples or triggers. Exit 1 when any rule fails, 2 on usage errors.
+heading names output, examples or triggers. --trace mode reads
+ROOT/agent-context/constraints/*.md: every requirement sentence there has its
+own list item that starts with a stable ID (**R<n>**), and every ID has a row
+in the file's "## Trace" table. A row names test files that contain the full
+ID (<file-stem>.R<n>), or starts with "manual". Exit 1 when any rule fails, 2 on usage errors.
 """
 import json
 import re
@@ -121,13 +126,68 @@ def md_blocks(path: Path):
     yield from flush()
 
 
+REQ_ID = re.compile(r"^\*\*(R\d+)\*\*\s+")
+
+
+def split_sentences(text: str) -> list[str]:
+    text = re.sub(r"\b(e\.g|i\.e|etc)\.", r"\1", text)
+    parts = re.split(r"(?<=[.!?])\s+", CODE_SPAN.sub(lambda c: c.group(0).replace(".", "\0"), text))
+    return [s.replace("\0", ".").strip() for s in parts if s.strip()]
+
+
 def md_sentences(path: Path):
-    """Yield (line, sentence) for prose sentences in a Markdown file."""
+    """Yield (line, sentence) for prose sentences in a Markdown file (IDs stripped)."""
     for start, text, _ in md_blocks(path):
-        text = re.sub(r"\b(e\.g|i\.e|etc)\.", r"\1", text)
-        for s in re.split(r"(?<=[.!?])\s+", CODE_SPAN.sub(lambda c: c.group(0).replace(".", "\0"), text)):
-            if s.strip():
-                yield start, s.replace("\0", ".").strip()
+        for s in split_sentences(REQ_ID.sub("", text)):
+            yield start, s
+
+
+def trace_errors(root: Path):
+    """Yield (loc, message) for requirement IDs in constraints without a trace."""
+    for path in sorted((root / "agent-context" / "constraints").glob("*.md")):
+        if path.name in ("INDEX.md", "README.md"):
+            continue
+        rel, stem = path.relative_to(root), path.stem
+        ids = {}
+        for start, text, _ in md_blocks(path):
+            m = REQ_ID.match(text)
+            reqs = [s for s in split_sentences(REQ_ID.sub("", text)) if KEYWORD.search(mask(s))]
+            if m and m.group(1) in ids:
+                yield f"{rel}:{start}", f"duplicate ID {m.group(1)}"
+            elif m:
+                ids[m.group(1)] = start
+            if reqs and not m:
+                yield f"{rel}:{start}", f"requirement without an ID (start the list item with **R<n>**): \"{reqs[0]}\""
+            elif m and len(reqs) != 1:
+                yield f"{rel}:{start}", f"{m.group(1)} has {len(reqs)} requirement sentences; one ID holds one requirement"
+        rows, in_trace = {}, False
+        for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            h = re.match(r"^(#{1,6})\s+(.*)", line.strip())
+            if h:
+                in_trace = h.group(2).strip().lower() == "trace"
+                continue
+            r = re.match(r"^\|\s*(R\d+)\s*\|\s*(.*?)\s*\|\s*$", line.strip()) if in_trace else None
+            if r:
+                rows[r.group(1)] = (n, r.group(2))
+        for rid, start in ids.items():
+            if rid not in rows:
+                yield f"{rel}:{start}", f"{rid} has no row in the '## Trace' table"
+        for rid, (n, check) in rows.items():
+            full = f"{stem}.{rid}"
+            if rid not in ids:
+                yield f"{rel}:{n}", f"Trace row {rid} names no requirement in this file"
+            elif check.lower().startswith("manual"):
+                continue
+            else:
+                paths = re.findall(r"`([^`]+)`", check)
+                if not paths:
+                    yield f"{rel}:{n}", f"{rid}: name a test file in backticks, or start the check with 'manual'"
+                for c in paths:
+                    f = root / c
+                    if not f.is_file():
+                        yield f"{rel}:{n}", f"{rid}: check file '{c}' does not exist"
+                    elif full not in f.read_text(encoding="utf-8", errors="replace"):
+                        yield f"{rel}:{n}", f"{rid}: '{c}' does not mention {full}"
 
 
 def lang_errors(path: Path):
@@ -151,7 +211,14 @@ def main(argv: list[str]) -> int:
     if argv and argv[0] in ("-h", "--help"):
         print(__doc__)
         return 0
-    if argv and argv[0] == "--lang":
+    if argv and argv[0] == "--trace":
+        if len(argv) > 2:
+            print("req-lint: --trace takes at most one ROOT", file=sys.stderr)
+            return 2
+        root = Path(argv[1] if len(argv) == 2 else ".")
+        findings += [{"loc": loc, "line": int(loc.rsplit(":", 1)[1]), "text": "", "error": e}
+                     for loc, e in trace_errors(root)]
+    elif argv and argv[0] == "--lang":
         if len(argv) < 2:
             print("req-lint: --lang needs at least one file", file=sys.stderr)
             return 2
@@ -173,7 +240,7 @@ def main(argv: list[str]) -> int:
         if argv[:1] == ["--subject"] and len(argv) == 2:
             subject = argv[1]
         elif argv:
-            print("usage: req-lint [--subject NAME] [--json] | req-lint --md|--lang FILE... [--json]", file=sys.stderr)
+            print("usage: req-lint [--subject NAME] [--json] | req-lint --md|--lang FILE... | req-lint --trace [ROOT]", file=sys.stderr)
             return 2
         for n, text in enumerate(sys.stdin.read().splitlines(), 1):
             if text.strip():
@@ -183,7 +250,7 @@ def main(argv: list[str]) -> int:
         print(json.dumps(findings, ensure_ascii=False))
     else:
         for x in findings:
-            print(f"{x['loc']}: {x['error']} — \"{x['text']}\"")
+            print(f"{x['loc']}: {x['error']}" + (f" — \"{x['text']}\"" if x["text"] else ""))
     return 1 if findings else 0
 
 

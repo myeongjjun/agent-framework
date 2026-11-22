@@ -14,8 +14,11 @@
 
 {CLEAR_DESCRIPTION}
 
-Clear, unambiguous description of the constraint.
-One sentence that can be used as a rule check.
+- **R1** {REQUIREMENT_SENTENCE}
+
+Each requirement is one RFC 2119 sentence in its own list item with a
+stable ID (`code-style-requirement-sentences`). Never renumber an ID;
+a new requirement takes the next free number.
 
 ## Scope
 
@@ -41,6 +44,15 @@ Link to incidents or issues if relevant.
 Manual review checklist:
 - [ ] Check item 1
 - [ ] Check item 2
+
+## Trace
+
+| ID | Check |
+|---|---|
+| R1 | `{TEST_FILE_NAMING_<file-stem>.R1}` or manual: {HOW} |
+
+`req-lint --trace` fails when an ID has no row, or a named test file
+does not contain the full ID `<file-stem>.R<n>`.
 
 ## Exceptions
 

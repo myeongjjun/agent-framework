@@ -5,8 +5,8 @@ name: ci
 #     (tests/helpers/cmux-stub via SIB_EXTRA_PATH), so no live cmux is needed —
 #     this is safe and deterministic on a headless runner.
 #   - shellcheck: lint the bash entrypoints.
-#   - req-lint: requirement sentences (RFC 2119 + ASD-STE100) and English-only
-#     agent-facing prose in agents/*.md, skills/*/SKILL.md, constraints.
+#   - req-lint: requirement sentences (RFC 2119 + ASD-STE100), English-only
+#     agent-facing prose, requirement-ID trace, and tests/req-lint.bats.
 # The LIVE prompt-injection check (tests/live-smoke.sh) is intentionally absent:
 # it needs a running cmux.app desktop session + authenticated claude/codex
 # binaries, none of which exist on CI. It runs locally — see
@@ -48,3 +48,9 @@ jobs:
         run: python3 -I bin/req-lint --md agents/*.md skills/*/SKILL.md agent-context/constraints/*.md
       - name: English-only agent-facing prose
         run: python3 -I bin/req-lint --lang agents/*.md skills/*/SKILL.md
+      - name: Requirement IDs trace to checks
+        run: python3 -I bin/req-lint --trace
+      - name: Install bats
+        run: sudo apt-get update && sudo apt-get install -y bats
+      - name: req-lint tests
+        run: bats tests/req-lint.bats

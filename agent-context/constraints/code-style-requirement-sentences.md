@@ -3,7 +3,7 @@
 - **Category**: code-style
 - **Severity**: high
 - **Created**: 2026-11-20
-- **Last Verified**: 2026-11-20
+- **Last Verified**: 2026-11-23
 - **Scope**: All personas (L1 baseline)
 
 ## Description
@@ -37,16 +37,28 @@ Keywords (RFC 2119 / RFC 8174, uppercase only):
 
 Sentence rules:
 
-1. A requirement sentence MUST be in English.
-2. A requirement sentence MUST use the form `[If|When <condition>, ]<subject> <keyword> <verb> ...`.
-3. A requirement sentence MUST contain exactly one keyword.
-4. A writer MUST NOT use `SHALL`, `REQUIRED`, `RECOMMENDED` or `OPTIONAL` as keywords.
-5. A requirement sentence MUST NOT contain a lowercase `must`, `should`, `may` or `shall`.
-6. A `SHOULD` sentence MUST state its exception with `unless` or `except`.
-7. A requirement sentence MUST have 20 words or fewer, and a code span counts as one word.
-8. A writer MUST NOT put a keyword in a description, a table of terms or a rejected alternative.
+- **R1** A requirement sentence MUST be in English.
+- **R2** A requirement sentence MUST use the form `[If|When <condition>, ]<subject> <keyword> <verb> ...`.
+- **R3** A requirement sentence MUST contain exactly one keyword.
+- **R4** A writer MUST NOT use `SHALL`, `REQUIRED`, `RECOMMENDED` or `OPTIONAL` as keywords.
+- **R5** A requirement sentence MUST NOT contain a lowercase `must`, `should`, `may` or `shall`.
+- **R6** A `SHOULD` sentence MUST state its exception with `unless` or `except`.
+- **R7** A requirement sentence MUST have 20 words or fewer, and a code span counts as one word.
+- **R8** A writer MUST NOT put a keyword in a description, a table of terms or a rejected alternative.
 
-Rules 1–7 are checked by `req-lint`. The checks below are manual
+Requirement IDs and trace (constraints only):
+
+- **R9** Each requirement sentence in a constraint MUST start its own list item with an ID `**R<n>**`.
+- **R10** A writer MUST NOT renumber an ID or reuse the ID of a removed requirement.
+- **R11** Each ID MUST have a row in the `## Trace` table of its constraint.
+- **R12** A Trace row MUST name a test file that contains the full ID, or start with `manual`.
+
+The full ID is `<file-stem>.R<n>`, for example
+`code-style-requirement-sentences.R7`. A test that checks a requirement
+starts its name with the full ID. A new requirement takes the next
+free number.
+
+The checks below are manual
 (ASD-STE100 rules that a script cannot check):
 
 - [ ] Active voice, and the subject is the actor (STE 3.x).
@@ -83,14 +95,34 @@ Sources and what was confirmed (2026-11-20):
 # Markdown: checks only sentences with an uppercase keyword
 req-lint --md agents/*.md skills/*/SKILL.md agent-context/constraints/*.md
 
+# Constraints: every requirement has an ID and a trace row
+req-lint --trace
+
 # A list of requirements, one per line (persona lints call this)
 printf '%s\n' "claw MUST NOT write a secret to a log." | req-lint --subject claw
 ```
 
-The CI job `req-lint` (`.github/workflows/ci.yml`) runs the Markdown check on
-every push to `main`. `req-lint` is `bin/req-lint`; `scripts/install.sh` links it to
+The CI job `req-lint` (`.github/workflows/ci.yml`) runs the Markdown check, the
+trace check and `tests/req-lint.bats` on every push to `main`. `req-lint` is `bin/req-lint`; `scripts/install.sh` links it to
 `~/.local/bin/req-lint`. A persona lint that depends on it fails when
 it is missing.
+
+## Trace
+
+| ID | Check |
+|---|---|
+| R1 | `tests/req-lint.bats` |
+| R2 | `tests/req-lint.bats` |
+| R3 | `tests/req-lint.bats` |
+| R4 | `tests/req-lint.bats` |
+| R5 | `tests/req-lint.bats` |
+| R6 | `tests/req-lint.bats` |
+| R7 | `tests/req-lint.bats` |
+| R8 | manual: review at edit time (agent-home `manifest-lint` checks its description fields) |
+| R9 | `tests/req-lint.bats` |
+| R10 | manual: review the diff of any constraint for changed or reused IDs |
+| R11 | `tests/req-lint.bats` |
+| R12 | `tests/req-lint.bats` |
 
 ## Exceptions
 
