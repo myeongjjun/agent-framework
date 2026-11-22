@@ -3,7 +3,8 @@ name: ci
 # What runs here (and what does NOT):
 #   - bats: bin/sib's flag/placement/state logic. cmux is stubbed
 #     (tests/helpers/cmux-stub via SIB_EXTRA_PATH), so no live cmux is needed —
-#     this is safe and deterministic on a headless runner.
+#     this is safe and deterministic on a headless runner. tests/install.bats
+#     runs scripts/install.sh + verify.sh against a throwaway HOME.
 #   - shellcheck: lint the bash entrypoints.
 #   - req-lint: requirement sentences (RFC 2119 + ASD-STE100), English-only
 #     agent-facing prose, requirement-ID trace, and tests/req-lint.bats.

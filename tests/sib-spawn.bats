@@ -403,6 +403,17 @@ trusted() { jq -e --arg d "$1" '.projects[$d].hasTrustDialogAccepted == true' "$
   [[ "$output" == *"pre-trusted"* ]]
 }
 
+@test "pre-trust works when HOME is reached through a symlink" {
+  # macOS default TMPDIR is /var/... → /private/var/...; this reproduces it anywhere.
+  trust_setup
+  ln -s "$HOME" "$BATS_TEST_TMPDIR/home-link"
+  export HOME="$BATS_TEST_TMPDIR/home-link" XDG_CONFIG_HOME="$BATS_TEST_TMPDIR/home-link/.config"
+  run "$SIB" spawn tr-link --workdir "$HOME/work/proj"
+  [ "$status" -eq 0 ]
+  trusted "$(cd "$HOME/work/proj" && pwd -P)"
+  [[ "$output" == *"pre-trusted"* ]]
+}
+
 @test "a workdir outside the allowlist is left untrusted" {
   trust_setup
   run "$SIB" spawn tr-no --workdir "$HOME/other"

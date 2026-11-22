@@ -72,13 +72,16 @@ prune_if_dead() {
 SIB_TRUST_FILE="${SIB_TRUST_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/sib/trusted-dirs}"
 # Echoes: "already" | "added" | nothing (not eligible / could not write).
 trust_allowlisted() {
-  local dir="$1" line pat hit=0 cfg tmp
-  [[ -f "${SIB_TRUST_FILE}" && "${dir}" == "${HOME}"/* ]] || return 0
+  local dir="$1" line pat hit=0 cfg tmp home
+  # $dir is physical (pwd -P); compare it with the physical $HOME too, or a
+  # HOME under a symlink (macOS /var → /private/var) never matches.
+  home="$(cd "${HOME}" 2>/dev/null && pwd -P)" || return 0
+  [[ -f "${SIB_TRUST_FILE}" && "${dir}" == "${home}"/* ]] || return 0
   while IFS= read -r line || [[ -n "${line}" ]]; do
     line="${line%%#*}"
     line="${line#"${line%%[![:space:]]*}"}"; line="${line%"${line##*[![:space:]]}"}"
     [[ -n "${line}" ]] || continue
-    [[ "${line}" == \~/* ]] && line="${HOME}/${line#\~/}"
+    [[ "${line}" == \~/* ]] && line="${home}/${line#\~/}"
     pat="${line%/}"
     # Same depth first, so '*' cannot swallow a '/'.
     local ds="${dir//[^\/]/}" ps="${pat//[^\/]/}"
