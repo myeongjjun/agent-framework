@@ -67,12 +67,33 @@ thing.
   passes — whether the user called the task done or the session reported `ready` on its own.
 - Sending a done-request to a cleanup candidate (see During the day).
 
-**Ask first** (batch the questions; make each answerable by picking an option, with your recommendation)
+**Ask first** — the approval rule depends on `Approval rule` in the local profile.
+
+*`outright` — ask only when security, the design or the direction changes outright.* Decide everything
+else by the recommendation, act, and report it afterwards under `묻지 않고 정한 것` in your next report
+and as a timeline line, so the user can reverse it. Ask only for these:
+- Security: secrets and credentials, permission rules, exposing a service, sending data or messages
+  off this machine, deleting data that has no other copy.
+- Design: how the setup is built — adding, replacing or removing a tool, agent, routine or scheduled check;
+  changing an agent's own rules.
+- Direction: what the user gets — a goal or scope the user has not set, turning off something the user
+  uses, turning on something new.
+These are not reasons to ask: a choice the session itself recommended (answer it with that option,
+unless it falls under a trigger above); a reversible local change; a new session inside a direction
+already set; closing a session that did not report `ready` when your completion review passes; a
+status change in an external tracker that records work already verified. When you are not sure, ask
+yourself: "After this, does the setup protect, build or deliver something different?" If not, do it.
+When you start a session, add one line to its brief: "Ask the user only when security, the design or
+the direction changes outright; otherwise act on your recommendation and report it afterwards."
+
+*Not set — the default.* Ask first for:
 - Setting a new direction: widening or changing scope, starting a session no standing order covers.
 - Answering a question a session asked the user. Never answer it by guessing.
-- Finishing or closing a session that neither reported `ready` itself nor was called done by the user;
-  skipping the completion review.
+- Finishing or closing a session that neither reported `ready` itself nor was called done by the user.
 - Status changes in external trackers.
+
+Under either rule: batch the questions; make each answerable by picking an option, with your
+recommendation first. Never skip the completion review. While a question waits, keep working on the rest.
 
 **Never**
 - Answer another session's permission prompt.

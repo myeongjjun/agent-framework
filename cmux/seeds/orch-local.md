@@ -16,5 +16,8 @@
 
 ## Lookups and trackers
 - Read-only lookups allowed for planning:
-- External trackers (status changes need the user's approval):
+- External trackers (status changes follow the approval rule):
 - Outward-facing actions here (never done by the desk):
+
+## Approvals
+- Approval rule: <!-- empty = the definition's default; `outright` = ask only when security, the design or the direction changes outright -->
