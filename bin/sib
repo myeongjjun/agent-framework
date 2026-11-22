@@ -78,7 +78,7 @@ trust_allowlisted() {
     line="${line%%#*}"
     line="${line#"${line%%[![:space:]]*}"}"; line="${line%"${line##*[![:space:]]}"}"
     [[ -n "${line}" ]] || continue
-    [[ "${line}" == "~/"* ]] && line="${HOME}/${line#\~/}"
+    [[ "${line}" == \~/* ]] && line="${HOME}/${line#\~/}"
     pat="${line%/}"
     # Same depth first, so '*' cannot swallow a '/'.
     local ds="${dir//[^\/]/}" ps="${pat//[^\/]/}"

@@ -268,10 +268,10 @@ line two"
 # --- slug validation + dead-state pruning ------------------------------------
 
 @test "a slug starting with '-' is rejected before any state is written" {
-  run "$SIB" spawn --help
+  run "$SIB" spawn -x
   [ "$status" -ne 0 ]
   [[ "$output" == *"lowercase-kebab"* ]]
-  [ ! -f "$STATE/--help.env" ]
+  [ ! -f "$STATE/-x.env" ]
 }
 
 @test "spawn reuses a slug whose old pane is gone (no worktree)" {
@@ -463,10 +463,4 @@ trusted() { jq -e --arg d "$1" '.projects[$d].hasTrustDialogAccepted == true' "$
   [[ "$output" == *"sib spawn <slug>"* ]]
   [ ! -s "$CMUX_STUB_LOG" ]
   [ -z "$(ls "$STATE")" ]
-}
-
-@test "a slug starting with '-' is rejected" {
-  run "$SIB" spawn -x
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"lowercase-kebab"* ]]
 }
