@@ -19,11 +19,22 @@
 # Newlines in the message are flattened to spaces: cmux send treats \n as
 # Enter, which would submit a half-typed message.
 #
+# A message longer than PANE_DELIVER_INLINE_MAX characters (default 160) is
+# not typed: the full text goes to a file under
+# ${XDG_DATA_HOME:-~/.local/share}/pane-msg/ and the pane gets one line —
+# the message head (so markers like "done-request:" stay visible) plus the
+# file path. A long typed message outgrows a narrow or short pane's input
+# box, its head scrolls away, and the landed check can never pass (11-20,
+# 11-21: panes ~12 columns wide). On a failed landed check the typed text is
+# cleared from a Claude input box (Esc Esc), so nothing is left half-sent.
+#
 # Exit codes:
 #   0 delivered (submit confirmed, or queued under --queue)
 #   2 usage error                    3 refused: approval prompt on screen
 #   4 refused: pane busy (no --queue) 5 submitted but unconfirmed — inspect pane
 #   6 target pane gone
+# Stdout names the typed line (TYPED: <line>) and, when the pointer form was
+# used, the file (FILE: <path>).
 set -euo pipefail
 # SIB_EXTRA_PATH: test seam (a cmux stub dir), same as bin/sib.
 export PATH="${SIB_EXTRA_PATH:+${SIB_EXTRA_PATH}:}/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
@@ -31,7 +42,7 @@ export CMUX_QUIET=1
 
 STATE_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/sib/state"
 
-usage() { sed -n '2,27p' "$0" >&2; exit 2; }
+usage() { sed -n '2,37p' "$0" >&2; exit 2; }
 die() { echo "pane-deliver: $1" >&2; exit "${2:-2}"; }
 
 surface="" workspace="" slug="" queue=0 dry_run=0 msg=""
@@ -79,9 +90,13 @@ screen_tail() {
 # Busy = classic 'esc to interrupt' OR an agent spinner status line
 # ('· Orchestrating… (12m …)') — newer Claude Code builds show only the
 # spinner while working, with the ❯ input marker still drawn.
+# A narrow pane wraps the spinner line ('· Hullaba' / 'llooing…') and cuts
+# the 'esc to interrupt' hint, so the spinner is also matched with spaces
+# and newlines removed (a finished line, '✻ Sautéed for 3s', has no '…').
 busy_signal() {
   grep -qiF 'esc to interrupt' <<<"$1" && return 0
-  grep -qE '^[[:space:]]*(·|✢|✳|✶|✻|✽|\*|\+|•)[[:space:]]+[A-Z][a-z]+(…|\.\.\.)' <<<"$1"
+  grep -qE '^[[:space:]]*(·|✢|✳|✶|✻|✽|\*|\+|•)[[:space:]]+[A-Z][a-z]+(…|\.\.\.)' <<<"$1" && return 0
+  tr -d ' \n' <<<"$1" | grep -qE '(·|✢|✳|✶|✻|✽)[A-Z][a-zA-Z]{1,30}…'
 }
 
 tail_text="$(screen_tail)"
@@ -112,9 +127,29 @@ fi
 
 msg_flat="$(printf '%s' "${msg}" | tr '\n\t' '  ')"
 
+# Long message → file + one-line pointer (see header).
+inline_max="${PANE_DELIVER_INLINE_MAX:-160}"
+msg_file=""
+if (( ${#msg_flat} > inline_max )); then
+  msg_dir="${XDG_DATA_HOME:-$HOME/.local/share}/pane-msg"
+  sid="${surface##*:}"; (( ${#sid} > 8 )) && sid="${sid: -8}"
+  msg_file="${msg_dir}/$(date +%m%d-%H%M%S)-${sid}.md"
+  [[ -e "${msg_file}" ]] && msg_file="${msg_file%.md}-$$.md"
+  head="${msg_flat:0:40}"
+  [[ "${head}" == *" "* && ${#msg_flat} -gt 40 ]] && head="${head% *}"
+  shown="${msg_file}"
+  [[ "${shown}" == "${HOME}"/* ]] && shown="~${shown#"${HOME}"}"
+  if (( ! dry_run )); then
+    mkdir -p "${msg_dir}"
+    printf '%s\n' "${msg}" > "${msg_file}"
+  fi
+  msg_flat="${head} … read ${shown} and act on it"
+fi
+
 if (( dry_run )); then
   echo "DRY-RUN: would deliver to ${surface} in ${workspace} (busy=${busy}, queue=${queue})"
   echo "DRY-RUN message: ${msg_flat}"
+  [[ -n "${msg_file}" ]] && echo "DRY-RUN file: ${msg_file}"
   exit 0
 fi
 
@@ -125,11 +160,17 @@ fi
 # A placeholder that was not there before the send proves the head reached
 # the agent's TUI — a pty still in a shell never draws one.
 paste_ids() { tr -d ' \n' | grep -oE '\[Paste(dtext#[0-9]+|dContent[0-9]+chars)' | sort -u || true; }
-# Claude's input box drawn empty (marker + U+00A0/space only): the text left it.
-input_empty() { LC_ALL=C grep -qE $'^\xe2\x9d\xaf(\xc2\xa0| )*$'; }
+# Claude's input box drawn empty (marker + U+00A0/space only, or the
+# 'Try "…"' placeholder a fresh session shows): the text left it.
+input_empty() { LC_ALL=C grep -qE $'^\xe2\x9d\xaf(\xc2\xa0| )*(Try ".*)?$'; }
+# Claude scrolls an input box taller than its viewport and draws
+# '↑ N more' on the top rule; the head is then off screen.
+box_scrolled() { grep -qE '↑[0-9]+more'; }
 pastes_before="$(read_screen 200 | paste_ids || true)"
 
-# 1) Put the text in the input box (no enter yet).
+# 1) Put the text in the input box (no enter yet). TYPED names the exact
+# line, so a caller can look for it in the session's transcript.
+echo "TYPED: ${msg_flat}"
 cmux send --surface "${surface}" --workspace "${workspace}" "${msg_flat}" >/dev/null
 
 # 2) Confirm the text landed. Strip spaces+newlines from BOTH the screen and
@@ -149,6 +190,10 @@ for i in $(seq 1 60); do
   head_ok=0 tail_ok=0
   grep -qF -- "${head_needle}" <<<"${scr_ns}" && head_ok=1
   grep -qF -- "${tail_needle}" <<<"${scr_ns}" && tail_ok=1
+  # A scrolled box hides the head. The tail alone is enough then: it is
+  # unique (a pointer's tail names its own file), and a cut send loses the
+  # tail, not the head (§9 trap 5).
+  (( tail_ok )) && box_scrolled <<<"${scr_ns}" && head_ok=1
   if [[ -n "${new_paste}" ]]; then
     head_ok=1
     # The whole message folded: the input ends with the placeholder.
@@ -160,9 +205,24 @@ for i in $(seq 1 60); do
   if (( i <= 10 )); then sleep 0.1; else sleep 0.5; fi
 done
 if (( ! landed )); then
-  echo "UNCONFIRMED: text did not fully appear in ${surface}'s input box within ~30s — not submitting. Inspect the pane." >&2
+  # Clear what was typed so it cannot be submitted later by accident. Only a
+  # Claude box that is not already empty: Esc Esc on an empty box opens the
+  # rewind menu instead. Esc Esc clears the whole input (ctrl+u only clears
+  # one visual line in a wrapped box).
+  left="text left in the box"
+  scr="$(read_screen 20 || true)"
+  if { grep -q '❯' <<<"${scr}" || box_scrolled <<<"$(tr -d ' \n' <<<"${scr}")"; } \
+     && ! input_empty <<<"${scr}"; then
+    cmux send-key --surface "${surface}" --workspace "${workspace}" escape >/dev/null
+    sleep 0.3
+    cmux send-key --surface "${surface}" --workspace "${workspace}" escape >/dev/null
+    sleep 0.5
+    input_empty <<<"$(read_screen 20 || true)" && left="typed text cleared"
+  fi
+  echo "UNCONFIRMED: text did not fully appear in ${surface}'s input box within ~30s — not submitted (${left}). Inspect the pane." >&2
   exit 5
 fi
+[[ -n "${msg_file}" ]] && echo "FILE: ${msg_file}"
 
 # 3) Submit.
 cmux send-key --surface "${surface}" --workspace "${workspace}" enter >/dev/null

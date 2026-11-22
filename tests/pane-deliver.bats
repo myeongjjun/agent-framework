@@ -59,3 +59,43 @@ deliver() { run "$DELIVER" --surface surface:5 --workspace workspace:1 -- "$MSG"
   [ "$status" -eq 5 ]
   [[ "$output" == *"no work signal"* ]]
 }
+
+@test "a long message goes to a file; the pane gets one line with its head and path (11-20, 11-21)" {
+  export XDG_DATA_HOME="$BATS_TEST_TMPDIR/data"
+  MSG="done-request: $(printf 'padding words to make it long %.0s' $(seq 1 20))the very end"
+  export CMUX_STUB_SCREEN="$IDLE" CMUX_STUB_SCREEN_AFTER_SENDS=1 CMUX_STUB_SCREEN2=@echo \
+    CMUX_STUB_SCREEN_AFTER_ENTERS=1 CMUX_STUB_SCREEN3=$'✻ Cooking…\n──────────────────────\n❯ '
+  deliver
+  [ "$status" -eq 0 ]
+  f="$(sed -n 's/^FILE: //p' <<<"$output")"
+  [ "$(cat "$f")" = "$MSG" ]
+  typed="$(cat "$CMUX_STUB_LOG.last")"
+  [[ "$typed" == "done-request: padding"*"read $f and act on it" ]]
+  (( ${#typed} < ${#MSG} ))
+}
+
+@test "a box scrolled past its head ('↑ N more') counts as landed when the tail is there" {
+  export CMUX_STUB_SCREEN="$IDLE" CMUX_STUB_SCREEN_AFTER_SENDS=1 \
+    CMUX_STUB_SCREEN2=$' ↑ 7 more ─\n  away ...\n  and the\n  tail end\n  of it\n────────' \
+    CMUX_STUB_SCREEN_AFTER_ENTERS=1 CMUX_STUB_SCREEN3=$'⏺ OK\n────────\n❯ \n────────'
+  deliver
+  [ "$status" -eq 0 ]
+}
+
+@test "a message that never fully lands is cleared from the box, not left half-sent" {
+  export CMUX_STUB_SCREEN="$IDLE" CMUX_STUB_SCREEN_AFTER_SENDS=1 \
+    CMUX_STUB_SCREEN2=$'❯ done-request: a long head the agent\n──────────────────────' \
+    CMUX_STUB_SCREEN_AFTER_ESCAPES=2 CMUX_STUB_SCREEN4="$IDLE"
+  deliver
+  [ "$status" -eq 5 ]
+  [[ "$output" == *"typed text cleared"* ]]
+  [ "$(grep -c "send-key .* escape" "$CMUX_STUB_LOG")" -eq 2 ]
+  ! grep -q "send-key .* enter" "$CMUX_STUB_LOG"
+}
+
+@test "a spinner wrapped by a narrow pane still counts as busy" {
+  export CMUX_STUB_SCREEN=$'· Hullaba\nllooing… \n────────────\n❯ \n────────────'
+  deliver
+  [ "$status" -eq 4 ]
+  ! grep -q "^cmux send " "$CMUX_STUB_LOG"
+}

@@ -10,6 +10,12 @@
                             uncommitted·unpushed(cwd 저장소의 미커밋 파일 수·미push 커밋 수).
   brief teams               collab 묶음 목록(JSON).
   brief desk                데스크(orch) 세션의 panel id(없으면 exit 1). 보고는 `brief report` 로 보낸다.
+  brief send <번호|panel|이름> <글|->
+                            데스크가 세션에 일·결정을 넘긴다. 쉬는 세션은 입력창에 직접 넣고 턴 시작까지 확인한다
+                            (긴 글은 파일에 쓰고 경로 한 줄만 넣는다. 좁은 pane 에서도 들어간다). 일하는 중이거나
+                            승인 화면이면 cmux 메시지로 보내고, cmux 가 그 pane 의 에이전트를 모르면(재시작 전 세션)
+                            입력 대기열에 넣는다. 첫 단어가 결과다: 전달됨 / 대기열 / 전달 못 함(exit 1).
+                            `brief sessions` 에 안 보이는 pane(panel id)에도 보낸다.
   brief report <글|->       데스크에 보고(done-report 등)를 보낸다. 데스크 주소는 보내는 순간에 찾고, 보낸 이는 이
                             세션의 제목과 panel 로 적는다. 보고는 먼저 파일에 남겨, 데스크가 없거나 닫혔거나 메시지를
                             못 읽었으면 다음 데스크가 `brief patrol --read` 에서 `report` 줄로 받는다.
@@ -50,6 +56,7 @@
   brief closed              끝낸 세션 기록(검토 내용)과 다시 여는 명령(최근 10개).
   brief show                현재 목록 출력.
   brief render              Sessions 패널 파일을 다시 생성한다(install.sh 가 호출).
+  brief <명령> --help        이 도움말(어느 명령 뒤에 붙여도 보내거나 바꾸지 않는다).
 """
 import json, os, re, subprocess, sys, time
 
@@ -264,12 +271,14 @@ def transcript(x):
 
 
 def epoch(iso):
-    """'2026-11-19T02:01:44.265Z' → epoch 초. 못 읽으면 0."""
+    """'2026-11-19T02:01:44.265Z' → epoch 초(소수점 포함: 메시지 읽힌 시각과 같은 초 안의 답을 가른다). 못 읽으면 0."""
     import calendar
     try:
-        return calendar.timegm(time.strptime((iso or "")[:19], "%Y-%m-%dT%H:%M:%S"))
+        t = calendar.timegm(time.strptime((iso or "")[:19], "%Y-%m-%dT%H:%M:%S"))
     except ValueError:
         return 0
+    frac = re.match(r"\.(\d+)", (iso or "")[19:])
+    return t + (float("0." + frac.group(1)) if frac else 0)
 
 
 def hhmm(t):
@@ -277,7 +286,9 @@ def hhmm(t):
 
 
 # 데스크·sib 가 세션 입력창에 넣은 글: 사용자 입력이 아니라 데스크가 맡긴 일로 센다.
-HANDOFF = ("done-request:", "completion contract (from sib)")
+# desk-message: 는 `brief send` 가 붙인다. 긴 글은 파일 경로 한 줄로 들어가도 머리의 표시가 남는다.
+HANDOFF = ("done-request:", "desk-message:", "completion contract (from sib)")
+PASTE_TAG = re.compile(r"</?pasted_content[^>]*>")  # 긴 붙여 넣기는 기록에 이 태그로 감싸여 남는다
 QUESTION = re.compile(r"[?？]|할까요|주세요|골라|선택해")
 
 
@@ -325,7 +336,7 @@ def turns(x):
             if last_text is None and (body.strip() or pending_ask):
                 last_text = "(AskUserQuestion)" if pending_ask and not body.strip() else body
         elif role == "user":
-            text = body.strip()
+            text = PASTE_TAG.sub("", body).strip()  # sib 브리프처럼 붙여 넣은 글도 입력이다(태그로 시작한다고 빼지 않는다)
             if not text or text.startswith("<") or text.startswith("# AGENTS.md"):
                 continue  # 명령·환경 주입
             if any(h in text for h in HANDOFF):
@@ -372,13 +383,16 @@ def facts(ss, desk=None):
     반환: {panel(소문자): {...}}"""
     from concurrent.futures import ThreadPoolExecutor
     desk = (desk if desk is not None else desk_panel() or "").lower()
-    sent = {}  # panel -> (보낸 시각, 읽힌 시각)
+    sent = {}  # panel -> (보낸 시각, 세션에 닿은 시각)
     for m in messages():
         if (m.get("sender_surface_id") or "").lower() != desk or not desk:
             continue
         to = (m.get("recipient_surface_id") or "").lower()
+        # 닿은 시각: 읽힌 시각, 없으면 전달된 시각. 멈춘 세션을 깨운 메시지(claude.wake)는 그 턴이 승인 대기 등으로
+        # 끝나지 않으면 read_at 이 비어 있어도 이미 턴을 시작시켰다(11-23 Spectacle).
+        reached = m.get("read_at") or (m.get("delivered_at") if m.get("state") in ("delivered", "read") else 0) or 0
         if to and (to not in sent or m.get("created_at", 0) > sent[to][0]):
-            sent[to] = (m.get("created_at") or 0, m.get("read_at") or 0)
+            sent[to] = (m.get("created_at") or 0, reached)
     with ThreadPoolExecutor(8) as pool:
         cwds = sorted({x.get("cwd") or "" for x in ss})
         git = dict(zip(cwds, pool.map(git_facts, cwds)))
@@ -391,7 +405,7 @@ def facts(ss, desk=None):
             msg, read = t["handoff"], t["handoff"]
         if msg:
             f["desk_msg_at"] = hhmm(msg)
-            f["started"] = bool(read) and t["active"] >= read
+            f["started"] = bool(read) and t["active"] > read  # 닿은 뒤에 에이전트 답이 있다
         if t["question"] and x.get("state") != "working":
             f["question"] = t["question"]
         f.update(git.get(x.get("cwd") or "", {}))
@@ -432,8 +446,23 @@ def render():
     os.replace(tmp, OUT)
 
 
-def resolve(ref):
-    """번호(TODO 목록) 또는 panel id → (panel, workspace, title)."""
+def any_pane(panel):
+    """cmux 가 에이전트를 모르는 pane(재시작 전부터 떠 있던 세션 등)도 panel id 로 찾는다. 없으면 None."""
+    try:
+        items = json.loads(cmux("current", "--json", "--limit", "200").stdout)["items"]
+    except (ValueError, KeyError):
+        return None
+    for it in items:
+        proj = (it.get("projections") or [{}])[0]
+        if (proj.get("panel_id") or "").lower() == panel.lower():
+            return {"panel": proj["panel_id"], "workspace": proj.get("workspace_id"), "title": it.get("label", ""),
+                    "cwd": (it.get("cwd") or "").replace(HOME, "~"), "agent": None, "state": None, "session": None}
+    return None
+
+
+def resolve(ref, unlisted=False):
+    """번호(TODO 목록) 또는 panel id → (panel, workspace, title).
+    unlisted: 세션 목록에 없는 pane 도 panel id 로 받는다(`brief send`)."""
     plan = load_plan()
     if ref == "here":
         ref = os.environ.get("CMUX_PANEL_ID") or sys.exit("brief: cmux pane 안이 아닙니다 (CMUX_PANEL_ID 없음)")
@@ -446,6 +475,8 @@ def resolve(ref):
     for s in ss:
         if s["panel"].lower() == ref.lower():
             return s
+    if unlisted and (p := any_pane(ref)):
+        return p
     hits = [s for s in ss if ref.lower() in s["title"].lower()]
     if len(hits) == 1:
         return hits[0]
@@ -898,20 +929,105 @@ def desk_panel():
     return next((x["panel"] for x in cand if x["cwd"] == home), cand[0]["panel"] if cand else None)
 
 
-DELIVER = next((p for p in (
+DELIVER = os.environ.get("BRIEF_DELIVER") or next((p for p in (  # BRIEF_DELIVER: 시험용 재정의
     os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "skills", "pane-msg", "scripts", "pane-deliver.sh"),
     os.path.join(HOME, ".claude/skills/pane-msg/scripts/pane-deliver.sh")) if os.access(p, os.X_OK)), None)
-DELIVER_FAIL = {3: "승인 대기 화면이 떠 있습니다", 4: "세션이 일하는 중입니다(끝난 뒤 다시)", 6: "pane 이 없습니다"}
-# 5 는 두 경우(글이 입력 칸에 다 안 보임 / 제출 뒤 턴 시작 미확인)라 pane-deliver 의 설명을 그대로 붙인다
+
+
+def in_transcript(s, text, since, wait=6):
+    """입력창에 넣은 글이 세션의 대화 기록에 들어갔는지: "user"(턴 입력이 됨), "queued"(일하는 중이라 Claude 가
+    대기열에 넣음), None. 좁은 pane 은 일하는 중 표시(spinner·esc to interrupt)를 그리지 않아 화면만으로는
+    제출을 확인 못 할 때가 있다(11-23 시험: 폭 12자·높이 24줄)."""
+    path = transcript(s)
+    needle = json.dumps(text[:30], ensure_ascii=False)[1:-1]
+    for _ in range(int(wait * 2)):
+        for line in reversed(tail(path, 400_000) if path else []):
+            if needle not in line:
+                continue
+            try:
+                o = json.loads(line)
+            except ValueError:
+                continue
+            if epoch(o.get("timestamp")) < since - 1:
+                break
+            if o.get("type") == "user":
+                return "user"
+            if o.get("type") == "queue-operation" and o.get("operation") == "enqueue":
+                return "queued"
+        time.sleep(0.5)
+    return None
+
+
+def send(s, text):
+    """데스크가 세션에 글을 넘긴다. (전달됐는지, 결과 한 줄). 결과 줄의 첫 단어: 전달됨 / 대기열 / 전달 못 함.
+
+    쉬는 세션: 입력창에 직접 넣는다(pane-deliver). 턴이 시작된 것까지 확인되고, cmux 가 그 세션의 에이전트를
+    아는지와 무관하다. cmux 메시지는 재시작 전부터 떠 있던 세션에 닿지 않는다(11-23: 5건 모두
+    "No agent activity seen"). 긴 글은 pane-deliver 가 파일에 쓰고 경로 한 줄만 넣는다(11-20·11-21: 폭 12자 pane).
+    화면으로 제출을 확인 못 하면 대화 기록에서 확인한다.
+    일하는 중(cmux 상태 또는 화면) / 승인 화면: cmux 메시지로 보낸다(다음 단계에 읽힌다). cmux 가 그 pane 의
+    에이전트를 모르면 메시지는 영영 대기열에 남으므로, 일하는 중이면 입력 대기열(--queue)에 넣는다."""
+    if not any(text.startswith(h) for h in HANDOFF):
+        text = "desk-message: " + text  # 대화 기록에서 데스크가 넘긴 일로 찾는 표시(started)
+    if s["panel"].lower() == (os.environ.get("CMUX_PANEL_ID") or "").lower():
+        return False, "전달 못 함: 자기 자신의 pane 입니다"
+    if not DELIVER:
+        return False, "전달 못 함: pane-deliver.sh 가 없습니다(L1 install 확인)"
+
+    def deliver(*flags):
+        """(rc, 무엇이 확인됐는지). rc 5 라도 대화 기록에 들어갔으면 0(입력) 또는 "queued" 로 본다."""
+        since = time.time()
+        r = subprocess.run([DELIVER, "--surface", s["panel"], "--workspace", s["workspace"], *flags, "--", text],
+                           capture_output=True, text=True)
+        f = next((l[6:] for l in r.stdout.splitlines() if l.startswith("FILE: ")), "")
+        note = f" (긴 글은 {f} 에 쓰고 경로를 넣음)" if f else ""
+        if r.returncode == 5:
+            typed = next((l[7:] for l in r.stdout.splitlines() if l.startswith("TYPED: ")), text)
+            got = in_transcript(s, typed, since)
+            if got == "user":
+                return 0, "입력창에 넣었고 대화 기록에 입력으로 들어간 것을 확인했습니다(화면으로는 확인 못 함)" + note
+            if got == "queued":
+                return "queued", "세션이 일하는 중이라 Claude 가 입력 대기열에 넣었습니다(지금 턴이 끝나면 읽힘)" + note
+        if r.returncode == 0:
+            return 0, "입력창에 넣고 턴 시작을 확인했습니다" + note
+        return r.returncode, ((r.stderr or r.stdout).strip() or f"pane-deliver rc={r.returncode}") + note
+
+    rc, why = (4, "") if s.get("state") == "working" else deliver()
+    if rc in (0, "queued"):
+        return True, ("전달됨: " if rc == 0 else "대기열: ") + why
+    if rc == 6:
+        return False, "전달 못 함: pane 이 없습니다"
+    if rc not in (3, 4):  # 5: 입력 칸에 다 안 보임 / 제출 뒤 턴 시작 미확인(대화 기록에도 없음)
+        return False, "전달 못 함: " + why
+    screen = "승인 대기 화면" if rc == 3 else "일하는 중"
+    m = cmux("agent", "message", s["panel"], "--json", "--", text)
+    try:
+        got = json.loads(m.stdout)
+    except ValueError:
+        got = {}
+    if m.returncode == 0 and got.get("recipient_has_agent"):
+        if got.get("state") in ("delivered", "read"):
+            return True, f"전달됨: {screen}이라 cmux 메시지로 보냈고 세션에 닿았습니다 (id {got.get('id')})"
+        return True, f"대기열: {screen}이라 cmux 메시지로 보냈습니다. 세션이 다음 단계에 읽습니다 (id {got.get('id')}, started 로 확인)"
+    if got.get("id"):  # cmux 가 이 pane 의 에이전트를 모른다: 그 메시지는 닿지 않는다
+        why = "cmux 가 이 pane 의 에이전트를 모릅니다(재시작 전부터 떠 있던 세션일 수 있음)"
+    else:
+        why = "cmux 메시지 실패: " + ((m.stderr or m.stdout).strip() or f"rc={m.returncode}")
+    if rc == 3:
+        return False, f"전달 못 함: {screen}입니다. {why}. 사용자가 그 화면에 답한 뒤 다시 보내세요"
+    qrc, qwhy = deliver("--queue")
+    if qrc in (0, "queued"):
+        return True, f"대기열: {screen}이고 {why}. 입력 대기열에 넣었습니다(지금 턴이 끝나면 읽힘)"
+    return False, f"전달 못 함: {screen}이고 {why}. 입력 대기열에도 못 넣음: {qwhy}"
 
 
 def request_close(s):
     """세션에 완료 보고를 요청한다. 세션은 보고만 하고 닫지 않는다: 데스크가 보고를 실제와 대조한 뒤
     `brief done <panel> --verified "<기록>"` 으로 완료 처리한다. 못 보냈으면 이유를 돌려준다.
 
-    요청은 cmux 메시지가 아니라 그 pane 의 입력창에 직접 넣는다(pane-deliver). 메시지 대기열은 받는
-    세션의 턴이 끝날 때만 비워져, 멈춘 세션에는 끝내 도착하지 않는다(11-16: 4건 모두 queued).
-    입력은 멈춘 세션에 바로 새 턴을 시작시키고, 실패하면 그 자리에서 이유를 돌려준다."""
+    요청은 `brief send` 와 같은 길(send)로 보낸다: 쉬는 세션은 입력창에 직접 넣어 바로 턴을 시작시키고
+    (cmux 메시지 대기열은 멈춘 세션에 끝내 도착하지 않는다. 11-16: 4건 모두 queued), 긴 요청은 파일 경로 한 줄로
+    들어간다. 반환: (보냈는지, 결과 줄)."""
     me = (os.environ.get("CMUX_PANEL_ID") or "").lower()
     desk = desk_panel()  # 주소는 글에 넣지 않는다: 글이 입력 칸에 며칠 남아도 답할 때 `brief report` 가 그때의 데스크를 찾는다
     to = "`brief report \"<reply>\"`" if not desk or desk.lower() != s["panel"].lower() else "this pane"
@@ -928,15 +1044,12 @@ def request_close(s):
             "this task, or none>")
     if s["panel"].lower() == me:  # 자기 자신: 입력창에 넣으면 지금 턴과 엉킨다. 출력으로 돌려준다
         print(text)
-        return None
-    if not DELIVER:
-        return "보고 요청 못 보냄: pane-deliver.sh 가 없습니다(L1 install 확인). 데스크가 직접 확인 후 --verified"
-    r = subprocess.run([DELIVER, "--surface", s["panel"], "--workspace", s["workspace"], "--", text],
-                       capture_output=True, text=True)
-    if r.returncode == 0:
-        return None
-    why = DELIVER_FAIL.get(r.returncode) or (r.stderr or r.stdout).strip() or f"pane-deliver rc={r.returncode}"
-    return f"보고 요청 못 보냄: {why}. 데스크가 화면과 작업 폴더를 직접 확인한 뒤 --verified 로 완료 처리하세요"
+        return True, "자기 자신: 요청을 위에 출력했습니다"
+    ok, line = send(s, text)
+    if ok:
+        return True, line
+    return False, ("보고 요청 못 보냄: " + line.removeprefix("전달 못 함: ")
+                   + ". 데스크가 화면과 작업 폴더를 직접 확인한 뒤 --verified 로 완료 처리하세요")
 
 
 def log_closed(s, note, closed, check=None):
@@ -995,6 +1108,9 @@ def close_session(s, force, note=None):
 
 def main(argv):
     cmd = argv[1] if len(argv) > 1 else "show"
+    if cmd in ("-h", "--help", "help") or any(a in ("-h", "--help") for a in argv[2:3]):
+        print(__doc__)  # 도움말: 보고·메모로 보내거나 목록을 바꾸지 않는다(11-23: `brief report --help` 가 보고로 나감)
+        return
     if cmd == "sessions":
         ss = sessions()
         for g in teams(ss):  # collab 묶음에 속한 세션에 이름을 붙여 준다
@@ -1023,6 +1139,15 @@ def main(argv):
         if not text.strip():
             sys.exit("brief: 보고 내용이 비었습니다")
         report(text.strip())
+    elif cmd == "send" and len(argv) > 3:  # 데스크가 세션에 일·결정을 넘긴다
+        s = resolve(argv[2], unlisted=True)
+        text = sys.stdin.read() if argv[3:] == ["-"] else " ".join(argv[3:])
+        if not text.strip():
+            sys.exit("brief: 보낼 글이 비었습니다")
+        ok, line = send(s, text.strip())
+        print(f"{line} — {s['title'] or s['panel']}")
+        if not ok:
+            sys.exit(1)
     elif cmd == "desk":  # 데스크(orch) panel id. 없으면 exit 1
         d = desk_panel()
         if not d:
@@ -1088,12 +1213,12 @@ def main(argv):
             idx = [n for n, it in enumerate(plan["items"]) if it["panel"] == s["panel"] and it["done"] == undo]
             title = s["title"]
         if not final:  # 완료 표시 전에 세션의 보고를 받아 데스크가 대조한다
-            why = request_close(s) if s else "보고 요청 생략: 이미 닫힌 세션입니다 (데스크가 직접 확인 후 --verified)"
+            ok, why = request_close(s) if s else (False, "보고 요청 생략: 이미 닫힌 세션입니다 (데스크가 직접 확인 후 --verified)")
             for i in idx:
                 plan["items"][i]["review"] = True
             if idx:
                 save_plan(plan)
-            print(why or "완료 검토 요청 보냄: " + title + " (세션이 보고하면 데스크가 대조한 뒤 완료 처리합니다)")
+            print(f"완료 검토 요청 보냄: {title} — {why} (세션이 보고하면 데스크가 대조한 뒤 완료 처리합니다)" if ok else why)
             render()
             return
         for i in idx:

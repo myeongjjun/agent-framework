@@ -201,12 +201,24 @@ The helper implements the verified submit pattern
 1. Pre-injection gates: pane alive, not self, no approval prompt, not
    busy (unless `--queue`).
 2. `cmux send` text only (newlines flattened — `\n` would submit early).
+   A message over `PANE_DELIVER_INLINE_MAX` characters (default 160) is
+   written to `~/.local/share/pane-msg/<time>-<surface>.md`, and the pane
+   gets one line: the message head plus that path. A long typed message
+   outgrows a narrow pane's input box, so its head scrolls away.
+   Stdout names the typed line (`TYPED:`) and the file (`FILE:`).
 3. Poll until the text is visible in the input box, whitespace-stripped
    on both sides so a narrow pane's soft-wrap can't break the match, and
-   codex's `tab to queue message` notice is gone.
+   codex's `tab to queue message` notice is gone. In a box that Claude
+   scrolled (`↑ N more`), the tail alone is enough. When the text never
+   lands, the helper clears a Claude box with Esc Esc.
 4. `cmux send-key enter`, then confirm a work signal (esc-to-interrupt
-   hint or agent spinner line); one retry; report
-   `DELIVERED` / `QUEUED` / `UNCONFIRMED` with exit codes 0/0/5.
+   hint or agent spinner line, also when wrapped) or an emptied box; one
+   retry; report `DELIVERED` / `QUEUED` / `UNCONFIRMED` with exit codes 0/0/5.
+
+A narrow, short pane (about 12 columns by 24 rows) draws no spinner and
+no `esc to interrupt` hint while Claude works. The screen alone then
+cannot prove busy or submit. `brief send` (the desk's path) checks cmux's
+session state first and the session transcript after an `UNCONFIRMED`.
 
 Never bypass the helper with a bare `cmux send-key` chain: the gates and
 the landed-check are the reliability fix this skill exists for.

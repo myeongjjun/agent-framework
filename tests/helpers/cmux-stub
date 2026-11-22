@@ -61,8 +61,9 @@ case "$sub" in
     # no stdout needed; the log line above is the assertion target. Count
     # sends and enters so read-screen can change what the pane shows after
     # them (CMUX_STUB_SCREEN_AFTER_SENDS / _AFTER_ENTERS below).
-    [[ "$sub" == send ]] && echo x >> "${log}.sends"
+    [[ "$sub" == send ]] && { echo x >> "${log}.sends"; printf '%s' "${!#}" > "${log}.last"; }
     [[ "$sub" == send-key && " $* " == *" enter "* ]] && echo x >> "${log}.enters"
+    [[ "$sub" == send-key && " $* " == *" escape "* ]] && echo x >> "${log}.escapes"
     :
     ;;
   read-screen)
@@ -77,7 +78,13 @@ case "$sub" in
     # sends show CMUX_STUB_SCREEN2 (e.g. the text appears only once typed).
     sends=$( (cat "${log}.sends" 2>/dev/null || true) | wc -l | tr -d ' ')
     enters=$( (cat "${log}.enters" 2>/dev/null || true) | wc -l | tr -d ' ')
-    if [[ -n "${CMUX_STUB_SCREEN_AFTER_ENTERS:-}" ]] && (( enters >= CMUX_STUB_SCREEN_AFTER_ENTERS )); then
+    escapes=$( (cat "${log}.escapes" 2>/dev/null || true) | wc -l | tr -d ' ')
+    # CMUX_STUB_SCREEN2=@echo draws the last sent text in claude's input box.
+    [[ "${CMUX_STUB_SCREEN2:-}" == @echo && -e "${log}.last" ]] \
+      && CMUX_STUB_SCREEN2="❯ $(cat "${log}.last")"$'\n──────────────────────'
+    if [[ -n "${CMUX_STUB_SCREEN_AFTER_ESCAPES:-}" ]] && (( escapes >= CMUX_STUB_SCREEN_AFTER_ESCAPES )); then
+      printf '%s\n' "${CMUX_STUB_SCREEN4}"
+    elif [[ -n "${CMUX_STUB_SCREEN_AFTER_ENTERS:-}" ]] && (( enters >= CMUX_STUB_SCREEN_AFTER_ENTERS )); then
       printf '%s\n' "${CMUX_STUB_SCREEN3}"
     elif [[ -n "${CMUX_STUB_SCREEN_AFTER_SENDS:-}" ]] && (( sends >= CMUX_STUB_SCREEN_AFTER_SENDS )); then
       printf '%s\n' "${CMUX_STUB_SCREEN2}"

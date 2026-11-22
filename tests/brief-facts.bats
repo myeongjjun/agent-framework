@@ -106,3 +106,38 @@ EOF
   [[ "$output" == *'"verified":"git clean"'* ]]
   [[ "$output" != *'"check"'* ]]
 }
+
+@test "sessions: a sib brief stored as pasted content still counts as the desk's hand-off (11-23)" {
+  transcript <<EOF2
+$(line user 2026-11-19T01:00:00Z '"\n\n<pasted_content id=\"d1\">\n# Brief: x\n--- completion contract (from sib) ---\n</pasted_content id=\"d1\">"' ',"origin":{"kind":"human"}')
+$(line assistant 2026-11-19T01:00:05Z '[{"type":"text","text":"on it"}]')
+EOF2
+  run python3 "$BRIEF" sessions
+  [ "$status" -eq 0 ]
+  [ "$(echo "$output" | field started)" = "True" ]
+  [ "$(echo "$output" | field input_at)" = "None" ]   # the brief is not the user's own input
+}
+
+@test "sessions: a message that woke the session counts as reached before it is marked read (11-23)" {
+  transcript <<EOF2
+$(line assistant 2026-11-19T01:00:05Z '[{"type":"tool_use","name":"AskUserQuestion","input":{}}]')
+EOF2
+  t0=$(python3 -c 'import calendar;print(calendar.timegm((2026,11,19,1,0,0)))')
+  cat > "$STUB/inbox.json" <<EOF2
+{"messages":[{"sender_surface_id":"$DESK","recipient_surface_id":"$A","created_at":$t0,"delivered_at":$t0.5,"read_at":null,"state":"delivered","body":"do x"}]}
+EOF2
+  run python3 "$BRIEF" sessions
+  [ "$(echo "$output" | field started)" = "True" ]
+}
+
+@test "sessions: a message delivered but not answered yet is not started" {
+  transcript <<EOF2
+$(line assistant 2026-11-19T00:59:00Z '[{"type":"text","text":"done earlier"}]')
+EOF2
+  t0=$(python3 -c 'import calendar;print(calendar.timegm((2026,11,19,1,0,0)))')
+  cat > "$STUB/inbox.json" <<EOF2
+{"messages":[{"sender_surface_id":"$DESK","recipient_surface_id":"$A","created_at":$t0,"delivered_at":$t0,"read_at":null,"state":"delivered","body":"do x"}]}
+EOF2
+  run python3 "$BRIEF" sessions
+  [ "$(echo "$output" | field started)" = "False" ]
+}
