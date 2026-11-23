@@ -107,6 +107,29 @@ EOF
   [[ "$output" != *'"check"'* ]]
 }
 
+@test "closed --unreported: lists closures not yet reported, flags the ones that left work, --ack moves the mark" {
+  now=$(date +%s)
+  {
+    printf '{"panel":"P1","title":"Reviewed","at":%s,"closed":true,"verified":"git clean"}\n' "$((now - 100))"
+    printf '{"panel":"P2","title":"Left dirty","at":%s,"closed":true,"check":{"uncommitted":2,"unpushed":0}}\n' "$((now - 50))"
+    printf '{"panel":"P3","title":"Clean close","at":%s,"closed":true,"check":{"uncommitted":0,"unpushed":0}}\n' "$((now - 10))"
+  } > "$HOME/.cache/cmux/brief-closed.jsonl"
+  run python3 "$BRIEF" closed --unreported
+  [[ "$output" == *"Reviewed"* ]]
+  [[ "$output" == *"! "*"Left dirty"* ]]
+  [[ "$output" != *"! "*"Clean close"* ]]
+  # A closure after the listing but before --ack stays unreported.
+  printf '{"panel":"P5","title":"Closed meanwhile","at":%s,"closed":true,"verified":"ok"}\n' "$((now + 5))" \
+    >> "$HOME/.cache/cmux/brief-closed.jsonl"
+  python3 "$BRIEF" closed --ack
+  run python3 "$BRIEF" closed --unreported
+  [[ "$output" == *"Closed meanwhile"* ]]
+  [[ "$output" != *"Reviewed"* ]]
+  python3 "$BRIEF" closed --ack
+  run python3 "$BRIEF" closed --unreported
+  [[ "$output" == *"보고 안 한 닫힌 세션 없음"* ]]
+}
+
 @test "sessions: a sib brief stored as pasted content still counts as the desk's hand-off (11-23)" {
   transcript <<EOF2
 $(line user 2026-11-19T01:00:00Z '"\n\n<pasted_content id=\"d1\">\n# Brief: x\n--- completion contract (from sib) ---\n</pasted_content id=\"d1\">"' ',"origin":{"kind":"human"}')

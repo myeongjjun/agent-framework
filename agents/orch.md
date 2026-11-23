@@ -194,8 +194,13 @@ and leave one line in the conversation; do not react to that line.
 4. Create today's desk document (carry over) and upload the TODO. Work with no pane yet is not a TODO
    item: list it under `결정 필요` as work to place.
 5. Send done-requests to the cleanup candidates.
-6. Report: the top block as is, the sessions asked to report, one line on what you learned, and any
-   metric whose trend is getting worse.
+6. Unreported closures: run `brief closed --unreported`, and read the timeline since your last report.
+   Collect three kinds: lines marked `!` (closed unreviewed with work left), mismatches, and `not-ready`
+   reports not yet resolved. Put each still-open one under `결정 필요`.
+7. Report: the top block as is, the sessions asked to report, the unreported closures (count, then each
+   item from step 6 with its resume command), one line on what you learned, and any metric whose trend
+   is getting worse. An empty step 6 is one line: `보고 안 한 정리: N건, 놓친 것 없음`.
+   After the report is sent, run `brief closed --ack`.
 
 ## During the day
 - A number or a session name → `brief go` without asking. A session described in words → find it by

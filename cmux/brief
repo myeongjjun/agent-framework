@@ -54,6 +54,10 @@
                             왕복), mismatches(완료 대조에서 어긋난 건수).
   brief view                데스크 워크스페이스 왼쪽에 오늘 데스크 문서를 서식 있는 뷰어로 연다(자동으로는 열지 않는다).
   brief closed              끝낸 세션 기록(검토 내용)과 다시 여는 명령(최근 10개).
+  brief closed --unreported 아직 사용자 보고에 들어가지 않은 닫힌 세션 전부. 검토 없이 닫혔는데 미커밋·미push·
+                            미응답 질문이 남은 줄은 맨 앞에 `!` 가 붙는다.
+  brief closed --ack        보고에 넣은 뒤 부른다: 마지막 --unreported 로 본 것까지 보고한 것으로 표시한다
+                            (그 사이 새로 닫힌 것은 다음 --unreported 에 남는다).
   brief show                현재 목록 출력.
   brief render              Sessions 패널 파일을 다시 생성한다(install.sh 가 호출).
   brief <명령> --help        이 도움말(어느 명령 뒤에 붙여도 보내거나 바꾸지 않는다).
@@ -64,6 +68,7 @@ CMUX = os.environ.get("BRIEF_CMUX", "/Applications/cmux.app/Contents/Resources/b
 HOME = os.path.expanduser("~")
 PLAN = os.path.join(HOME, ".cache/cmux/brief-plan.json")
 CLOSED = os.path.join(HOME, ".cache/cmux/brief-closed.jsonl")
+CLOSED_MARK = os.path.join(HOME, ".cache/cmux/brief-closed-reported.json")  # 어디까지 사용자에게 보고했는지
 def local_env(key, default):
     """환경 변수, 없으면 이 기기 전용 설정(~/.config/cmux/local.env, 레포 밖)의 KEY="값"."""
     if os.environ.get(key):
@@ -1267,19 +1272,43 @@ def main(argv):
         review(float(argv[2]) if len(argv) > 2 else 1)
     elif cmd == "closed":
         try:
-            recs = [json.loads(l) for l in open(CLOSED) if l.strip()][-10:]
-        except OSError:
+            recs = [json.loads(l) for l in open(CLOSED) if l.strip()]
+        except (OSError, ValueError):
             recs = []
+        try:
+            mark = json.load(open(CLOSED_MARK))
+        except (OSError, ValueError):
+            mark = {}
+        if "--ack" in argv:  # 데스크가 보고에 넣은 뒤: 마지막 --unreported 로 본 것까지 보고한 것으로 친다
+            mark["reported"] = max(mark.get("reported", 0), mark.get("seen", 0))
+            with open(CLOSED_MARK, "w") as f:
+                json.dump(mark, f)
+            print("보고함으로 표시: " + time.strftime("%m-%d %H:%M", time.localtime(mark["reported"])) + " 까지")
+            return
+        unrep = "--unreported" in argv
+        if unrep:  # 아직 보고에 들어가지 않은 기록 전부. 본 지점은 --ack 가 확정한다
+            recs = [r for r in recs if r["at"] > mark.get("reported", 0)]
+            if recs:
+                mark["seen"] = max(r["at"] for r in recs)
+                os.makedirs(os.path.dirname(CLOSED_MARK), exist_ok=True)
+                with open(CLOSED_MARK, "w") as f:
+                    json.dump(mark, f)
+        else:
+            recs = recs[-10:]
         for rec in reversed(recs):
             how = ("검토: " + rec["verified"]) if rec.get("verified") else "검토 없이 닫음"
+            if not rec.get("closed", True):
+                how += " · pane 은 열어 둠"
+            warn = False
             if "check" in rec:
                 c = rec["check"]
                 got = [f"{name} {c[k]}" for k, name in (("uncommitted", "미커밋"), ("unpushed", "미push")) if k in c]
                 got += [f"미응답 질문 \"{c['question']}\""] if c.get("question") else []
+                warn = not rec.get("verified") and bool(c.get("uncommitted") or c.get("unpushed") or c.get("question"))
                 how += " · 닫힐 때 대조: " + (", ".join(got) or "git 저장소 아님, 질문 없음")
-            print(f"{time.strftime('%m-%d %H:%M', time.localtime(rec['at']))}  {rec['title']}\n    {how}\n    {resume_cmd(rec)}")
+            print(f"{'! ' if warn else ''}{time.strftime('%m-%d %H:%M', time.localtime(rec['at']))}  {rec['title']}\n    {how}\n    {resume_cmd(rec)}")
         if not recs:
-            print("(닫은 세션 기록 없음)")
+            print("(보고 안 한 닫힌 세션 없음)" if unrep else "(닫은 세션 기록 없음)")
     elif cmd == "show":
         plan = load_plan()
         for n, it in enumerate(plan["items"], 1):
