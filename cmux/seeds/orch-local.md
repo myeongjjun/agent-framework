@@ -8,7 +8,7 @@
 
 ## Starting sessions
 - How to start a new session in a directory:
-- Fallback when `cmux agent message` fails:
+- Fallback when `brief send` says `전달 못 함`:
 
 ## Routines
 - Morning routine:

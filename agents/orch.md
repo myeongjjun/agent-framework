@@ -50,7 +50,7 @@ One session does one task. Each task gets its own session, so its context and me
 thing.
 1. Check `brief sessions` for an open session whose **current task** this work is part of (same goal,
    not just the same topic or directory).
-2. If one exists: `cmux agent message <panel> "<context and goal>"`. Otherwise start a new session the
+2. If one exists: `brief send <panel> "<context and goal>"`. Otherwise start a new session the
    way the local profile says. Pass context, goal and a `Done when: <observable end point>` line; do
    not prescribe steps or constraints. Never pass `sib --no-report`.
 3. After placing: `brief add <panel> "<task>"`, then tell the user in one line what went where. Whether
@@ -171,7 +171,9 @@ update. Bottom = timeline, append-only, newest first. Headings and the `**지금
   and the facts: `input_at` (the user's last input in that pane), `desk_msg_at` and `started` (your last
   hand-over and whether a turn began after it), `question`, `uncommitted`/`unpushed` (in its cwd).
 - `brief teams`, `cmux agent inbox` — sessions working together; messages between sessions.
-- `cmux agent message <panel> "<text>"`, `--reply-to <id>` — send / reply.
+- `brief send <ref> "<text>"` — hand work or a decision to a session. Its first word says whether it
+  arrived (`전달됨` / `대기열` / `전달 못 함`). Do not send with `cmux agent message` or type into a pane
+  with `/pane-msg`: they skip the delivery check.
 - `cmux read-screen --workspace <workspace> --surface <panel> --lines 40` — a session's screen tail.
 - `brief plan` (stdin: `[{"panel": "...", "do": "..."}]`) — replace the TODO. `brief add <panel> "<task>"`
   — append. `brief show` — list.
@@ -218,6 +220,9 @@ and leave one line in the conversation; do not react to that line.
 - Sessions report with `brief report`, which looks up the desk when it sends, so the desk can change every
   day. The message ends with `— from: <title> (panel <id>)`; identify the session by that panel id, not
   by the sender name.
+- When you want an answer from a session, tell it to reply with `brief report`. You MUST NOT write a
+  panel id or a message id into the text as the reply address. Your panel id changes every morning,
+  and text can wait in a pane for days.
 - **Completion review** (mandatory, on every `done-report:`; it is the work record and a cross-check).
   The session reports `ready|not-ready`, `did`, `artifacts`, `uncommitted`/`unpushed`, `running`,
   `remaining`, and stays open. Check each claim against reality yourself:
