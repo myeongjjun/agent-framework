@@ -5,6 +5,7 @@
 // 눈에 띄게 모아, 데스크에서 `/done <이름>` 으로 정리하도록 유도한다.
 // 행을 누르면 그 워크스페이스로 가서 해당 터미널에 포커스한다.
 // 맨 위 "TODO" 는 아침 브리핑 에이전트가 `brief plan` 으로 올린 목록이다.
+// TODO 와 Running 은 별개 상태다: TODO 세션이 작업 중이면 TODO 묶음(번호 그대로)에 두고 줄에 "작업 중" 을 붙인다.
 //
 // 이 파일은 템플릿이다. 실제 패널 파일(~/.config/cmux/sidebars/sessions.js)은
 // `brief render` 가 아래 PLAN 줄을 채워서 만든다. 고친 뒤 `brief render` 실행.
@@ -103,6 +104,7 @@ const entries = computed(() => {
         group: planned ? PLAN_GROUP : groupOf(a, !!tab.hasUnread, epoch),
         num: planned ? (NUM[pi] ?? String(pi + 1)) : "",
         todo: planned ? PLAN.items[pi].do : "",
+        busy: planned && a.status === "working",
         order: planned ? pi : 0,
         wsId: w.id,
         wsSelected: !!w.selected,
@@ -132,6 +134,7 @@ const entries = computed(() => {
     const b = briefs[0];
     b.group = BRIEF_GROUP;
     b.num = "";
+    b.busy = false;
     b.title = "☀ Desk";
     b.todo = b.status === "working" ? "working…" : "/go N · /done N · /today";
   }
@@ -140,7 +143,7 @@ const entries = computed(() => {
     const t = teamOf[String(r.panel ?? "").toLowerCase()];
     if (!t || r.group === BRIEF_GROUP) continue;
     const line = msgLine(t, r.panel);
-    rows.push({ ...r, key: "c:" + r.key, group: COLLAB_GROUP, order: t.gi * 100 + t.mi, num: "",
+    rows.push({ ...r, key: "c:" + r.key, group: COLLAB_GROUP, order: t.gi * 100 + t.mi, num: "", busy: false,
       todo: line ? "⇄ " + t.name + " · " + line : "", title: "[" + t.agent + "] " + r.title,
       sub: "⇄ " + t.name + (r.sub ? " · " + r.sub : "") });
   }
@@ -183,8 +186,8 @@ function agentRow(e) {
         .font(12).weight("medium").lineLimit(1).truncation("tail")
         .color(() => (e().status === "ended" || e().group === 4 || e().group === STALE_GROUP ? "secondary" : "primary")),
       Spacer(),
-      Text(() => (e().status === "working" ? "" : fmtAgo((data.clock()?.epoch ?? 0) - e().at)))
-        .font(10).monospaced().color("tertiary").layoutPriority(2),
+      Text(() => (e().busy ? "작업 중" : e().status === "working" ? "" : fmtAgo((data.clock()?.epoch ?? 0) - e().at)))
+        .font(10).monospaced().color(() => (e().busy ? COLOR.working : "tertiary")).layoutPriority(2),
     ]),
     Text(() => e().todo || e().sub)
       .font(10).color(() => (e().todo ? "secondary" : "tertiary"))
@@ -212,7 +215,7 @@ sidebar(() =>
       Text(() => {
         const rows = entries().filter((x) => x.kind === "agent");
         const mine = rows.filter((x) => x.group === 0).length;
-        const run = rows.filter((x) => x.group === 1).length;
+        const run = rows.filter((x) => x.group === 1 || x.busy).length;
         const stale = rows.filter((x) => x.group === STALE_GROUP).length;
         return (mine ? mine + " waiting · " : "") + (run ? run + " running · " : "") + (stale ? stale + " to close · " : "") + rows.length + " sessions";
       }).font(10).monospaced().color("tertiary"),
