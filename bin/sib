@@ -26,6 +26,9 @@
 #   sib kill <slug> [--keep-worktree]
 #   sib trusted <dir>  (exit 0 when <dir> is in the pre-trust allowlist; writes nothing)
 #
+# spawn exit codes: 5 prompt not delivered · 6 the pane waits at a start screen
+# (trust, update, hooks review) · 7 Codex rejected the model on the first turn.
+#
 # Talk to a sibling by focusing its cmux pane and typing, or `sib send <slug> "..."`.
 # Trade-off vs zmx: no detached persistence — the agent lives only while its pane is open.
 set -euo pipefail
@@ -462,6 +465,28 @@ spawn)
     fi
   fi
 
+  # Codex can draw its input box and take the prompt, then fail the first turn
+  # because the account does not offer the configured model (11-25: gpt-5.5 →
+  # "model is not supported"). The pane looked booted and nobody worked. The
+  # error comes back within seconds of the submit, so watch for it briefly. It
+  # can also replace the work signal the submit check waits for: look first.
+  if [[ -n "${prompt}" && "${agent}" == codex ]] && (( booted )); then
+    model_rejected_rx='model is not supported|model_not_found|model .{0,80}does not exist|do(es)? not have access to (the )?model|Thread model is unavailable|No models are available'
+    rejected="" turn_end=$(( SECONDS + ${SIB_CODEX_TURN_CHECK:-8} ))
+    while :; do
+      scr="$(cmux read-screen --surface "${surface}" --workspace "${ws}" --lines 60 2>/dev/null)" || break
+      rejected="$(grep -iE "${model_rejected_rx}" <<<"${scr}" | head -1 | sed 's/^[[:space:]]*//' || true)"
+      [[ -z "${rejected}" && ${SECONDS} -lt ${turn_end} ]] || break
+      sleep 0.5
+    done
+    if [[ -n "${rejected}" ]]; then
+      echo "✗ sib '${slug}' (codex) → ${ws} ${surface} — the first turn failed: Codex rejected the model" >&2
+      echo "  ${rejected:0:240}" >&2
+      echo "  set \`model\` in ${CODEX_HOME:-~/.codex}/config.toml to one the account offers (or pass --model); the pane stays open" >&2
+      echo "  then: sib kill ${slug}, and spawn again" >&2
+      exit 7
+    fi
+  fi
   if [[ -n "${delivery}" ]]; then
     echo "✗ sib '${slug}' (${agent}) → ${ws} ${surface} — prompt ${delivery}" >&2
     echo "  retry: sib send ${slug} \"...\"   or  sib kill ${slug}" >&2

@@ -28,6 +28,8 @@ setup() {
   # A real working dir for --workdir targeting.
   WORKDIR="$BATS_TEST_TMPDIR/target"
   mkdir -p "$WORKDIR"
+  # Codex first-turn watch: one look, no wait (tests that need it raise it).
+  export SIB_CODEX_TURN_CHECK=0
 }
 
 # --- --workdir / --cwd ------------------------------------------------------
@@ -238,6 +240,28 @@ tab to queue message" CMUX_STUB_SCREEN_AFTER_ENTERS=2 CMUX_STUB_SCREEN3="• Wor
   grep -q "cmux send .*do the thing" "$CMUX_STUB_LOG"
   # and an enter was eventually sent (after the bounded queue wait)
   grep -q "cmux send-key .* enter" "$CMUX_STUB_LOG"
+}
+
+@test "a codex first turn that fails on the model is reported, not claimed booted (11-25)" {
+  # The error replaces the work signal, so the submit check alone would call it unconfirmed.
+  export SIB_CODEX_TURN_CHECK=3 CMUX_STUB_SCREEN="›
+do the thing" CMUX_STUB_SCREEN_AFTER_ENTERS=2
+  export CMUX_STUB_SCREEN3='■ {"detail":"The '"'"'gpt-5.5'"'"' model is not supported when using Codex with a ChatGPT account."}
+›'
+  run "$SIB" spawn cx-model --codex --workdir "$WORKDIR" --no-report -- "do the thing"
+  [ "$status" -eq 7 ]
+  [[ "$output" == *"Codex rejected the model"* ]]
+  [[ "$output" == *"model is not supported"* ]]
+  [[ "$output" != *"[booted]"* ]]
+  [ -f "$STATE/cx-model.env" ]                               # the pane stays recorded for sib kill
+}
+
+@test "a codex first turn that works is not held up past the watch" {
+  export SIB_CODEX_TURN_CHECK=1 CMUX_STUB_SCREEN="›
+do the thing" CMUX_STUB_SCREEN_AFTER_ENTERS=2 CMUX_STUB_SCREEN3="• Working (1s • esc to interrupt)"
+  run "$SIB" spawn cx-ok --codex --workdir "$WORKDIR" --no-report -- "do the thing"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[booted]"* ]]
 }
 
 @test "no prompt → only the launch enter, no prompt-submit enter" {
