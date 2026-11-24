@@ -1,6 +1,6 @@
 # Decisions Index
 
-> Last updated: 2026-11-23
+> Last updated: 2026-11-25
 
 ## By Status
 
@@ -19,7 +19,9 @@
 
 ### Proposed
 
-_None_
+| ADR | Date | Title |
+|-----|------|-------|
+| [009](2026-11-25-sib-pretrust-codex-and-committee-panes.md) | 2026-11-25 | sib pre-trust covers Codex siblings, and install lists the committee pane root (amends 006) |
 
 ### Rejected
 
