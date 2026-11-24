@@ -181,8 +181,8 @@ a fresh pane. When the judgment is not obvious, present the match and ask.
 
 ```
 대상 pane 후보가 2개입니다. 어디로 보낼까요?
-1. workspace:7  surface:13  [idle]  ✳ agentmemory MCP 도구 빈 결과 진단 — cwd ~/personal/agent-framework
-2. workspace:12 surface:35  [busy]  sib-pane-msg-skill — cwd ~/personal/agent-framework
+1. workspace:7  surface:13  [idle]  ✳ agentmemory MCP 도구 빈 결과 진단 — cwd ~/src/agent-framework
+2. workspace:12 surface:35  [busy]  sib-pane-msg-skill — cwd ~/src/agent-framework
 ```
 
 ### Step 5 — Deliver (verified)
@@ -234,7 +234,7 @@ the landed-check are the reliability fix this skill exists for.
 ## Pane-Msg 전달 완료
 
 - 대상: workspace:7 / surface:13 (✳ agentmemory MCP 도구 빈 결과 진단)
-- 선택 근거: --cwd ~/personal/agent-framework 단일 매치 (idle)
+- 선택 근거: --cwd ~/src/agent-framework 단일 매치 (idle)
 - 결과: DELIVERED (work signal 확인됨)
 - 메시지: "..."
 ```

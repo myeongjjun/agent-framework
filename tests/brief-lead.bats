@@ -14,7 +14,7 @@ setup() {
 ## A. 에이전트 도구
 
 ### Scope
-- Covers: `~/personal/agent-framework`
+- Covers: `~/src/agent-framework`
 
 ### Permissions
 | kind | level |
