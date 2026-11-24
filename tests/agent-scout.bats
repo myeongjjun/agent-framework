@@ -359,8 +359,9 @@ EOF
 }
 
 @test "judge hold: a passed kind the judge rates unfit is held; making it needs the user's OK" {
-  printf '\n' >>"$AGENT_SCOUT_CONFIG"; sed -i.bak 's/^- slices: 3/- slices: 3\n- hold_below: 1/' "$AGENT_SCOUT_CONFIG"
-  grep -q "hold_below: 1" "$AGENT_SCOUT_CONFIG" || printf -- '- hold_below: 1\n' >>"$AGENT_SCOUT_CONFIG"
+  # awk, not sed: a "\n" in a sed replacement is a newline in GNU sed and a plain "n" in BSD sed
+  awk '{print} /^- slices: 3$/{print "- hold_below: 1"}' "$AGENT_SCOUT_CONFIG" >"$AGENT_SCOUT_CONFIG.tmp" && mv "$AGENT_SCOUT_CONFIG.tmp" "$AGENT_SCOUT_CONFIG"
+  grep -qx -- "- slices: 3" "$AGENT_SCOUT_CONFIG" && grep -qx -- "- hold_below: 1" "$AGENT_SCOUT_CONFIG"
   sed -i.bak 's/{"id":"P1","evidence":2,"fit":2/{"id":"P1","evidence":2,"fit":0/; s/{"id":"P3","evidence":2,"fit":1/{"id":"P3","evidence":2,"fit":0/' "$AGENT_SCOUT_CMD"
   run "$AS" convene --json
   echo "$output" | python3 -c '
@@ -444,8 +445,9 @@ assert r["volume"]["judge"]==1.0 and r["volume"]["verdict"]=="keep", r["volume"]
 }
 
 @test "rounds: an evaluate-only member sits out convene; bench still rewrites the status column" {
-  sed -i.bak 's/^| handoff | codex | scout-handoff | default | c | decisions | on |$/&\n| craft | claude | scout-craft | haiku | d | briefs | on | evaluate |/' "$AGENT_SCOUT_CONFIG"
-  grep -q "^| craft |" "$AGENT_SCOUT_CONFIG"
+  awk '{print} /^\| handoff \| codex \| scout-handoff \| default \| c \| decisions \| on \|$/{print "| craft | claude | scout-craft | haiku | d | briefs | on | evaluate |"}' \
+    "$AGENT_SCOUT_CONFIG" >"$AGENT_SCOUT_CONFIG.tmp" && mv "$AGENT_SCOUT_CONFIG.tmp" "$AGENT_SCOUT_CONFIG"
+  grep -qx "| craft | claude | scout-craft | haiku | d | briefs | on | evaluate |" "$AGENT_SCOUT_CONFIG"
   "$AS" convene >/dev/null
   ! grep -q "^craft " "$CALLS"
   "$AS" new scope-helper --by-user --title "Checks research scope" --kind research --area A --layer L2 --home "$T/l2" >/dev/null
