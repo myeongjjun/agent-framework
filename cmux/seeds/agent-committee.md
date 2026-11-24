@@ -42,7 +42,7 @@ a member sits in — `propose` (convene) and/or `evaluate`; empty means both.
 - days: 21      # history window
 - slices: 3     # time slices in the sessions pack
 - hold_below: 1 # a passed kind with mean judge fit (0-2) below this is held for the user (0 = off)
-- exclude: /tmp/|/private/var/
+- exclude: /tmp/|/private/var/   # sessions whose cwd (or path below the history root) matches are left out
 
 ## Evaluate
 `agent-scout evaluate <draft>...`: every member with `evaluate` in its rounds reviews the drafts with its

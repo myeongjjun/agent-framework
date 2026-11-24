@@ -290,7 +290,9 @@ def collect(days, rule, kinds):
             day = dt.date.fromisoformat(ts[:10])
         except ValueError:
             continue
-        if day < start or day > end or exclude.search(cwd or "") or exclude.search(f):
+        # Match the path below the history root only: where that root lives (a temp HOME) says nothing.
+        rel = os.path.relpath(f, CLAUDE_DIR if src == "claude" else CODEX_DIR)
+        if day < start or day > end or exclude.search(cwd or "") or exclude.search(rel):
             continue
         corr = [t[:160] for t in turns[1:] if len(t) <= 160 and CORRECTION.search(t)]
         sessions.append({"src": src, "id": os.path.basename(f).rsplit(".", 1)[0][-36:][:8], "file": f, "cwd": cwd,
