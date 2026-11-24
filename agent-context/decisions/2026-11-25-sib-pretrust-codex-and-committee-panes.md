@@ -1,4 +1,4 @@
-# ADR-009: sib pre-trust covers Codex siblings, and install lists the committee pane root
+# ADR-009: sib pre-trust covers Codex siblings, and install lists the unattended pane roots
 
 - **Date**: 2026-11-25
 - **Status**: Proposed
@@ -18,6 +18,11 @@ continue / Open restricted). sib did not detect it, so a Codex pane there
 would time out as "input box never appeared". Codex keeps trust per exact
 dir in `config.toml` (`[projects."<dir>"] trust_level`), not per parent.
 
+The office (`brief`) has the same shape: it hands role art to one Codex
+pane at a time, in a new job folder per job under
+`~/.local/share/cmux/office-art/jobs/`. No allowlist entry covered it, so
+that pane stopped at Codex's trust screen too.
+
 ## Decision
 
 1. `agent-scout` uses the pane root `~/.local/share/cmux/hr/panes` by
@@ -31,12 +36,16 @@ dir in `config.toml` (`[projects."<dir>"] trust_level`), not per parent.
    a key that needs escaping. The `$HOME`-only and one-segment `*` rules of
    ADR-006 apply unchanged.
 3. sib treats Codex's trust screen as a start screen: no prompt, exit 6.
-4. `install.sh` adds `~/.local/share/cmux/hr/panes/*` to sib's
-   `trusted-dirs` once, under a comment line. It also moves a local
+4. `install.sh` adds `~/.local/share/cmux/hr/panes/*` and
+   `~/.local/share/cmux/office-art/jobs/*` to sib's `trusted-dirs` once
+   each, under a comment line. It also moves a local
    committee config whose root is still `/private/tmp/agent-scout` to the
    new default.
+5. Before it opens an art pane, `brief` asks `sib trusted <job dir>`. If
+   sib does not cover it, no pane opens, the reason goes to `untrusted` in
+   the office-art `state.json`, and those roles wait until the next day.
 
-Code: commit `9815e96` (local until accepted).
+Code: commit `9815e96` and the office-art follow-up (local until accepted).
 
 ## Alternatives Considered
 
@@ -49,7 +58,8 @@ Code: commit `9815e96` (local until accepted).
 
 ### Positive
 
-- After install, member panes start with no trust screen.
+- After install, member panes and office-art panes start with no trust
+  screen.
 - A pane root that sib cannot trust stops the meeting before any pane
   opens, instead of a failed meeting counted as held.
 - A Codex pane at its trust screen is reported, not left to time out.
@@ -60,8 +70,8 @@ Code: commit `9815e96` (local until accepted).
   trusts Codex there. A trusted Codex project loads its project config,
   hooks and exec policies.
 - ADR-006 says entries are added only on the user's say-so. Here install
-  adds one entry itself. That entry covers only folders `agent-scout`
-  creates, which hold `task.md` and `answer.json`.
+  adds two entries itself. They cover only folders `agent-scout` and
+  `brief` create: `task.md` with `answer.json`, or with the SVG answers.
 
 ### Neutral
 
@@ -76,4 +86,5 @@ trust lists change: run `scripts/install.sh` only after acceptance.
 
 - [ADR-006](2026-11-13-sib-trust-allowlist.md) — the allowlist this amends
 - Tests: `tests/sib-spawn.bats` (folder-trust section), `tests/agent-scout.bats`
-  (`panes:`), `tests/install.bats` (committee member panes)
+  (`panes:`), `tests/brief-tree.bats` (`office art:`), `tests/install.bats`
+  (unattended panes)

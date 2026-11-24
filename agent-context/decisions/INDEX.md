@@ -21,7 +21,7 @@
 
 | ADR | Date | Title |
 |-----|------|-------|
-| [009](2026-11-25-sib-pretrust-codex-and-committee-panes.md) | 2026-11-25 | sib pre-trust covers Codex siblings, and install lists the committee pane root (amends 006) |
+| [009](2026-11-25-sib-pretrust-codex-and-committee-panes.md) | 2026-11-25 | sib pre-trust covers Codex siblings, and install lists the unattended pane roots (amends 006) |
 
 ### Rejected
 

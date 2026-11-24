@@ -3235,7 +3235,8 @@ ART_ASK = ("Read task.md in this folder and draw the SVG files it asks for. Do n
 def art_step(seen, now=None):
     """역할 그림을 스스로 늘린다: 사무실에 보이는 역할 중 그림이 없는 것을 Codex pane 하나에 맡기고(sib spawn --codex,
     한 번에 하나), 답 파일이 검사를 통과하면 ROLE_ART 에 올리고 pane 을 닫는다. 같은 역할은 하루에 한 번만 맡긴다.
-    seen: {역할: description}. 끄기: BRIEF_OFFICE_ART=0."""
+    작업 폴더(ROLE_ART/jobs/<slug>)가 sib 의 미리 신뢰 목록에 없으면 pane 을 띄우지 않고 state.json 의 untrusted 에
+    이유를 남긴다(install 이 ~/.local/share/cmux/office-art/jobs/* 를 목록에 넣는다). seen: {역할: description}. 끄기: BRIEF_OFFICE_ART=0."""
     import shutil
     if os.environ.get("BRIEF_OFFICE_ART", "1") == "0":
         return None
@@ -3258,10 +3259,18 @@ def art_step(seen, now=None):
             subprocess.run([sib, "kill", job["slug"]], capture_output=True, text=True)
             st["job"] = job = None
     if not job:
+        slug = f"{OFFICE_ART_PREFIX}{int(now) % 100000}"
+        d = os.path.join(ROLE_ART, "jobs", slug)
+        if want:  # 빈 pane 은 Codex 신뢰 화면에서 멈춘다: sib 가 미리 신뢰하는 폴더가 아니면 띄우지 않고 내일 다시 본다
+            os.makedirs(os.path.dirname(d), exist_ok=True)
+            t = subprocess.run([sib, "trusted", d], capture_output=True, text=True, timeout=30)
+            st["untrusted"] = None if t.returncode == 0 else (t.stderr or t.stdout).strip() or "sib trusted failed"
+            if st["untrusted"]:
+                for r in want:
+                    tried[r] = now
+                want = []
         want = sorted(r for r in seen if r not in have and (r not in tried or now - tried[r] > 86400))[:6]
         if want:
-            slug = f"{OFFICE_ART_PREFIX}{int(now) % 100000}"
-            d = os.path.join(ROLE_ART, "jobs", slug)
             os.makedirs(d, exist_ok=True)
             open(os.path.join(d, "task.md"), "w").write(ART_TASK.replace("{roles}", "\n".join(
                 f"- `{r}`: {seen[r] or '(no description)'}" for r in want)))

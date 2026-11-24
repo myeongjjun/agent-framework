@@ -300,6 +300,7 @@ PY
   [ "${lines[${#lines[@]}-1]}" = "ok" ]
   grep -q 'sib spawn office-art-1000 --codex --no-report --workdir .*/art/jobs/office-art-1000 --new-workspace -- Read task.md' "$STUB/sib-calls"
   grep -q 'sib kill office-art-1000' "$STUB/sib-calls"
+  grep -q 'sib trusted .*/art/jobs/office-art-1000' "$STUB/sib-calls"
   [ "$(grep -c 'sib spawn' "$STUB/sib-calls")" = "2" ]
 }
 
@@ -405,6 +406,25 @@ PY
   [[ "$output" == *"old | 은퇴 | 합쳐짐 |"*"11-24 합쳐짐 — into rsc | by:user"* ]]
   [[ "$output" == *"volume | 은퇴 | 예전 위원 |"*"마지막 회의 pilot-panel-2026-11-23"* ]]
   [[ "$output" != *"M:volume"* && "$output" != *"M:old"* ]]               # retired: no metrics
+}
+
+@test "office art: a job folder sib does not pre-trust gets no pane, and the reason is kept" {
+  export BRIEF_ROLE_ART="$HOME/art" BRIEF_SIB="$HOME/bin/sib" BRIEF_OFFICE_ART=1
+  printf '#!/bin/sh\necho "sib $*" >> "%s/sib-calls"\n[ "$1" = trusted ] && { echo "not trusted: $2" >&2; exit 1; }\nexit 0\n' "$STUB" > "$HOME/bin/sib"; chmod +x "$HOME/bin/sib"
+  run python3 - "$BRIEF" <<'PY'
+import importlib.machinery, types, json, os, sys
+p = sys.argv[1]; l = importlib.machinery.SourceFileLoader("brief", p); m = types.ModuleType("brief"); m.__file__ = p; l.exec_module(m)
+assert m.art_step({"scout-redteam": "Red team."}, now=1000) is None
+assert m.art_step({"scout-redteam": "Red team."}, now=1600) is None  # not asked again the same day
+st = json.load(open(os.path.join(m.ROLE_ART, "state.json")))
+assert "not trusted" in st["untrusted"], st
+print("ok")
+PY
+  [ "$status" -eq 0 ]
+  [ "${lines[${#lines[@]}-1]}" = "ok" ]
+  grep -q 'sib trusted .*/art/jobs/office-art-1000' "$STUB/sib-calls"
+  [ "$(grep -c 'sib trusted' "$STUB/sib-calls")" = "1" ]
+  ! grep -q 'sib spawn' "$STUB/sib-calls"
 }
 
 @test "office archive: installs and clean-ups from the roster sit in the timeline, with the user's decision time when there is one" {

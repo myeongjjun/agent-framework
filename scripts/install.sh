@@ -281,16 +281,23 @@ if [[ -d "${CMUX_SRC}" ]]; then
       ok "committee pane root ${PANE_ROOT_OLD} → ${PANE_ROOT_PAT%/\*} (sib cannot pre-trust outside \$HOME)"
     fi
   fi
-  if ! grep -qE '^[[:space:]]*~/\.local/share/cmux/hr/panes/\*[[:space:]]*(#.*)?$' "${SIB_TRUST}" 2>/dev/null; then
+  # The office (brief) hands role art to one Codex pane at a time, in a job
+  # folder under ~/.local/share/cmux/office-art/jobs; it is unattended too.
+  # shellcheck disable=SC2088  # literal `~/` patterns: sib expands them
+  for entry in "${PANE_ROOT_PAT}|agent-scout committee member panes" \
+               "~/.local/share/cmux/office-art/jobs/*|brief office art panes"; do
+    pat="${entry%%|*}" what="${entry#*|}"
+    pat_re="$(printf '%s' "${pat}" | sed 's/[.*]/\\&/g')"
+    grep -qE "^[[:space:]]*${pat_re}[[:space:]]*(#.*)?\$" "${SIB_TRUST}" 2>/dev/null && continue
     if (( DRY_RUN == 1 )); then
-      printf '  [dry-run] add %s to %s\n' "${PANE_ROOT_PAT}" "${SIB_TRUST}"
+      printf '  [dry-run] add %s to %s\n' "${pat}" "${SIB_TRUST}"
     else
       mkdir -p "$(dirname "${SIB_TRUST}")"
       [[ -s "${SIB_TRUST}" ]] || printf '# sib: dirs a sibling may start in without the trust dialog\n' > "${SIB_TRUST}"
-      printf '# agent-scout committee member panes (added by agent-framework install)\n%s\n' "${PANE_ROOT_PAT}" >> "${SIB_TRUST}"
-      ok "sib trusted-dirs: ${PANE_ROOT_PAT} (committee member panes)"
+      printf '# %s (added by agent-framework install)\n%s\n' "${what}" "${pat}" >> "${SIB_TRUST}"
+      ok "sib trusted-dirs: ${pat} (${what})"
     fi
-  fi
+  done
 
   if (( DRY_RUN == 1 )); then
     "${FRAMEWORK_ROOT}/bin/cmux-automations-merge" "${CMUX_SRC}/automations.json" --dry-run >/dev/null \
