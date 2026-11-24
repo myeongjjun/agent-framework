@@ -2507,8 +2507,7 @@ def roster_records(hr, rtext, fates, meeting_at):
     명부 줄에는 날짜만 있으므로 시각은 영역 Decision log 에서 그 역할을 말한 by:user 줄의 시각을 쓰고, 없으면
     근거 회의가 끝난 시각 바로 뒤에 놓고 time_known=False 로 표시한다(추측한 시각을 사실처럼 보이지 않게)."""
     import datetime as _dt
-    kst = _dt.timezone(_dt.timedelta(hours=9))
-    year = _dt.datetime.now(kst).year
+    year = _dt.datetime.now().year
     try:
         dlog = [ln for ln in open(AREAS_MD) if re.match(r"- \d\d-\d\d \d\d:\d\d \|", ln)]
     except OSError:
@@ -2531,11 +2530,11 @@ def roster_records(hr, rtext, fates, meeting_at):
         word = {"hire": r"설치|투입"}.get(f[2], r"합|도구|퇴출|벤치|해체|보류|거절")
         hits = [d for d in hits if re.search(word, d)] or hits[:1]
         if hits:
-            at = _dt.datetime.strptime(f"{year}-{hits[0][2:13]}", "%Y-%m-%d %H:%M").replace(tzinfo=kst).timestamp()
+            at = _dt.datetime.strptime(f"{year}-{hits[0][2:13]}", "%Y-%m-%d %H:%M").timestamp()
             known = True
         if at is None:
             refs = [meeting_at[r] for r in re.findall(r"(?:eval|quorum)-\d{4}-\d\d-\d\d(?:-\d+)?", text) if r in meeting_at]
-            day = _dt.datetime.strptime(f"{year}-{f[0]}", "%Y-%m-%d").replace(tzinfo=kst).timestamp()
+            day = _dt.datetime.strptime(f"{year}-{f[0]}", "%Y-%m-%d").timestamp()
             at = (max(refs) + 1) if refs else day + 12 * 3600
         out.append({"id": f"명부 · {role}", "at": at, "time_known": known, "what": REC_KO[f[2]], "topic": role,
                     "members": [], "record": True, "failed": False, "md": None,
@@ -2673,10 +2672,10 @@ def _front(path):
     return out
 
 
-def _kst(t):
-    """기록 시각을 KST 로(사무실의 모든 시각은 KST)."""
+def _stamp(t):
+    """기록 시각을 이 기기의 시간대로(사무실의 모든 시각은 기기 시간대: 기록 줄도 그 시간대로 쓰인다)."""
     import datetime as _dt
-    return _dt.datetime.fromtimestamp(t, _dt.timezone(_dt.timedelta(hours=9))).strftime("%m-%d %H:%M")
+    return _dt.datetime.fromtimestamp(t).strftime("%m-%d %H:%M")
 
 
 def org_chart(hr=None, roster=None, cfg=None, measure=None):
@@ -2720,7 +2719,7 @@ def org_chart(hr=None, roster=None, cfg=None, measure=None):
     reviewed = {}
     for mt in archive:
         for it in mt["items"]:
-            reviewed.setdefault(it["role"], []).append({"day": _kst((mt["at"])),
+            reviewed.setdefault(it["role"], []).append({"day": _stamp((mt["at"])),
                                                        "what": mt["what"], "text": f"{mt['id']}: {it['result']} · {it['detail']}"})
     nodes, seen = [], set()
 
@@ -2765,7 +2764,7 @@ def org_chart(hr=None, roster=None, cfg=None, measure=None):
         if not m["current"]:
             continue
         fm = _front(os.path.join(CLAUDE_AGENTS, f"{m['agent']}.md")) if m["agent"] != "-" else {}
-        act = [{"day": _kst((a["at"])), "what": a["id"], "text": " · ".join(a["did"])}
+        act = [{"day": _stamp((a["at"])), "what": a["id"], "text": " · ".join(a["did"])}
                for a in m["activity"]]
         node(m["name"], "위원회", kind="심판" if m["name"] == "judge" else "위원", layer="L1",
              model=f"{m['runner']}:{m['model']}", file_model=fm.get("model", ""), about=m.get("about") or m["approach"],
@@ -2825,7 +2824,7 @@ def org_chart(hr=None, roster=None, cfg=None, measure=None):
              about=m["approach"], status="위원회 설정에서 빠짐",
              retired_why=("마지막 회의 " + last.get("id", "?") + " 뒤 설정(agent-committee.md)에서 빠짐 — 빠진 사유는 명부·결정 기록에 없음"),
              hired_why=f"{(m['activity'] or [{}])[-1].get('id', '?')} 회의에 위원으로 앉음 — 뽑힌 근거는 기록에 없음")
-        nodes[-1]["activity"] = [{"day": _kst((a["at"])), "what": a["id"],
+        nodes[-1]["activity"] = [{"day": _stamp((a["at"])), "what": a["id"],
                                   "text": " · ".join(a["did"])} for a in m["activity"]]
     # 계약(기간)과 시작 근거
     for n in nodes:
@@ -3259,6 +3258,7 @@ def art_step(seen, now=None):
             subprocess.run([sib, "kill", job["slug"]], capture_output=True, text=True)
             st["job"] = job = None
     if not job:
+        want = sorted(r for r in seen if r not in have and (r not in tried or now - tried[r] > 86400))[:6]
         slug = f"{OFFICE_ART_PREFIX}{int(now) % 100000}"
         d = os.path.join(ROLE_ART, "jobs", slug)
         if want:  # 빈 pane 은 Codex 신뢰 화면에서 멈춘다: sib 가 미리 신뢰하는 폴더가 아니면 띄우지 않고 내일 다시 본다
@@ -3269,7 +3269,6 @@ def art_step(seen, now=None):
                 for r in want:
                     tried[r] = now
                 want = []
-        want = sorted(r for r in seen if r not in have and (r not in tried or now - tried[r] > 86400))[:6]
         if want:
             os.makedirs(d, exist_ok=True)
             open(os.path.join(d, "task.md"), "w").write(ART_TASK.replace("{roles}", "\n".join(

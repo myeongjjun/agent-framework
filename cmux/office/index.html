@@ -109,10 +109,10 @@ const CW=124, CH=118; // one workstation cell (world units)
 
 function actor(id,o){let a=A.get(id);if(!a){a={id,x:0,y:0,tx:0,ty:0,born:first?-1e4:performance.now(),fresh:true,ph:Math.random()*6};A.set(id,a)}Object.assign(a,o);a.gone=null;return a}
 let POWER=null;
-// 사무실의 모든 시각은 KST(Asia/Seoul)로 고정한다: 브라우저가 어느 시간대에 있든 같게 보인다
-const KST=(t,o)=>new Date(t).toLocaleString("en-GB",Object.assign({timeZone:"Asia/Seoul",hour12:false},o));
-const kHMS=t=>KST(t,{hour:"2-digit",minute:"2-digit",second:"2-digit"});
-const kMDHM=t=>`${+KST(t,{month:"numeric"})}/${+KST(t,{day:"numeric"})} ${KST(t,{hour:"2-digit",minute:"2-digit"})}`;
+// 사무실의 모든 시각은 이 기기의 시간대로 쓴다: 화면은 127.0.0.1 에서 열리고, 기록 줄도 그 시간대로 쓰인다
+const LT=(t,o)=>new Date(t).toLocaleString("en-GB",Object.assign({hour12:false},o));
+const kHMS=t=>LT(t,{hour:"2-digit",minute:"2-digit",second:"2-digit"});
+const kMDHM=t=>`${+LT(t,{month:"numeric"})}/${+LT(t,{day:"numeric"})} ${LT(t,{hour:"2-digit",minute:"2-digit"})}`;
 const fmt=n=>n>=1e8?(n/1e8).toFixed(2)+"억":n>=1e4?Math.round(n/1e4).toLocaleString()+"만":String(Math.round(n));
 function update(d){
   POWER=d.power||null; powerPanel();
@@ -240,7 +240,7 @@ function mini(a,now){ // a helper beside its session's desk
 function powerPanel(){ // tokens and what is left of each account's limits, as text (never drawn over the office)
   const el=document.getElementById("power"); if(!POWER){el.style.display="none";return} el.style.display="block";
   const left=w=>w?(w.resets_at&&w.resets_at*1000<Date.now()?100:Math.max(0,Math.round(100-w.used))):null;
-  const hm=t=>t?new Date(t*1000).toLocaleString("ko-KR",{timeZone:"Asia/Seoul",month:"numeric",day:"numeric",hour:"2-digit",minute:"2-digit",hour12:false}):"";
+  const hm=t=>t?new Date(t*1000).toLocaleString("ko-KR",{month:"numeric",day:"numeric",hour:"2-digit",minute:"2-digit",hour12:false}):"";
   let h='<span class="h">⚡ 전력 — 토큰과 남은 한도</span>';
   for(const [f,name] of [["claude","Claude"],["codex","Codex"]]){const p=POWER[f]||{};
     h+=`<div class="row"><div><span class="t">${name}</span> <span class="n">오늘 ${fmt(p.today||0)} · 지금 ${fmt(p.per_min||0)}/분</span></div>`;
@@ -346,7 +346,7 @@ const RC={통과:GREEN,승인:GREEN,수정:AMBER,보류:AMBER,관찰:MUTED,거�
 async function openArchive(){const box=document.getElementById("arc"),L=document.getElementById("arcList");box.style.display="flex";
   try{const ms=await (await fetch("archive",{cache:"no-store"})).json();
     if(!ms.length){L.textContent="아직 끝난 회의가 없습니다.";return}
-    L.innerHTML=ms.map(m=>{const t=m.record&&!m.time_known?`${+KST(m.at*1000,{month:"numeric"})}/${+KST(m.at*1000,{day:"numeric"})} <span title="명부에는 날짜만 있고 시각 기록이 없음">--:--</span>`:kMDHM(m.at*1000);
+    L.innerHTML=ms.map(m=>{const t=m.record&&!m.time_known?`${+LT(m.at*1000,{month:"numeric"})}/${+LT(m.at*1000,{day:"numeric"})} <span title="명부에는 날짜만 있고 시각 기록이 없음">--:--</span>`:kMDHM(m.at*1000);
       if(m.record){const i=m.items[0];return `<details><summary><span class="t">${t}</span><span class="k">${m.what==="투입"?"📌":"📦"} ${esc(m.what)}</span> · <span class="tp">${esc(m.topic)}</span>${i.fate&&i.fate!==m.what?` <span class="m">· 지금 ${esc(cut(i.fate,30))}</span>`:""}</summary>
         <div class="m" style="font-size:12px;margin-top:4px">명부 기록: ${esc(i.detail)}</div></details>`}
       const rows=m.items.map(i=>`<tr><td>${esc(i.role)}</td><td class="r" style="color:${RC[i.result]||INK}">${esc(i.result)}</td><td class="m">${esc(i.detail)}</td><td>${esc(i.fate||"—")}</td></tr>`).join("");

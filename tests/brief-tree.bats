@@ -439,7 +439,7 @@ b = importlib.util.module_from_spec(s); l.exec_module(b)
 b.AREAS_MD = b.os.path.join(b.HOME, ".config/cmux/orch-areas.md")
 for m in b.committee_archive():
     if m.get("record"):
-        print(m["what"], m["topic"], m["time_known"], b._kst(m["at"])[6:] if m["time_known"] else "-", m["items"][0]["fate"])
+        print(m["what"], m["topic"], m["time_known"], b._stamp(m["at"])[6:] if m["time_known"] else "-", m["items"][0]["fate"])
 PY
   [ "$status" -eq 0 ]
   [[ "$output" == *"투입 rsc True 11:12 투입 · 수습"* ]]        # time from the user's decision line
