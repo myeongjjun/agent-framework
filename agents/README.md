@@ -42,6 +42,11 @@ Each file MUST sit at the top level of `agents/`, not in a subdirectory.
 | Agent | Purpose |
 |---|---|
 | `orch` | cmux session desk (`claude --agent orch`), launched by `cmux/morning-brief.sh`. |
+| `scout-pstack`, `scout-jobs`, `scout-portfolio` | The agent scouting committee (`skills/agent-scout`, `agent-scout convene`): members on different models with different approaches (pstack mining, jobs-to-be-done, portfolio gap). A candidate passes by quorum; a non-member judge grades blind; members are reviewed from the records. Set in `~/.config/cmux/agent-committee.md`. |
+
+Agents that `agent-scout` makes from local history are not here: their source is
+`~/.local/share/cmux/hr/agents/` (local, may hold company context) and `agent-scout install`
+copies them to `~/.claude/agents/`.
 
 ## Deploy
 

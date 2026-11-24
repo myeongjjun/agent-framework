@@ -21,3 +21,9 @@
 
 ## Approvals
 - Approval rule: <!-- empty = the definition's default; `outright` = ask only when security, the design or the direction changes outright -->
+- Ask-first areas (these override Do it, then report): <!-- one line per area: what counts as the area, and the user's words -->
+
+## Agent calls
+<!-- agents the desk names in briefs or at the completion review; one line each: role, agent name, when -->
+- Scope checker for research briefs:
+- Layer drift checker (and the lower-layer repos it compares):

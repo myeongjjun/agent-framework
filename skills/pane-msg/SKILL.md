@@ -1,6 +1,6 @@
 ---
 name: pane-msg
-version: 1.1.2
+version: 1.2.0
 description: >
   Deliver a message/task to an ALREADY-OPEN cmux pane — never spawn a new
   session (that is /dispatch). Makes target resolution and delivery
@@ -206,11 +206,16 @@ The helper implements the verified submit pattern
    gets one line: the message head plus that path. A long typed message
    outgrows a narrow pane's input box, so its head scrolls away.
    Stdout names the typed line (`TYPED:`) and the file (`FILE:`).
-3. Poll until the text is visible in the input box, whitespace-stripped
-   on both sides so a narrow pane's soft-wrap can't break the match, and
-   codex's `tab to queue message` notice is gone. In a box that Claude
-   scrolled (`↑ N more`), the tail alone is enough. When the text never
-   lands, the helper clears a Claude box with Esc Esc.
+3. Poll until the text is in the input box, whitespace-stripped on both
+   sides so a narrow pane's soft-wrap can't break the match. The text is
+   in when its tail is newly on screen (text arrives in order, so the head
+   came first — this covers a box Claude scrolled with `↑ N more` and a
+   pane so narrow that the head wrapped away with no marker), when head
+   and tail are both visible, or when a new paste placeholder is followed
+   only by the message's end (`…[Pasted text #1].`). Codex's
+   `tab to queue message` notice is waited out; when only the notice stays
+   up, the submit check decides. When the text never lands, the helper
+   clears a Claude box with Esc Esc and says what it saw.
 4. `cmux send-key enter`, then confirm a work signal (esc-to-interrupt
    hint or agent spinner line, also when wrapped) or an emptied box; one
    retry; report `DELIVERED` / `QUEUED` / `UNCONFIRMED` with exit codes 0/0/5.
@@ -243,11 +248,13 @@ On `UNCONFIRMED` (exit 5), report it as is and attach a screen snapshot
   already rooted at the workdir") calls
   `pane-resolve.sh --cwd <workdir>`: `MATCH:0` is the only case where
   `--new-workspace` is justified. /pane-msg never spawns.
-- **`sib send <slug>`** — *delegates* to `pane-deliver.sh` when the
-  skill is deployed (a plain send only as a fallback when it is not). One delivery-logic
-  source: same gates, same verification, same exit codes; `sib send
-  <slug> --queue` passes the busy-override through. sib itself stays
-  lifecycle-only (spawn/list/kill).
+- **`pane-deliver.sh` is the one deliverer** (one control path,
+  `docs/agent-control-one-path.md` §5 step 3). `sib spawn` sends its first
+  prompt through it (inline, `--queue`), `sib send <slug>` execs it (no
+  plain-send fallback; `--queue` passes through), and `brief send` (the
+  desk) calls it — `--queue` for a working session, never
+  `cmux agent message`, which wakes the workspace's agent rather than the
+  pane's (11-23: a desk message reached the wrong session).
 - **`/collab`** — orchestrates its own workers via sib; it uses
   `pane-deliver.sh` for mid-flight nudges to a worker.
 

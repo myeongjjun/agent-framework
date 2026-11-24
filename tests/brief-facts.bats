@@ -164,3 +164,154 @@ EOF2
   run python3 "$BRIEF" sessions
   [ "$(echo "$output" | field started)" = "False" ]
 }
+
+# Today's desk document under BRIEF_DESK_DIR (the board day starts at 05:00).
+desk_doc() {
+  export BRIEF_DESK_DIR="$HOME/desk"; mkdir -p "$BRIEF_DESK_DIR/Desk"
+  cat > "$BRIEF_DESK_DIR/Desk/$(python3 -c 'import time;print(time.strftime("%y%m%d",time.localtime(time.time()-5*3600)))').md"
+}
+
+@test "board: decisions handed to the user are the core metric; placing and closing count as the desk's own work" {
+  desk_doc <<'EOF2'
+# Desk 11-23  ·  갱신 18:33
+**지금**: x
+
+## 결정 필요
+- **S3 후속 3건을 배치할지** — 맡은 세션 없음 · 권고: 새 세션
+- **query topology 일을 맡을 세션을 지금 띄울지** — 맡은 세션 없음
+- **완료 보고 커밋을 push 할지** — `t`(16번) · 대조와 일치 · 말씀하시면 데스크가 닫습니다
+- **talkserver 증설 감시가 끝난 일인지** — `d`(4번) · 권고: 끝났다고 말씀하시면 데스크가 대조한 뒤 닫음
+- **쿼리 비용 메모를 쓸지 답하기** — `p`(7번) · 그 pane 에서 답하시면 됩니다
+## 진행 중
+- `리서치`(19번) — 보고는 대조와 일치합니다. 사용자가 끝났다고 할 때까지 닫지 않습니다 · 다음 확인: 사용자가 말하면
+- `작업`(20번) — 고치고 있습니다 · 다음 확인: 완료 보고가 오면
+## 예약
+없음
+EOF2
+  run python3 "$BRIEF" board --json
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"k": "사용자에게 넘김"'* ]]
+  [[ "$output" == *"오늘 6건 · 데스크가 할 수 있었던 것 4 (배치 2 · 닫기 2)"* ]]
+  # The top block is rewritten: a decision that left the document still counts for the day.
+  sed -i '' '/S3 후속/d' "$BRIEF_DESK_DIR"/Desk/*.md
+  run python3 "$BRIEF" board --log
+  [[ "$output" == *"오늘 6건"* ]]
+  run python3 "$BRIEF" board --trend 3
+  [[ "$output" == *"넘긴결정"*"스스로가능"* ]]
+  [[ "$(echo "$output" | tail -1)" =~ ^[0-9-]+\ +6\ +4 ]]
+}
+
+@test "board: the desk's morning recount wins over the tool's estimate" {
+  desk_doc <<'EOF2'
+## 결정 필요
+- **새 세션을 하나 띄울지** — 맡은 세션 없음
+EOF2
+  day=$(python3 -c 'import time;print(time.strftime("%Y-%m-%d",time.localtime(time.time()-5*3600)))')
+  python3 "$BRIEF" board --set asked=3 avoidable=0 --day "$day" > /dev/null
+  run python3 "$BRIEF" board --log
+  [[ "$output" == *"오늘 3건 · 데스크가 할 수 있었던 것 0"* ]]
+  python3 -c 'import json,sys;h=json.loads(open(sys.argv[1]).readlines()[-1]);assert (h["asked"],h["avoidable"])==(3,0),h' \
+    "$HOME/.local/share/cmux/board.jsonl"
+}
+
+# P12: the Desk pane draws a decision as answered when the user typed into that session's pane after it
+# was raised; user input in a pane is a patrol signal.
+p12_doc() {  # $1 epoch for the document's mtime
+  export BRIEF_DESK_DIR="$HOME/desk"; mkdir -p "$BRIEF_DESK_DIR/Desk"
+  cat > "$BRIEF_DESK_DIR/Desk/261119.md" <<'DOC'
+# Desk 11-19
+## 결정 필요
+- **푸시할지** — `Task A`(1번) · 권고: 푸시
+- **세션 없는 결정** — 권고: 보류
+## 타임라인
+- 10:00 무시
+DOC
+  python3 -c "import os,sys; os.utime(sys.argv[1], (int(sys.argv[2]),) * 2)" "$BRIEF_DESK_DIR/Desk/261119.md" "$1"
+  echo "{\"at\":1,\"items\":[{\"panel\":\"$A\",\"do\":\"x\",\"done\":false}]}" > "$HOME/.cache/cmux/brief-plan.json"
+}
+utc() { python3 -c "import calendar,sys; print(calendar.timegm(tuple(map(int,sys.argv[1:]))+(0,0,0)))" "$@"; }
+iso_now() { python3 -c "import time; print(time.strftime('%Y-%m-%dT%H:%M:%S.000Z', time.gmtime()))"; }
+# The desk was woken two minutes ago; the next ordinary wake-up is 8 minutes away (no retry is scheduled).
+recently_woken() {
+  python3 - "$HOME/.cache/cmux/brief-patrol.json" <<'PY'
+import json, sys, time
+p = sys.argv[1]; st = json.load(open(p)); st["notified"] = int(time.time()) - 120; st["retry"] = 2**40
+json.dump(st, open(p, "w"))
+PY
+}
+
+@test "answered: input after the decision went up marks that line; lines without a session are never marked" {
+  p12_doc "$(utc 2026 11 19 1 20 0)"
+  transcript <<TR
+$(line assistant 2026-11-19T01:10:00Z '[{"type":"text","text":"Push it?"}]')
+$(line user 2026-11-19T01:30:00Z '"yes push"' ',"origin":{"kind":"human"}')
+TR
+  run python3 "$BRIEF" answered
+  [ "$status" -eq 0 ]
+  python3 - "$output" <<'PY'
+import json, sys
+rows = json.loads(sys.argv[1])
+assert [r["i"] for r in rows] == [0, 1], rows
+assert rows[0]["n"] == 1 and rows[0]["answered"] is True and rows[0]["input_at"], rows
+assert rows[1] == {"i": 1, "n": 0}, rows
+PY
+  # The line was first seen at the document's mtime; a later rewrite of the file does not move it.
+  python3 -c "import os,sys; os.utime(sys.argv[1], (2000000000,)*2)" "$BRIEF_DESK_DIR/Desk/261119.md"
+  run python3 "$BRIEF" answered
+  [[ "$output" == *'"answered":true'* ]]
+}
+
+@test "answered: input before the decision went up, or the desk's own hand-off, is not an answer" {
+  p12_doc "$(utc 2026 11 19 1 40 0)"
+  transcript <<TR
+$(line user 2026-11-19T01:30:00Z '"yes push"' ',"origin":{"kind":"human"}')
+$(line user 2026-11-19T01:50:00Z '"desk-message: the user says push"' ',"origin":{"kind":"human"}')
+TR
+  run python3 "$BRIEF" answered
+  [ "$status" -eq 0 ]
+  [[ "$output" != *answered* ]]
+}
+
+@test "patrol --input: user input is a signal; in a pane with an open decision it wakes the desk at once" {
+  p12_doc "$(utc 2026 11 19 1 20 0)"
+  export BRIEF_INPUT_WAIT=0 BRIEF_PATROL_MIN=10
+  transcript </dev/null
+  python3 "$BRIEF" patrol --read >/dev/null   # the desk reads once, so it gets signals
+  recently_woken
+  # A hand-off the desk typed in is not user input.
+  transcript <<TR
+$(line user "$(iso_now)" '"desk-message: do x"' ',"origin":{"kind":"human"}')
+TR
+  CMUX_AUTOMATION_EVENT_JSON="{\"surface_id\":\"$A\"}" run python3 "$BRIEF" patrol --input
+  [ "$status" -eq 0 ]
+  ! grep -qi "agent message $DESK" "$STUB/calls"
+  # The user answers in the pane: TODO 1 has an open decision, so the desk is woken now.
+  transcript <<TR
+$(line user "$(iso_now)" '"yes push"' ',"origin":{"kind":"human"}')
+TR
+  CMUX_AUTOMATION_EVENT_JSON="{\"payload\":{\"surface_id\":\"$A\"}}" run python3 "$BRIEF" patrol --input
+  [ "$status" -eq 0 ]
+  grep -qi "agent message $DESK --from orch-patrol -- patrol 1" "$STUB/calls"
+  run python3 "$BRIEF" patrol --read
+  [[ "$output" == *'"ev":"input"'* ]]
+  [[ "$output" == *'"decision":true'* ]]
+  [[ "$output" == *'"todo":1'* ]]
+}
+
+@test "patrol --input: without an open decision the input waits for the ordinary interval" {
+  p12_doc "$(utc 2026 11 19 1 20 0)"
+  echo '{"at":1,"items":[]}' > "$HOME/.cache/cmux/brief-plan.json"
+  export BRIEF_INPUT_WAIT=0 BRIEF_PATROL_MIN=10
+  transcript </dev/null
+  python3 "$BRIEF" patrol --read >/dev/null
+  recently_woken
+  transcript <<TR
+$(line user "$(iso_now)" '"carry on"' ',"origin":{"kind":"human"}')
+TR
+  run python3 "$BRIEF" patrol --input "$A"
+  [ "$status" -eq 0 ]
+  ! grep -qi "agent message $DESK" "$STUB/calls"
+  run python3 "$BRIEF" patrol --read
+  [[ "$output" == *'"ev":"input"'* ]]
+  [[ "$output" != *decision* ]]
+}

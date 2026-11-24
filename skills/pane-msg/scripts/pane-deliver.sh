@@ -15,6 +15,14 @@
 # Usage:
 #   pane-deliver.sh --surface <ref> --workspace <ref> [--queue] [--dry-run] -- <message...>
 #   pane-deliver.sh --slug <slug>                     [--queue] [--dry-run] -- <message...>
+#   --ours <prefix> (repeatable): text the caller itself types starts with this.
+#
+# cmux refuses to type into an agent prompt that already holds text ("holds
+# text someone is typing"). If that text starts with an --ours prefix, it is
+# an earlier send of the caller that was never submitted (11-23: old desk
+# requests sat in five panes for days and blocked every later request), so it
+# is cleared (Esc Esc) and the send is retried once. Other text is the user's:
+# it is left alone and the delivery is refused (exit 7).
 #
 # Newlines in the message are flattened to spaces: cmux send treats \n as
 # Enter, which would submit a half-typed message.
@@ -30,9 +38,9 @@
 #
 # Exit codes:
 #   0 delivered (submit confirmed, or queued under --queue)
-#   2 usage error                    3 refused: approval prompt on screen
+#   2 usage error                    3 refused: approval prompt or Codex start screen
 #   4 refused: pane busy (no --queue) 5 submitted but unconfirmed — inspect pane
-#   6 target pane gone
+#   6 target pane gone               7 refused: input box holds text that is not ours
 # Stdout names the typed line (TYPED: <line>) and, when the pointer form was
 # used, the file (FILE: <path>).
 set -euo pipefail
@@ -42,16 +50,17 @@ export CMUX_QUIET=1
 
 STATE_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/sib/state"
 
-usage() { sed -n '2,37p' "$0" >&2; exit 2; }
+usage() { sed -n '2,47p' "$0" >&2; exit 2; }
 die() { echo "pane-deliver: $1" >&2; exit "${2:-2}"; }
 
-surface="" workspace="" slug="" queue=0 dry_run=0 msg=""
+surface="" workspace="" slug="" queue=0 dry_run=0 msg="" ours=()
 while (($#)); do case "$1" in
   --surface)   shift; surface="${1:?}" ;;
   --workspace) shift; workspace="${1:?}" ;;
   --slug)      shift; slug="${1:?}" ;;
   --queue)     queue=1 ;;
   --dry-run)   dry_run=1 ;;
+  --ours)      shift; ours+=("${1:?}") ;;
   --)          shift; msg="$*"; break ;;
   *)           usage ;;
 esac; shift || true; done
@@ -100,6 +109,23 @@ busy_signal() {
 }
 
 tail_text="$(screen_tail)"
+
+# Codex start screens that are not its input box. Their option list uses the
+# input box's '›', and any key picks an option: Enter on the update screen
+# runs `brew upgrade` and ends the pane (11-24: three committee members never
+# got their task); on the hooks-review screen it may trust hooks. Never type
+# into them — the user answers them.
+start_screen=""
+if [[ "${tail_text}" == *"Update available"* ]] \
+   && [[ "${tail_text}" == *"Update now"* || "${tail_text}" == *"Skip until next version"* ]]; then
+  start_screen="update screen (Update available: Update now / Skip)"
+elif [[ "${tail_text}" == *"Hooks need review"* || "${tail_text}" == *"Trust all and continue"* ]]; then
+  start_screen="hooks-review screen (Hooks need review: Trust all / Continue without trusting)"
+fi
+if [[ -n "${start_screen}" ]]; then
+  echo "REFUSED: ${surface} is at Codex's ${start_screen} — no key was sent; the user answers it in the pane." >&2
+  exit 3
+fi
 
 if [[ "${tail_text}" == *"Press enter to confirm"* \
    || "${tail_text}" == *"Do you want to proceed?"* \
@@ -166,45 +192,101 @@ input_empty() { LC_ALL=C grep -qE $'^\xe2\x9d\xaf(\xc2\xa0| )*(Try ".*)?$'; }
 # Claude scrolls an input box taller than its viewport and draws
 # '↑ N more' on the top rule; the head is then off screen.
 box_scrolled() { grep -qE '↑[0-9]+more'; }
-pastes_before="$(read_screen 200 | paste_ids || true)"
+scr_before="$(read_screen 200 || true)"
+pastes_before="$(paste_ids <<<"${scr_before}" || true)"
+scr_before_ns="$(printf '%s' "${scr_before}" | tr -d ' \n')"
 
 # 1) Put the text in the input box (no enter yet). TYPED names the exact
 # line, so a caller can look for it in the session's transcript.
 echo "TYPED: ${msg_flat}"
-cmux send --surface "${surface}" --workspace "${workspace}" "${msg_flat}" >/dev/null
+# The draft in Claude's box: from the last '❯' line to the box's bottom rule.
+draft() {
+  read_screen 40 | awk '/^[[:space:]]*❯/ { d = ""; on = 1 } on && /^[[:space:]]*─/ { on = 0 } on { d = d $0 } END { print d }' \
+    | sed 's/^[[:space:]]*❯//' | tr -d ' \n' | sed $'s/\xc2\xa0//g'
+}
+ours_draft() {
+  local d p; d="$(draft)"; [[ -n "$d" ]] || return 1
+  for p in "${ours[@]+"${ours[@]}"}"; do [[ "$d" == "$(tr -d ' ' <<<"$p")"* ]] && return 0; done
+  return 1
+}
+try_send() { cmux send --surface "${surface}" --workspace "${workspace}" "${msg_flat}" 2>&1 >/dev/null; }
+if ! err="$(try_send)"; then
+  [[ "${err}" == *"holds text"* ]] || { echo "${err}" >&2; exit 1; }
+  if ! ours_draft; then
+    echo "REFUSED: ${surface}'s input box holds text that is not ours: $(draft | cut -c1-60)" >&2
+    exit 7
+  fi
+  cmux send-key --surface "${surface}" --workspace "${workspace}" escape >/dev/null
+  sleep 0.3
+  cmux send-key --surface "${surface}" --workspace "${workspace}" escape >/dev/null
+  sleep 0.5
+  echo "CLEARED: an earlier unsent message of ours in ${surface}'s input box"
+  if ! err="$(try_send)"; then
+    echo "REFUSED: ${surface}'s input box still holds text after clearing ours: ${err}" >&2
+    exit 7
+  fi
+fi
 
 # 2) Confirm the text landed. Strip spaces+newlines from BOTH the screen and
 # the needle so a narrow pane's soft-wrap cannot break the match (§9 trap 4).
-# Both the head and the tail must be visible — a head-only match passed a
-# prompt cut at 1024 bytes (§9 trap 5). codex additionally queues input while
-# MCP servers load — wait until the 'tab to queue message' notice is gone
-# (never appears for claude; harmless).
+# The text landed when any of these holds:
+#   - the tail is newly on screen (more copies than before the send). Text
+#     arrives in order and a cut send loses the tail, not the head (§9 trap
+#     5), so a new tail means the whole text is in. This also covers a box
+#     whose head scrolled away: Claude's '↑ N more' fold, or a narrow pane
+#     (11-23: 4 columns wide, 2 characters a line, no fold marker drawn).
+#   - head and tail are both visible.
+#   - a new paste placeholder ("[Pasted text #1]" claude, "[Pasted Content
+#     1234 chars]" codex) and what follows it up to the box's bottom rule is
+#     the message's end, or empty (11-23: '…i[Pasted text #1].' — the last
+#     chunk '.' was typed after the folded one, and spawns exited 5).
+# codex also queues input while MCP servers load: wait until its 'tab to
+# queue message' notice is gone, but submit anyway when the text is in and
+# only the notice stays up (the submit check decides then).
 head_needle="$(printf '%s' "${msg_flat:0:24}" | tr -d ' ')"
 tail_needle="$(printf '%s' "${msg_flat: -24}" | tr -d ' ')"
 (( ${#msg_flat} < 24 )) && tail_needle="${head_needle}"
-landed=0
+msg_ns="$(printf '%s' "${msg_flat}" | tr -d ' ')"
+count() { { grep -oF -- "$1" <<<"$2" || true; } | wc -l | tr -d ' '; }
+tails_before="$(count "${tail_needle}" "${scr_before_ns}")"
+# What follows the last paste placeholder up to the box's bottom rule; fails
+# when no rule follows it.
+after_paste() {
+  local s="${1//─/$'\x01'}" rest
+  [[ "${s}" == *"[Paste"* ]] || return 1
+  rest="${s##*\[Paste}"
+  [[ "${rest}" =~ ^(dtext#[0-9]+|dContent[0-9]+chars)[^]]*\] ]] || return 1
+  rest="${rest#*]}"
+  [[ "${rest}" == *$'\x01'* ]] || return 1
+  printf '%s' "${rest%%$'\x01'*}"
+}
+landed=0 text_in=0 head_ok=0 tail_ok=0 tail_new=0 new_paste="" queue_up=0
 for i in $(seq 1 60); do
   scr="$(read_screen 200 || true)"
   scr_ns="$(printf '%s' "${scr}" | tr -d ' \n')"
   new_paste="$(comm -13 <(printf '%s\n' "${pastes_before}") <(paste_ids <<<"${scr}") | grep . || true)"
-  head_ok=0 tail_ok=0
+  head_ok=0 tail_ok=0 tail_new=0 text_in=0 queue_up=0
   grep -qF -- "${head_needle}" <<<"${scr_ns}" && head_ok=1
   grep -qF -- "${tail_needle}" <<<"${scr_ns}" && tail_ok=1
-  # A scrolled box hides the head. The tail alone is enough then: it is
-  # unique (a pointer's tail names its own file), and a cut send loses the
-  # tail, not the head (§9 trap 5).
-  (( tail_ok )) && box_scrolled <<<"${scr_ns}" && head_ok=1
-  if [[ -n "${new_paste}" ]]; then
-    head_ok=1
-    # The whole message folded: the input ends with the placeholder.
-    grep -qE '\[Paste(dtext#[0-9]+|dContent[0-9]+chars)[^]]*\]─' <<<"${scr_ns}" && tail_ok=1
+  (( tail_ok )) && (( $(count "${tail_needle}" "${scr_ns}") > tails_before )) && tail_new=1
+  (( tail_new || (head_ok && tail_ok) )) && text_in=1
+  if [[ -n "${new_paste}" ]] && rest="$(after_paste "${scr_ns}")" \
+     && [[ "${msg_ns: -${#rest}}" == "${rest}" || -z "${rest}" ]]; then
+    text_in=1
   fi
-  if (( head_ok && tail_ok )) && ! grep -qF 'tab to queue message' <<<"${scr}"; then
-    landed=1; break
-  fi
+  grep -qF 'tab to queue message' <<<"${scr}" && queue_up=1
+  if (( text_in && ! queue_up )); then landed=1; break; fi
   if (( i <= 10 )); then sleep 0.1; else sleep 0.5; fi
 done
+(( text_in && queue_up )) && landed=1
 if (( ! landed )); then
+  # Say what was seen, so the next failure is diagnosable from the output.
+  seen="head $( ((head_ok)) && echo seen || echo missing), tail $( ((tail_ok)) && echo seen || echo missing)"
+  (( tail_ok && ! tail_new )) && seen="${seen} (already on screen before the send)"
+  box_scrolled <<<"${scr_ns}" && seen="${seen}, box folded (↑ N more)"
+  [[ -n "${new_paste}" ]] && seen="${seen}, new paste placeholder"
+  rule="$(grep -E '^[[:space:]]*(─)+[[:space:]]*$' <<<"${scr}" | tail -1 | tr -d ' ' | sed 's/─/x/g' || true)"
+  [[ -n "${rule}" ]] && (( ${#rule} < 10 )) && seen="${seen}, pane ${#rule} columns wide"
   # Clear what was typed so it cannot be submitted later by accident. Only a
   # Claude box that is not already empty: Esc Esc on an empty box opens the
   # rewind menu instead. Esc Esc clears the whole input (ctrl+u only clears
@@ -219,7 +301,7 @@ if (( ! landed )); then
     sleep 0.5
     input_empty <<<"$(read_screen 20 || true)" && left="typed text cleared"
   fi
-  echo "UNCONFIRMED: text did not fully appear in ${surface}'s input box within ~30s — not submitted (${left}). Inspect the pane." >&2
+  echo "UNCONFIRMED: text did not fully appear in ${surface}'s input box within ~30s (${seen}) — not submitted (${left}). Inspect the pane." >&2
   exit 5
 fi
 [[ -n "${msg_file}" ]] && echo "FILE: ${msg_file}"

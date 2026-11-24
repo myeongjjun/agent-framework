@@ -178,3 +178,24 @@ first_hook() { basename "$(ls "$FW"/hooks/general/*.sh | head -1)"; }
   [ "$status" -eq 0 ]
   [ "$(readlink "$HOME/.claude/skills/$n")" = "$FW/skills/$n" ]
 }
+
+@test "the cmux report rule reaches Claude rules and a marked Codex AGENTS.md block" {
+  mkdir -p "$HOME/.codex"
+  printf '# my codex rules\nkeep me\n' > "$HOME/.codex/AGENTS.md"
+  "$INSTALL" >/dev/null
+  cmp -s "$FW/cmux/session-report.md" "$HOME/.claude/rules/cmux-session-report.md"
+  grep -q "keep me" "$HOME/.codex/AGENTS.md"
+  grep -q "brief report" "$HOME/.codex/AGENTS.md"
+  [ "$(grep -c 'cmux-session-report:start' "$HOME/.codex/AGENTS.md")" -eq 1 ]
+
+  # Re-install replaces the block in place; a source edit flows through.
+  printf '\nextra line\n' >> "$FW/cmux/session-report.md"
+  run "$VERIFY"
+  [ "$status" -ne 0 ]
+  "$INSTALL" >/dev/null
+  [ "$(grep -c 'cmux-session-report:start' "$HOME/.codex/AGENTS.md")" -eq 1 ]
+  grep -q "extra line" "$HOME/.codex/AGENTS.md"
+  grep -q "keep me" "$HOME/.codex/AGENTS.md"
+  run "$VERIFY"
+  [ "$status" -eq 0 ]
+}

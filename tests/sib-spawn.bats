@@ -149,6 +149,23 @@ setup() {
   ! grep -q "cmux close-workspace" "$CMUX_STUB_LOG"
 }
 
+@test "kill records the caller's close (slug, pane id, start dir) for brief audit" {
+  run "$SIB" spawn rec-kill --workdir "$WORKDIR"
+  [ "$status" -eq 0 ]
+  surf="$(sed -n 's/^surface=//p' "$STATE/rec-kill.env")"
+  CMUX_STUB_SURFACE="$surf" CMUX_STUB_PANEL_ID="PANE-UUID-1" CMUX_PANEL_ID="CALLER-1" run "$SIB" kill rec-kill
+  [ "$status" -eq 0 ]
+  run jq -r '[.slug, .panel, .workdir, .by] | join(" ")' "$XDG_DATA_HOME/sib/killed.jsonl"
+  [ "$output" = "rec-kill PANE-UUID-1 $WORKDIR CALLER-1" ]
+}
+
+@test "kill that fails records no close" {
+  run "$SIB" spawn norec-kill
+  CMUX_STUB_CLOSE_FAIL=1 run "$SIB" kill norec-kill
+  [ "$status" -ne 0 ]
+  [ ! -s "$XDG_DATA_HOME/sib/killed.jsonl" ]
+}
+
 @test "kill of a state file lacking workspace_managed defaults to surface close" {
   # simulate a pre-upgrade state file (no workspace_managed line)
   mkdir -p "$STATE"
@@ -214,8 +231,7 @@ EOF
   # (static stub screen: the trailing work signal lets the submit confirm.)
   export CMUX_STUB_SCREEN="›
 do the thing
-tab to queue message
-working"
+tab to queue message" CMUX_STUB_SCREEN_AFTER_ENTERS=2 CMUX_STUB_SCREEN3="• Working (1s • esc to interrupt)"
   run "$SIB" spawn queued --codex --workdir "$WORKDIR" --no-report -- "do the thing"
   [ "$status" -eq 0 ]
   # prompt text was placed in the box
@@ -297,6 +313,7 @@ line two"
   printf 'slug=wt\nagent=codex\nsurface=surface:71\nworkspace=workspace:1\nworktree=/y\nworktree_managed=1\n' > "$STATE/wt.env"
   printf 'slug=up\nagent=claude\nsurface=surface:72\nworkspace=workspace:1\nworktree=/z\nworktree_managed=0\n' > "$STATE/up.env"
   touch "${CMUX_STUB_LOG}.closed-surface:70" "${CMUX_STUB_LOG}.closed-surface:71"
+  touch -t 202001010000 "$STATE"/*.env   # older than list's one-minute grace
   run "$SIB" list
   [ "$status" -eq 0 ]
   [ ! -f "$STATE/gone.env" ]
@@ -374,6 +391,17 @@ BOOT_SCREEN=$'❯ \n───────────────────�
   run "$SIB" spawn rev --codex --workdir "$WORKDIR" --no-report
   [ "$status" -eq 0 ]
   grep -q "exec codex --approve-for-me" "$CMUX_STUB_LOG"
+}
+
+@test "--model picks the model the same way for claude and codex" {
+  run "$SIB" spawn m-claude --model sonnet --workdir "$WORKDIR" --no-report
+  [ "$status" -eq 0 ]
+  grep -q "exec claude --model sonnet" "$CMUX_STUB_LOG"
+  run "$SIB" spawn m-codex --codex --model gpt-x --workdir "$WORKDIR" --no-report
+  [ "$status" -eq 0 ]
+  grep -q "exec codex --approve-for-me -m gpt-x" "$CMUX_STUB_LOG"
+  run "$SIB" spawn m-bad --model 'x;rm' --workdir "$WORKDIR" --no-report
+  [ "$status" -ne 0 ]
 }
 
 @test "codex --yolo still bypasses sandbox and approvals" {
@@ -474,4 +502,250 @@ trusted() { jq -e --arg d "$1" '.projects[$d].hasTrustDialogAccepted == true' "$
   [[ "$output" == *"sib spawn <slug>"* ]]
   [ ! -s "$CMUX_STUB_LOG" ]
   [ -z "$(ls "$STATE")" ]
+}
+
+# --- folded input box + placeholder + split failure (11-23 incident) ---------
+# ~12 of 30 desk spawns exited 5 although the whole prompt sat in the box:
+# claude scrolled the tall box ('─── ↑ 2 more ───' on its top rule) so the
+# head was off screen. Screens below are shaped on the captured ones.
+
+@test "a folded input box ('↑ N more') with the tail visible is submitted" {
+  export CMUX_STUB_SCREEN="$BOOT_SCREEN" CMUX_STUB_SCREEN_AFTER_SENDS=2 \
+    CMUX_STUB_SCREEN2=$'─── ↑ 2 more ──────────────\n  folded away and the tail\n  end of it\n──────────────────────\n  ⏵⏵ auto mode on' \
+    CMUX_STUB_SCREEN_AFTER_ENTERS=2 CMUX_STUB_SCREEN3=$'✢ Orbiting… (6s)\n──────────────────────\n❯ '
+  run "$SIB" spawn fold-box --workdir "$WORKDIR" --no-report -- "a long head that the agent folded away and the tail end of it"
+  [ "$status" -eq 0 ]
+  [ "$(grep -c "cmux send-key .* enter" "$CMUX_STUB_LOG")" -eq 2 ]
+}
+
+@test "a folded input box whose tail is missing is still not submitted" {
+  export CMUX_STUB_SCREEN="$BOOT_SCREEN" CMUX_STUB_SCREEN_AFTER_SENDS=2 \
+    CMUX_STUB_SCREEN2=$'─── ↑ 2 more ──────────────\n  folded away and the ta\n──────────────────────'
+  run "$SIB" spawn fold-cut --workdir "$WORKDIR" --no-report -- "a long head that the agent folded away and the tail end of it"
+  [ "$status" -eq 5 ]
+  [[ "$output" == *"tail missing"*"box folded"* ]]
+  [ "$(grep -c "cmux send-key .* enter" "$CMUX_STUB_LOG")" -eq 1 ]
+}
+
+@test "a head typed out and a tail folded into '[Pasted text #1]' is submitted" {
+  # Captured live: the first chunk is drawn, the rest folds at the box end.
+  export CMUX_STUB_SCREEN="$BOOT_SCREEN" CMUX_STUB_SCREEN_AFTER_SENDS=2 \
+    CMUX_STUB_SCREEN2=$'❯ a long head that the agent folded\n  aw[Pasted text #1]\n──────────────────────\n  paste again to expand' \
+    CMUX_STUB_SCREEN_AFTER_ENTERS=2 CMUX_STUB_SCREEN3=$'✻ Cooking…\n──────────────────────\n❯ '
+  run "$SIB" spawn fold-paste --workdir "$WORKDIR" --no-report -- "a long head that the agent folded away and the tail end of it"
+  [ "$status" -eq 0 ]
+  [ "$(grep -c "cmux send-key .* enter" "$CMUX_STUB_LOG")" -eq 2 ]
+}
+
+@test "a prompt that never lands says what was seen" {
+  export CMUX_STUB_SCREEN="$BOOT_SCREEN"
+  run "$SIB" spawn never-landed --workdir "$WORKDIR" --no-report -- "a prompt that the agent never drew"
+  [ "$status" -eq 5 ]
+  [[ "$output" == *"head missing, tail missing"* ]]
+}
+
+@test "a workspace that cannot split again fails with the reason" {
+  export CMUX_STUB_SPLIT_FAIL="Error: not enough space to split"
+  run "$SIB" spawn no-room --workspace workspace:5 --workdir "$WORKDIR"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"not enough space to split"* ]]
+  [[ "$output" == *"cannot add a pane to workspace workspace:5"* ]]
+  [ ! -f "$STATE/no-room.env" ]
+  run "$SIB" spawn no-room-def --workdir "$WORKDIR"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"cannot add a pane to workspace workspace:1"* ]]
+}
+
+# --- one deliverer (docs/agent-control-one-path.md §5 step 3, 11-23) ----------
+# The first prompt goes through pane-deliver.sh, the same deliverer as
+# `sib send` and `brief send`.
+
+@test "the first prompt goes through pane-deliver, inline (no file pointer)" {
+  export XDG_DATA_HOME="$BATS_TEST_TMPDIR/xdg" CMUX_STUB_SCREEN="$BOOT_SCREEN" CMUX_STUB_SCREEN_AFTER_SENDS=2 \
+    CMUX_STUB_SCREEN2=@echo CMUX_STUB_SCREEN_AFTER_ENTERS=2 CMUX_STUB_SCREEN3=$'✻ Cooking…\n──────────────────────\n❯ '
+  long="$(printf 'a long task sentence %.0s' $(seq 1 30))and its end"
+  run "$SIB" spawn inline-long --workdir "$WORKDIR" --no-report -- "$long"
+  [ "$status" -eq 0 ]
+  [ "$(cat "$CMUX_STUB_LOG.last")" = "$long" ]
+  [ ! -d "$XDG_DATA_HOME/pane-msg" ]
+}
+
+@test "a prompt whose last chunk follows '[Pasted text #1]' is submitted (11-23 exit 5)" {
+  export CMUX_STUB_SCREEN="$BOOT_SCREEN" CMUX_STUB_SCREEN_AFTER_SENDS=2 \
+    CMUX_STUB_SCREEN2=$'❯ a long head that the agent folded\n  i[Pasted text #1].\n──────────────────────\n  ⚡Opus 5.5' \
+    CMUX_STUB_SCREEN_AFTER_ENTERS=2 CMUX_STUB_SCREEN3=$'✻ Cooking…\n──────────────────────\n❯ '
+  run "$SIB" spawn paste-dot --workdir "$WORKDIR" --no-report -- "a long head that the agent folded away and closes it."
+  [ "$status" -eq 0 ]
+  [ "$(grep -c "cmux send-key .* enter" "$CMUX_STUB_LOG")" -eq 2 ]
+}
+
+@test "a prompt in a 4-column pane (head wrapped away, no fold marker) is submitted (11-23)" {
+  export CMUX_STUB_SCREEN="$BOOT_SCREEN" CMUX_STUB_SCREEN_AFTER_SENDS=2 \
+    CMUX_STUB_SCREEN2=$'  ay\n  an\n  d \n  th\n  e \n  ta\n  il\n  en\n  d \n  of\n  it\n────' \
+    CMUX_STUB_SCREEN_AFTER_ENTERS=2 CMUX_STUB_SCREEN3=$'  ✻\n────\n❯\u00a0\n────'
+  run "$SIB" spawn narrow --workdir "$WORKDIR" --no-report -- "a long head that the agent folded away and the tail end of it"
+  [ "$status" -eq 0 ]
+  [ "$(grep -c "cmux send-key .* enter" "$CMUX_STUB_LOG")" -eq 2 ]
+}
+
+@test "sib send has no second path: it fails without pane-deliver instead of a plain send" {
+  sib_copy="$BATS_TEST_TMPDIR/bin/sib"; mkdir -p "$(dirname "$sib_copy")"; cp "$SIB" "$sib_copy"
+  export HOME="$BATS_TEST_TMPDIR/home"; mkdir -p "$HOME" "$STATE"
+  printf 'slug=x\nagent=claude\nsurface=surface:5\nworkspace=workspace:1\nworktree=/x\n' > "$STATE/x.env"
+  run "$sib_copy" send x "hello"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"pane-deliver.sh not found"* ]]
+  ! grep -q "^cmux send " "$CMUX_STUB_LOG"
+}
+
+# --- no silent exit (11-23/11-24: "sib spawn failed (exit 1, no output)") ----
+# Under `set -euo pipefail` a `x="$(cmux ... 2>/dev/null | grep ... | head -1)"`
+# that finds nothing ended the spawn with exit 1 and nothing on stderr, and a
+# --new-workspace spawn left its empty workspace behind. Every failure now
+# says why, and a spawn that fails before its agent is launched closes the
+# workspace or pane it created.
+
+@test "a new workspace whose surface lookup fails says why and is closed (11-24 silent exit 1)" {
+  export CMUX_STUB_FAIL_LIST_PANE_SURFACES="not_found: Pane or workspace not found" CMUX_STUB_WS="workspace:42"
+  run "$SIB" spawn nw-nosurf --workdir "$WORKDIR" --new-workspace --no-report -- "task"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"sib:"* ]]
+  [[ "$output" == *"not_found: Pane or workspace not found"* ]]
+  grep -q "cmux close-workspace --workspace workspace:42" "$CMUX_STUB_LOG"
+  [ ! -f "$STATE/nw-nosurf.env" ]
+}
+
+@test "a surface lookup that fails once is retried, not fatal" {
+  export CMUX_STUB_FAIL_LIST_PANE_SURFACES="not_found: Pane or workspace not found" CMUX_STUB_FAIL_LIST_PANE_SURFACES_TIMES=2
+  run "$SIB" spawn nw-retry --workdir "$WORKDIR" --new-workspace --no-report -- "task"
+  [ "$status" -eq 0 ]
+  ! grep -q "close-workspace" "$CMUX_STUB_LOG"
+  [ -f "$STATE/nw-retry.env" ]
+}
+
+@test "a new-workspace answer without a workspace ref says why" {
+  export CMUX_STUB_OUT_NEW_WORKSPACE="OK"
+  run "$SIB" spawn nw-noref --workdir "$WORKDIR" --new-workspace
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"sib: failed to create workspace"* ]]
+}
+
+@test "a split answer without a surface ref says why" {
+  export CMUX_STUB_OUT_NEW_SPLIT="OK" CMUX_STUB_OUT_NEW_PANE="OK"
+  run "$SIB" spawn sp-noref --workspace workspace:5 --workdir "$WORKDIR"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"cannot add a pane to workspace workspace:5"* ]]
+  run "$SIB" spawn np-noref --workdir "$WORKDIR"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"cannot add a pane to workspace workspace:1"* ]]
+}
+
+@test "--workspace whose cwd cannot be read falls back to the caller's dir" {
+  export CMUX_STUB_FAIL_SIDEBAR_STATE="broken pipe"
+  cd "$WORKDIR"
+  run "$SIB" spawn ws-nocwd --workspace workspace:5
+  [ "$status" -eq 0 ]
+  grep -qx "workdir=$WORKDIR" "$STATE/ws-nocwd.env"
+}
+
+@test "a launch that cmux refuses says why and closes the new pane" {
+  export CMUX_STUB_FAIL_SEND="surface not ready" CMUX_STUB_SURFACE="surface:91"
+  run "$SIB" spawn launch-fail --workspace workspace:5 --workdir "$WORKDIR"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"surface not ready"* ]]
+  [[ "$output" == *"sib:"* ]]
+  grep -q "cmux close-surface --surface surface:91" "$CMUX_STUB_LOG"
+  [ ! -f "$STATE/launch-fail.env" ]
+}
+
+@test "a launch that cmux refuses in a new workspace closes that workspace" {
+  export CMUX_STUB_FAIL_SEND="surface not ready" CMUX_STUB_WS="workspace:42"
+  run "$SIB" spawn launch-fail-nw --workdir "$WORKDIR" --new-workspace
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"surface not ready"* ]]
+  grep -q "cmux close-workspace --workspace workspace:42" "$CMUX_STUB_LOG"
+}
+
+@test "a spawn run detached (stdin closed, backgrounded) still starts" {
+  ( "$SIB" spawn detached --workdir "$WORKDIR" --new-workspace --no-report -- "task" </dev/null >"$BATS_TEST_TMPDIR/d.out" 2>&1; echo "rc=$?" >>"$BATS_TEST_TMPDIR/d.out" ) &
+  wait
+  grep -q "rc=0" "$BATS_TEST_TMPDIR/d.out"
+  [ -f "$STATE/detached.env" ]
+}
+
+@test "sib list does not prune a state file a spawn wrote moments ago" {
+  mkdir -p "$STATE"
+  printf 'slug=fresh\nagent=claude\nsurface=surface:5\nworkspace=workspace:1\nworktree=/x\n' > "$STATE/fresh.env"
+  touch "$CMUX_STUB_LOG.closed-surface:5"   # read-screen says the pane is gone
+  run "$SIB" list
+  [ "$status" -eq 0 ]
+  [ -f "$STATE/fresh.env" ]
+}
+
+# --- Codex start screens (11-24: update screen ate committee prompts) --------
+
+# Screens as Codex 0.170 / 0.172 draws them (update screen captured 11-24).
+CODEX_UPDATE_SCREEN='  Update available · 0.170.0 → 0.172.0
+  Release notes: https://github.com/openai/codex/releases/latest
+› 1. Update now (runs `brew upgrade --cask codex`)
+  2. Skip
+  3. Skip until next version
+  enter continue · esc skip'
+CODEX_HOOKS_SCREEN='  Hooks need review
+  2 hooks need review before they can run.
+  Hooks can run outside the sandbox after you trust them.
+› 1. Review hooks
+  2. Trust all and continue
+  3. Continue without trusting (hooks won'"'"'t run)'
+
+# Every keystroke sib sent after the launch line ('cd … && exec codex' + its enter).
+keys_after_launch() { grep -E "^cmux (send|send-key) " "$CMUX_STUB_LOG" | grep -v "exec codex" | sed 1d; }
+
+@test "spawn --codex at the update screen sends no key, names the screen, keeps the pane" {
+  export CMUX_STUB_SCREEN="$CODEX_UPDATE_SCREEN"
+  run "$SIB" spawn upd --codex --workdir "$WORKDIR" -- "do the thing"
+  [ "$status" -eq 6 ]
+  [[ "$output" == *"Codex's update screen"* ]]
+  [[ "$output" == *"no key was sent"* ]]
+  [ -z "$(keys_after_launch)" ]
+  ! grep -q "cmux close-" "$CMUX_STUB_LOG"
+  [ -f "$STATE/upd.env" ]
+}
+
+@test "spawn --codex at the hooks-review screen sends no key and names the screen" {
+  export CMUX_STUB_SCREEN="$CODEX_HOOKS_SCREEN"
+  run "$SIB" spawn hooks --codex --workdir "$WORKDIR" -- "do the thing"
+  [ "$status" -eq 6 ]
+  [[ "$output" == *"Codex's hooks-review screen"* ]]
+  [ -z "$(keys_after_launch)" ]
+  [ -f "$STATE/hooks.env" ]
+}
+
+@test "an empty spawn --codex at the update screen is not reported as booted (research-codex, 11-24)" {
+  export CMUX_STUB_SCREEN="$CODEX_UPDATE_SCREEN"
+  run "$SIB" spawn upd-empty --codex --workdir "$WORKDIR"
+  [ "$status" -eq 6 ]
+  [[ "$output" != *"[booted]"* ]]
+  [[ "$output" == *"update screen"* ]]
+  [ -z "$(keys_after_launch)" ]
+}
+
+@test "sib send to a codex pane at a start screen sends no key and prints why" {
+  for scr in "$CODEX_UPDATE_SCREEN" "$CODEX_HOOKS_SCREEN"; do
+    mkdir -p "$STATE"
+    printf 'slug=cx\nagent=codex\nsurface=surface:77\nworkspace=workspace:1\nworktree=%s\n' "$WORKDIR" > "$STATE/cx.env"
+    : > "$CMUX_STUB_LOG"
+    CMUX_STUB_SCREEN="$scr" run "$SIB" send cx "hello there"
+    [ "$status" -eq 3 ]
+    [[ "$output" == *"REFUSED"*"Codex's"*"screen"*"no key was sent"* ]]
+    ! grep -qE "^cmux (send|send-key) " "$CMUX_STUB_LOG"
+  done
+}
+
+@test "a codex option list (› 2. Skip) is not taken for the input box" {
+  # A numbered '› N. …' line is an option list; a plain '›' line is the input box.
+  export CMUX_STUB_SCREEN="› 2. Skip"
+  run "$SIB" spawn optlist --codex --workdir "$WORKDIR" -- "do the thing"
+  [ "$status" -eq 5 ]
+  [[ "$output" == *"input box never appeared"* ]]
 }

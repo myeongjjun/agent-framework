@@ -58,6 +58,7 @@ override what an upper layer installs.
 | `~/.claude/hooks/guard-deployed-artifact-edit.sh` | block agent edits to deployed runtime |
 | `~/.claude/hooks/guard-permission-bypass.sh` | block agent edits to permission/hook/MCP config |
 | `~/.claude/AGENTS.md.framework-base` | the base every persona's AGENTS.md starts from |
+| `~/.claude/rules/cmux-session-report.md`, marked block in `~/.codex/AGENTS.md` | completion-report rule for every cmux session, however it was started (`cmux/session-report.md`) |
 | `~/.claude/agents/orch.md` | agent definitions (copied) |
 | `~/.config/cmux/`, `~/.local/bin/brief` | cmux session desk (orch, Sessions panel, morning brief) |
 | `~/.cmuxterm/automations.json` | L1 rules, merged by id |
@@ -120,6 +121,11 @@ strategy into another.
   the form `[If|When ..., ]<subject> <keyword> <verb> ...`, and 20
   words or fewer (ASD-STE100); check with `req-lint`. See
   [`agent-context/constraints/code-style-requirement-sentences.md`](agent-context/constraints/code-style-requirement-sentences.md).
+- **L1 Is Environment-Neutral** — L1 files and commit messages hold only
+  abstract content; machine/job specifics, local numbers, quotes and
+  lower-layer names go to L2/L3 or the local profile. Agents layer the
+  same way. See
+  [`agent-context/constraints/architecture-l1-environment-neutral.md`](agent-context/constraints/architecture-l1-environment-neutral.md).
 - **Hook Source of Truth** — hook source lives here; deployed copies
   under `~/.claude/hooks/` are read-only artefacts of `install.sh`.
   See [`agent-context/constraints/hook-source-of-truth.md`](agent-context/constraints/hook-source-of-truth.md).

@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent office · Art review</title>
+<style>
+:root{color-scheme:light;--floor:#f4efe6;--ink:#2a2520;--paper:#fffdf7}
+*{box-sizing:border-box}body{margin:0;background:var(--floor);color:var(--ink);font:14px/1.5 system-ui,sans-serif}
+main{max-width:1240px;margin:auto;padding:32px 24px 40px}
+header{display:flex;justify-content:space-between;align-items:end;gap:24px;border-bottom:2px solid var(--ink);padding-bottom:20px;margin-bottom:24px}
+.eyebrow{font-size:11px;font-weight:800;letter-spacing:.16em;text-transform:uppercase;color:#8f6440}
+h1{font-size:32px;letter-spacing:-1px;margin:5px 0}p{margin:0;color:#75685b}
+.swatches{display:flex;gap:7px;padding-bottom:4px}.swatches i{display:block;width:17px;height:17px;border:2px solid var(--ink);border-radius:50%;background:var(--swatch)}
+#gallery{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px}
+article{border:2px solid var(--ink);border-radius:12px;overflow:hidden;box-shadow:0 3px 0 var(--ink)}
+.caption{background:var(--paper);border-bottom:1px solid #d8cdbb;padding:10px 14px;display:flex;justify-content:space-between;align-items:center;gap:8px}
+h2{font-size:13px;margin:0;font-weight:750}.dimensions{font-size:11px;color:#75685b;white-space:nowrap}
+.samples{display:grid;grid-template-columns:1fr 2fr;align-items:end;min-height:166px;padding:12px 10px 8px;gap:8px}
+figure{margin:0;display:flex;flex-direction:column;align-items:center;justify-content:end;gap:6px}
+img{display:block;object-fit:contain;max-width:none}figcaption{font-size:10px;color:#75685b;font-variant-numeric:tabular-nums}
+footer{border-top:1px solid #c9bfae;margin-top:28px;padding-top:14px;font-size:12px;color:#75685b}
+@media(max-width:960px){#gallery{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:650px){main{padding:20px 12px}header{display:block}.swatches{margin-top:16px}#gallery{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<main>
+<header><div><div class="eyebrow">Field notes / 01 · Original SVG collection</div><h1>A little office, alive.</h1><p>Distinct coworkers. Quiet breaks. Paper in flight.</p></div>
+<div class="swatches" aria-label="Orange, navy, amber, rose, blue and purple palette">
+<i style="--swatch:#e07a52"></i><i style="--swatch:#34507a"></i><i style="--swatch:#e0a020"></i><i style="--swatch:#dc8c9d"></i><i style="--swatch:#3a6fd8"></i><i style="--swatch:#7c4dcc"></i></div></header>
+<div id="gallery"></div>
+<noscript>Enable JavaScript to display the review grid, or open the SVG files directly.</noscript>
+<footer>Native 1× and enlarged 2×, on #f4efe6 cream. Transparent SVGs · Ink contours · Solid shadows · No external assets.<br>Original work drawn for this repo, no third-party assets.</footer>
+</main>
+<script>
+const assets=[
+['claude-working',64,64],['claude-idle',64,64],['desk-agent',96,64],
+['codex-working',64,64],['codex-idle',64,64],['user',64,64],
+['note-msg',40,32],['note-report',40,32],['note-input',40,32],
+['note-new',40,32],['badge-user',24,24],['badge-desk',24,24],
+
+['battery-0',32,16],['battery-1',32,16],
+['battery-2',32,16],['battery-3',32,16],['battery-4',32,16],
+
+];
+for(const [name,w,h] of assets){
+ const card=document.createElement('article');
+ card.innerHTML=`<div class="caption"><h2>${name}.svg</h2><span class="dimensions">${w} × ${h}</span></div><div class="samples">${[1,2].map(scale=>`<figure><img src="${name}.svg" width="${w*scale}" height="${h*scale}" alt="${name.replaceAll('-',' ')} at ${scale}x"><figcaption>${scale}× · ${w*scale} × ${h*scale}</figcaption></figure>`).join('')}</div>`;
+ document.getElementById('gallery').append(card);
+}
+</script>
+</body>
+</html>

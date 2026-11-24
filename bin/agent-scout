@@ -1,0 +1,2541 @@
+#!/usr/bin/env python3
+"""agent-scout — find the agents this machine needs from its work history, then define and install them.
+
+pstack's /automate-me mines transcripts into one skill. agent-scout mines the same history into
+agent definitions (role card + instructions + tools + model + done-when), and no single miner decides:
+the agent scouting committee (발굴 위원회) — members on different models and vendors, each with its own
+approach — proposes candidates, a quorum rule decides, and a judge who is not a member grades every
+proposal blind. Members are reviewed from the records and benched by the rule in the config.
+Who sits on the committee, the quorum, the judge, the review rule and the schedule all live in
+~/.config/cmux/agent-committee.md, not in this code.
+
+  agent-scout scan   [--days N] [--json]          collect history and build the evidence packs
+  agent-scout convene [--days N] [--json]         one committee meeting: every member proposes, the quorum
+                                                   decides (with a vote round), the judge grades blind
+                                                   (`quorum` is the same command)
+  agent-scout evaluate <role|path>... [--kinds K,..] [--days N] [--replacing M[,M]] [--json]
+                                                   the other direction: the user (or a session for the user) made the
+                                                   drafts; every member reviews them with its own approach and evidence
+                                                   (hire|revise|reject), the judge grades each review's grounding blind,
+                                                   and the `## Evaluate` rule gives approve|revise|reject per draft;
+                                                   --replacing leaves out the member(s) a draft would replace
+  agent-scout due                                  exit 0 when a meeting is due (schedule in the config), else 1
+  agent-scout review [--json] [--no-apply]         judge each member from the records; bench by the config rule
+  agent-scout reject <n|kind> [--why W]            the user turned down a passed candidate (counts against its backers)
+  agent-scout candidates [--json]                 show the candidates of the latest quorum run
+  agent-scout show <n|kind>                        one candidate: backers, proposals, evidence
+  agent-scout new <role> --from <n|kind> [--run FILE] [--area A] [--layer L] [--home DIR] [--tools T] [--model M]
+                  [--user-approved]                (a candidate that did not pass needs the user's OK)
+  agent-scout new <role> --by-user --title T [--kind K] [...]
+                                                   a draft the user asked for, not mined: install needs an approving
+                                                   `evaluate` (or --user-approved)
+                                                   write a draft definition to ~/.local/share/cmux/hr/agents/<role>.md
+  agent-scout check <role|path>                    is the draft complete (role card filled, no TODO)?
+  agent-scout report <role|path>                   the report the user reads before an agent goes in: role,
+                                                   metrics, keep/remove rule, evidence (with the committee's verdict)
+  agent-scout install <role> --user-approved       copy the draft to ~/.claude/agents/ and add a roster line. Every
+                                                   install needs the user's OK after the report (refused, exit 3,
+                                                   without it; also when the latest evaluation is not `approve`, or
+                                                   a made draft has none, unless the user overrules)
+  agent-scout log <role> ok|miss|corrected|passed|failed [--ref R]
+                                                   record one use (or the probation result) of a role
+  agent-scout measure <role> [--since D] [--until D] [--judge] [--write] [--json]
+                                                   the verdict numbers of docs/agent-hr-design.md 5.4: uses, ok, corrected,
+                                                   repeat, asked, each with its source, and the roster verdict line (5.3/5.5).
+                                                   --judge asks the judge what only a judge can tell; --write adds the line
+                                                   (refused while counts are provisional)
+  agent-scout measure desk|lead[:A]|judge|<member> [--since D] [--until D] [--write --by user] [--json]
+                                                   the same contract for the standing roles (design 12): desk from
+                                                   `brief audit` and desk-eval, the area lead from its Decision log, the
+                                                   judge from lifted holds, a member from the `review` records. A standing
+                                                   verdict is the user's: --write without `--by user` is refused (exit 3)
+  agent-scout roster                               print the roster
+  agent-scout board [--watch [--every S]] [--toggle [--surface S]]
+                                                   read-only status board in plain Korean: the meeting running now (members,
+                                                   panes, answers, judge), the latest quorum and evaluation results, and the
+                                                   drafts waiting for the user. --watch refreshes it; --toggle opens it in a
+                                                   split right of the caller (or --surface) and closes it on the next call
+
+Roster corrections are new lines, never edits: `- MM-DD | <role> | void | use ref:<R> | why | by:..` cancels a use
+line; `- MM-DD | <role> | void | hire backer:<member> | why | by:..` takes a member off a hire.
+
+Exit codes: 0 ok · 1 error · 2 usage · 3 refused (ask-first area without --user-approved, or check failed).
+
+Test overrides: AGENT_SCOUT_CONFIG, AGENT_SCOUT_ROSTER, AGENT_SCOUT_HR, AGENT_SCOUT_AGENTS (install target),
+AGENT_SCOUT_CLAUDE_DIR, AGENT_SCOUT_CODEX_DIR, AGENT_SCOUT_BRIEFS, AGENT_SCOUT_DESK, AGENT_SCOUT_AREAS,
+AGENT_SCOUT_LOCAL (ask-first areas), AGENT_SCOUT_ASKED, AGENT_SCOUT_BRIEF (the `brief` command), AGENT_SCOUT_DESK_EVAL,
+AGENT_SCOUT_BOARD, AGENT_SCOUT_SKILLS, AGENT_SCOUT_TODAY (YYYY-MM-DD), AGENT_SCOUT_CODEX_MODELS (Codex model cache),
+AGENT_SCOUT_CMD (runs instead of the member's runner; gets SCOUT_NAME and SCOUT_ROUND = propose|vote|judge|evaluate|egrade|measure,
+prompt on stdin).
+"""
+import datetime as dt
+import concurrent.futures, glob, threading, json, os, re, shlex, shutil, subprocess, sys, tempfile, time
+
+HOME = os.path.expanduser("~")
+E = os.environ.get
+CONFIG = E("AGENT_SCOUT_CONFIG") or os.path.join(HOME, ".config/cmux/agent-committee.md")
+AGENT_SRC = E("AGENT_SCOUT_AGENT_SRC") or os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "agents")
+ROSTER = E("AGENT_SCOUT_ROSTER") or os.path.join(HOME, ".config/cmux/orch-roster.md")
+HR = E("AGENT_SCOUT_HR") or os.path.join(HOME, ".local/share/cmux/hr")
+AGENTS = E("AGENT_SCOUT_AGENTS") or os.path.join(HOME, ".claude/agents")
+SKILLS = E("AGENT_SCOUT_SKILLS") or os.path.join(HOME, ".claude/skills")
+CLAUDE_DIR = E("AGENT_SCOUT_CLAUDE_DIR") or os.path.join(HOME, ".claude/projects")
+CODEX_DIR = E("AGENT_SCOUT_CODEX_DIR") or os.path.join(HOME, ".codex/sessions")
+BRIEFS = E("AGENT_SCOUT_BRIEFS") or os.path.join(HOME, ".local/share/sib/briefs")
+AREAS = E("AGENT_SCOUT_AREAS") or os.path.join(HOME, ".config/cmux/orch-areas.md")
+LOCAL = E("AGENT_SCOUT_LOCAL") or os.path.join(HOME, ".config/cmux/orch-local.md")
+CARD_FIELDS = ("name", "form", "layer", "home", "area", "ask_first", "triggers", "not_mine", "tools", "model", "done_when",
+               "metrics", "evidence", "contract")
+CORRECTION = re.compile(r"^(아니|아닌|왜|다시|그게 아니|그거 말고|말고|틀렸|잘못|이상하|하지 ?마|그만|멈춰|no\b|nope|wrong|not that|stop|why\b)", re.I)
+NOISE = ("<command-", "<local-command", "<system-reminder", "Caveat:", "[Request interrupted", "<task-notification",
+         "# AGENTS.md instructions", "<environment_context", "<user_instructions", "<INSTRUCTIONS>", "<turn_aborted")
+
+
+def today():
+    return dt.date.fromisoformat(E("AGENT_SCOUT_TODAY")) if E("AGENT_SCOUT_TODAY") else dt.date.today()
+
+
+def die(msg, code=1):
+    print(f"agent-scout: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+# ---------------------------------------------------------------- config
+
+def md_table(lines):
+    """rows of a markdown table (header skipped) as lists of cells."""
+    rows = []
+    for l in lines:
+        if not l.strip().startswith("|"):
+            continue
+        cells = [c.strip().strip("`") for c in l.strip().strip("|").split("|")]
+        if all(re.fullmatch(r":?-+:?", c) for c in cells if c):
+            continue
+        rows.append(cells)
+    return rows[1:] if rows else []
+
+
+def sections(text):
+    out, cur = {}, None
+    for l in text.splitlines():
+        m = re.match(r"^##\s+(.+?)\s*$", l)
+        if m:
+            cur = m.group(1).lower()
+            out[cur] = []
+        elif cur:
+            out[cur].append(l)
+    return out
+
+
+def settings(lines, into):
+    for l in lines:
+        m = re.match(r"^\s*-\s*(\w+)\s*:\s*(.+?)\s*$", l)
+        if m:
+            v = re.sub(r"(^|\s+)#.*$", "", m.group(2)).strip().strip("`")
+            try:
+                into[m.group(1)] = int(v) if v.isdigit() else float(v) if re.fullmatch(r"\d*\.\d+", v) else v
+            except ValueError:
+                into[m.group(1)] = v
+    return into
+
+
+def load_config():
+    try:
+        text = open(CONFIG).read()
+    except OSError:
+        die(f"no committee config at {CONFIG} (run scripts/install.sh, which seeds it from cmux/seeds/agent-committee.md)")
+    sec = sections(text)
+    scouts = []
+    for r in md_table(sec.get("members", [])):
+        if len(r) < 7:
+            continue
+        scouts.append({"name": r[0], "runner": r[1].lower(), "agent": r[2], "model": r[3], "approach": r[4],
+                       "evidence": r[5], "status": r[6].lower(),
+                       # optional 8th column: which meetings the member sits in (default both)
+                       "rounds": {x.strip() for x in (r[7] if len(r) > 7 and r[7] else "propose,evaluate").split(",")}})
+    rule = {"pass": 2, "vote": "on", "watch": 1, "days": 21, "slices": 3, "exclude": r"/tmp/|/private/var/",
+            "every": 14, "judge": "claude:fable", "root": "/private/tmp/agent-scout"}
+    settings(sec.get("quorum", []), rule)
+    settings(sec.get("judge", []), rule)
+    settings(sec.get("schedule", []), rule)
+    settings(sec.get("panes", []), rule)
+    rule["layers"] = settings(sec.get("layers", []), {"L1": AGENT_SRC, "L2": "", "private": ""})
+    rule["review"] = settings(sec.get("review", []), {"min_runs": 2, "pass_rate_min": 0.2, "judge_min": 0.5,
+                                                      "reversed_max": 2, "on_fail": "bench"})
+    rule["evaluate"] = settings(sec.get("evaluate", []), {"approve": 4, "reject": 2, "ground_min": 1})
+    kinds = []
+    for l in sec.get("kinds", []):
+        m = re.match(r"^\s*-\s*([\w:.-]+)\s*:\s*`(.+)`\s*$", l)
+        if m:
+            try:
+                kinds.append((m.group(1), re.compile(m.group(2), re.I)))
+            except re.error as e:
+                die(f"bad kind regex for {m.group(1)}: {e}")
+    return scouts, rule, kinds
+
+
+def ask_first_words():
+    """the Ask-first areas of orch-local.md: names and backticked words (same rule as brief / brief lead)."""
+    out, on = [], False
+    try:
+        for line in open(LOCAL):
+            if "Ask-first areas" in line:
+                on = True
+                continue
+            if on:
+                m = re.match(r"^\s+-\s+([^:]+):(.*)$", line)
+                if not m:
+                    if line.strip() and not line.startswith(" "):
+                        break
+                    continue
+                words = {m.group(1).strip().lower()} | {t.strip("*").lower() for t in re.findall(r"`([^`]+)`", m.group(2))}
+                out.append((m.group(1).strip(), sorted(w for w in words if len(w) > 2)))
+    except OSError:
+        pass
+    return out
+
+
+def ask_first_hit(text):
+    low = text.lower()
+    for name, words in ask_first_words():
+        for w in words:
+            w = w.rstrip("*-")
+            if w and w in low:
+                return name
+    return None
+
+
+# ---------------------------------------------------------------- history
+
+def clean(text):
+    text = re.sub(r"</?pasted_content[^>]*>", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def user_texts_claude(path):
+    """(first timestamp, cwd, [user turns]) of one Claude Code transcript; tool results and meta turns skipped."""
+    ts = cwd = None
+    turns = []
+    try:
+        fh = open(path, errors="replace")
+    except OSError:
+        return None, None, []
+    with fh:
+        for line in fh:
+            try:
+                d = json.loads(line)
+            except ValueError:
+                continue
+            if d.get("type") != "user" or d.get("isSidechain") or d.get("isMeta"):
+                continue
+            ts = ts or d.get("timestamp")
+            cwd = cwd or d.get("cwd")
+            c = (d.get("message") or {}).get("content")
+            if isinstance(c, list):
+                c = " ".join(x.get("text", "") for x in c if isinstance(x, dict) and x.get("type") == "text")
+            if isinstance(c, str) and c.strip() and not c.lstrip().startswith(NOISE):
+                turns.append(clean(c))
+    return ts, cwd, turns
+
+
+def user_texts_codex(path):
+    ts = cwd = None
+    turns = []
+    try:
+        fh = open(path, errors="replace")
+    except OSError:
+        return None, None, []
+    with fh:
+        for line in fh:
+            try:
+                d = json.loads(line)
+            except ValueError:
+                continue
+            p = d.get("payload") or {}
+            if d.get("type") == "session_meta":
+                ts, cwd = p.get("timestamp") or d.get("timestamp"), p.get("cwd")
+            elif d.get("type") == "response_item" and p.get("type") == "message" and p.get("role") == "user":
+                c = " ".join(x.get("text", "") for x in p.get("content", []) if isinstance(x, dict))
+                if c.strip() and not c.lstrip().startswith(NOISE):
+                    turns.append(clean(c))
+    return ts, cwd, turns
+
+
+def kind_of(kinds, cwd, first):
+    hay = f"{cwd or ''} {first or ''}"
+    for name, rx in kinds:
+        if rx.search(hay):
+            return name
+    base = os.path.basename((cwd or "").rstrip("/")) or "unsorted"
+    return "proj:" + base
+
+
+def collect(days, rule, kinds):
+    end = today()
+    start = end - dt.timedelta(days=days - 1)
+    exclude = re.compile(str(rule.get("exclude") or r"$^"))
+    sessions = []
+    files = [("claude", f) for f in glob.glob(os.path.join(CLAUDE_DIR, "*", "*.jsonl"))]
+    files += [("codex", f) for f in glob.glob(os.path.join(CODEX_DIR, "*", "*", "*", "*.jsonl"))]
+    for src, f in files:
+        try:
+            if dt.date.fromtimestamp(os.path.getmtime(f)) < start:
+                continue
+        except OSError:
+            continue
+        ts, cwd, turns = (user_texts_claude if src == "claude" else user_texts_codex)(f)
+        if not ts or not turns:
+            continue
+        try:
+            day = dt.date.fromisoformat(ts[:10])
+        except ValueError:
+            continue
+        if day < start or day > end or exclude.search(cwd or "") or exclude.search(f):
+            continue
+        corr = [t[:160] for t in turns[1:] if len(t) <= 160 and CORRECTION.search(t)]
+        sessions.append({"src": src, "id": os.path.basename(f).rsplit(".", 1)[0][-36:][:8], "file": f, "cwd": cwd,
+                         "date": day.isoformat(), "turns": len(turns), "first": turns[0][:300], "corrections": corr,
+                         "kind": kind_of(kinds, cwd, turns[0])})
+    briefs = []
+    for f in glob.glob(os.path.join(BRIEFS, "*.md")):
+        day = dt.date.fromtimestamp(os.path.getmtime(f))
+        if start <= day <= end:
+            try:
+                head = clean(open(f, errors="replace").read(600))
+            except OSError:
+                continue
+            briefs.append({"slug": os.path.basename(f)[:-3], "date": day.isoformat(), "head": head[:200],
+                           "kind": kind_of(kinds, "", head)})
+    return start, end, sessions, briefs
+
+
+def slice_of(day, start, end, n):
+    span = (end - start).days + 1
+    return min(n - 1, (dt.date.fromisoformat(day) - start).days * n // span)
+
+
+def decisions(start, end):
+    """what the desk and sessions handed to the user: desk docs' 결정 필요, area decision logs, asked.json."""
+    out = []
+    desk = E("AGENT_SCOUT_DESK")
+    if not desk:
+        env = os.path.join(HOME, ".config/cmux/local.env")
+        desk = os.path.join(HOME, ".local/share/cmux/desk")
+        try:
+            for l in open(env):
+                m = re.match(r'^BRIEF_DESK_DIR="?([^"\n]+)"?', l)
+                if m:
+                    desk = m.group(1)
+        except OSError:
+            pass
+        desk = os.path.join(desk, "Desk")
+    for f in sorted(glob.glob(os.path.join(desk, "[0-9]*.md"))):
+        m = re.match(r"(\d\d)(\d\d)(\d\d)\.md$", os.path.basename(f))
+        if not m:
+            continue
+        day = dt.date(2000 + int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        if not start <= day <= end:
+            continue
+        on = False
+        for l in open(f, errors="replace"):
+            if l.startswith("## "):
+                on = "결정 필요" in l or "decision" in l.lower()
+                continue
+            if on and l.lstrip().startswith("- "):
+                out.append(f"desk {day.isoformat()} | {clean(l)[2:260]}")
+    try:
+        on = False
+        area = ""
+        for l in open(AREAS, errors="replace"):
+            if l.startswith("## "):
+                area = l[3:].strip()
+            if l.startswith("### "):
+                on = "decision log" in l.lower()
+                continue
+            if on and l.startswith("- "):
+                out.append(f"log [{area}] | {clean(l)[2:260]}")
+    except OSError:
+        pass
+    try:
+        asked = json.load(open(os.path.join(HOME, ".local/share/cmux/asked.json")))
+        for day, qs in asked.items():
+            if start.isoformat() <= day <= end.isoformat():
+                for q, a in qs.items():
+                    out.append(f"asked {day} | {q[:200]} → {a or '(no answer)'}")
+    except (OSError, ValueError, AttributeError):
+        pass
+    return out
+
+
+def existing():
+    agents = []
+    for f in sorted(glob.glob(os.path.join(AGENTS, "*.md"))):
+        try:
+            m = re.search(r"^description:\s*\"?(.+?)\"?\s*$", open(f).read(4000), re.M)
+        except OSError:
+            continue
+        agents.append(f"{os.path.basename(f)[:-3]}: {(m.group(1) if m else '')[:110]}")
+    skills = sorted(os.path.basename(p) for p in glob.glob(os.path.join(SKILLS, "*")) if os.path.isdir(p))
+    return agents, skills
+
+
+def build_packs(days, rule, kinds, only=None):
+    """evidence packs for the window. `only` (a set of kind ids) keeps the sessions, briefs and decision lines
+    of those kinds, so an evaluation of a database agent reads that database work, not everything."""
+    n = int(rule.get("slices", 3))
+    start, end, sessions, briefs = collect(days, rule, kinds)
+    if only:
+        sessions = [s for s in sessions if s["kind"] in only]
+        briefs = [b for b in briefs if b["kind"] in only]
+    by = {}
+    for s in sessions:
+        k = by.setdefault(s["kind"], {"kind": s["kind"], "sessions": 0, "turns": 0, "corrections": 0,
+                                       "slices": [0] * n, "briefs": 0, "samples": []})
+        k["sessions"] += 1
+        k["turns"] += s["turns"]
+        k["corrections"] += len(s["corrections"])
+        k["slices"][slice_of(s["date"], start, end, n)] += 1
+        if len(k["samples"]) < 4:
+            k["samples"].append(f"{s['date']} {s['src']}:{s['id']} {s['first'][:110]}")
+    for b in briefs:
+        k = by.setdefault(b["kind"], {"kind": b["kind"], "sessions": 0, "turns": 0, "corrections": 0,
+                                       "slices": [0] * n, "briefs": 0, "samples": []})
+        k["briefs"] += 1
+    table = sorted(by.values(), key=lambda k: (-k["turns"], k["kind"]))
+    agents, skills = existing()
+    roster = open(ROSTER).read() if os.path.exists(ROSTER) else "(no roster yet)"
+    common = (f"Period: {start} .. {end} ({n} slices of ~{days // n} days). Sessions: {len(sessions)} "
+              f"(claude {sum(s['src'] == 'claude' for s in sessions)}, codex {sum(s['src'] == 'codex' for s in sessions)}), "
+              f"sib briefs: {len(briefs)}.\n\nKinds of work (use these ids in `kind`):\n"
+              + "\n".join(f"- {k['kind']}: {k['sessions']} sessions, {k['turns']} user turns, {k['corrections']} corrections"
+                          for k in table)
+              + "\n\nAgents that already exist:\n" + "\n".join(f"- {a}" for a in agents)
+              + "\n\nSkills that already exist: " + ", ".join(skills)
+              + "\n\nRoster (hired and retired roles — read before proposing a retired role again):\n" + roster.strip())
+    packs = {
+        "sessions": "Volume by kind (slices = sessions per time slice, oldest first):\n" + "\n".join(
+            f"- {k['kind']}: sessions {k['sessions']} · turns {k['turns']} · corrections {k['corrections']} · "
+            f"slices {k['slices']} · briefs {k['briefs']}\n" + "".join(f"    · {x}\n" for x in k["samples"])
+            for k in table),
+        "briefs": "Sib briefs (tasks the user or the desk handed to new sessions):\n"
+            + "\n".join(f"- {b['date']} [{b['kind']}] {b['slug']}: {b['head'][:160]}" for b in sorted(briefs, key=lambda b: b["date"])),
+        "corrections": "User corrections (short turns that push back), by kind:\n" + "\n".join(
+            f"- [{s['kind']}] {s['date']} {s['src']}:{s['id']} (task: {s['first'][:70]}) | {c}"
+            for s in sorted(sessions, key=lambda s: (s["kind"], s["date"])) for c in s["corrections"])[:60000],
+        "decisions": "What the desk and sessions handed to the user (desk 결정 필요 lines, area decision logs, asked questions):\n"
+            + "\n".join(f"- {d}" for d in decisions(start, end)
+                        if not only or any(rx.search(d) for k, rx in kinds if k in only))[:60000],
+    }
+    return {"start": start.isoformat(), "end": end.isoformat(), "slices": n, "kinds": table, "common": common,
+            "packs": packs, "sessions": sessions, "briefs": briefs}
+
+
+# ---------------------------------------------------------------- scouts and quorum
+
+PROPOSE_SCHEMA = {"type": "object", "additionalProperties": False, "required": ["candidates"], "properties": {"candidates": {"type": "array", "items": {
+    "type": "object", "additionalProperties": False, "required": ["kind", "role", "title", "why", "evidence", "form", "strength"],
+    "properties": {"kind": {"type": "string"}, "role": {"type": "string"}, "title": {"type": "string"},
+                   "why": {"type": "string"}, "evidence": {"type": "array", "items": {"type": "string"}},
+                   "form": {"type": "string", "enum": ["agent", "skill", "tool", "lead", "loop"]},
+                   "strength": {"type": "integer", "minimum": 1, "maximum": 3}}}}}}
+VOTE_SCHEMA = {"type": "object", "additionalProperties": False, "required": ["votes"], "properties": {"votes": {"type": "array", "items": {
+    "type": "object", "additionalProperties": False, "required": ["idea", "vote", "why"],
+    "properties": {"idea": {"type": "string"}, "vote": {"type": "string", "enum": ["yes", "no"]}, "why": {"type": "string"}}}}}}
+GRADE_SCHEMA = {"type": "object", "additionalProperties": False, "required": ["grades"], "properties": {"grades": {"type": "array", "items": {
+    "type": "object", "additionalProperties": False, "required": ["id", "evidence", "fit", "why"],
+    "properties": {"id": {"type": "string"}, "evidence": {"type": "integer", "minimum": 0, "maximum": 2},
+                   "fit": {"type": "integer", "minimum": 0, "maximum": 2}, "why": {"type": "string"}}}}}}
+REVIEW_SCHEMA = {"type": "object", "additionalProperties": False, "required": ["reviews"], "properties": {"reviews": {"type": "array", "items": {
+    "type": "object", "additionalProperties": False, "required": ["role", "verdict", "need", "fit", "safety", "why", "fixes", "evidence"],
+    "properties": {"role": {"type": "string"}, "verdict": {"type": "string", "enum": ["hire", "revise", "reject"]},
+                   "need": {"type": "integer", "minimum": 0, "maximum": 2}, "fit": {"type": "integer", "minimum": 0, "maximum": 2},
+                   "safety": {"type": "integer", "minimum": 0, "maximum": 2}, "why": {"type": "string"},
+                   "fixes": {"type": "array", "items": {"type": "string"}}, "evidence": {"type": "array", "items": {"type": "string"}}}}}}}
+EGRADE_SCHEMA = {"type": "object", "additionalProperties": False, "required": ["grades"], "properties": {"grades": {"type": "array", "items": {
+    "type": "object", "additionalProperties": False, "required": ["id", "grounded", "why"],
+    "properties": {"id": {"type": "string"}, "grounded": {"type": "integer", "minimum": 0, "maximum": 2}, "why": {"type": "string"}}}}}}
+KEYS = {"propose": ("candidates", PROPOSE_SCHEMA), "vote": ("votes", VOTE_SCHEMA), "judge": ("grades", GRADE_SCHEMA),
+        "evaluate": ("reviews", REVIEW_SCHEMA), "egrade": ("grades", EGRADE_SCHEMA)}
+
+
+def agent_body(name):
+    """the system prompt of an agent definition (frontmatter dropped), for runners without --agent."""
+    for d in (AGENTS, AGENT_SRC):
+        try:
+            text = open(os.path.join(d, f"{name}.md")).read()
+        except OSError:
+            continue
+        return re.sub(r"^---\n.*?\n---\n", "", text, flags=re.S).strip()
+    raise RuntimeError(f"no agent definition {name}.md in {AGENTS} or {AGENT_SRC}")
+
+
+def run_model(who, runner, agent, model, rnd, prompt):
+    """one call, the same way for every model: a cmux pane started by `sib spawn` (`--codex` for runner
+    codex, `--model` when set). The pane reads a task file and writes its JSON answer to a file.
+    No headless path (`claude -p`, `codex exec`): one control path for every agent."""
+    key, schema = KEYS[rnd]
+    if E("AGENT_SCOUT_CMD"):
+        env = dict(os.environ, SCOUT_NAME=who, SCOUT_ROUND=rnd)
+        p = subprocess.run(shlex.split(E("AGENT_SCOUT_CMD")), input=prompt, capture_output=True, text=True, env=env)
+        if p.returncode != 0:
+            raise RuntimeError(f"{who} failed (exit {p.returncode}): {(p.stderr or p.stdout).strip()[-300:]}")
+        return parse_reply(p.stdout, key)
+    if runner not in ("claude", "codex"):
+        raise RuntimeError(f"unknown runner {runner!r} for {who}")
+    return run_pane(who, runner, agent, model, rnd, prompt, key, schema)
+
+
+PANES = {"rule": {}, "workspace": None, "creator": None, "done": [], "spawned": [], "made": [], "lock": threading.Lock()}
+
+
+def workspaces():
+    """the open cmux workspaces as {ref: title}; {} when cmux cannot be asked."""
+    try:
+        out = subprocess.run(["cmux", "workspace", "list"], capture_output=True, text=True, timeout=30).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return {}
+    found = {}
+    for line in out.splitlines():
+        m = re.match(r"\s*\*?\s*(workspace:\S+)\s+(.*?)(?:\s+\[selected\])?\s*$", line)
+        if m:
+            found[m.group(1)] = m.group(2)
+    return found
+
+
+def close_workspaces(refs):
+    """close workspaces this run created. No --force: cmux refuses a workspace with a live process, so
+    only an idle shell closes; the refs still open are returned."""
+    for w in refs:
+        subprocess.run(["cmux", "close-workspace", "--workspace", w], capture_output=True, text=True)
+    still = workspaces()
+    return [w for w in refs if w in still]
+
+
+CODEX_MODELS = E("AGENT_SCOUT_CODEX_MODELS") or os.path.join(HOME, ".codex/models_cache.json")
+
+
+def resolve_model(runner, model):
+    """a Codex model written as a bare family name (`astra`) runs as that family's newest listed model in the
+    Codex model cache, so the committee follows new versions without an edit (Claude aliases like `opus` and
+    `fable` already do). A full slug (`gpt-6.2-astra`) or `default` passes through unchanged."""
+    if runner != "codex" or not re.fullmatch(r"[a-z]+", model or "") or model == "default":
+        return model
+    try:
+        listed = [m for m in json.load(open(CODEX_MODELS)).get("models", []) if m.get("visibility") == "list"]
+    except (OSError, ValueError) as e:
+        raise RuntimeError(f"codex model family {model!r}: cannot read {CODEX_MODELS} ({e})")
+    found = []
+    for m in listed:
+        v = re.fullmatch(r"gpt-([\d.]+)-" + re.escape(model), m.get("slug", ""))
+        if v:
+            found.append((tuple(int(x) for x in v.group(1).split(".") if x), m["slug"]))
+    if not found:
+        raise RuntimeError(f"codex model family {model!r}: no listed model in {CODEX_MODELS}")
+    return max(found)[1]
+
+
+def same_model(r1, m1, r2, m2):
+    """two runner:model specs that run the same model (a family name and its slug count as one)."""
+    def res(r, m):
+        try:
+            return resolve_model(r, m)
+        except RuntimeError:
+            return m
+    return r1 == r2 and res(r1, m1) == res(r2, m2)
+
+
+def run_pane(who, runner, agent, model, rnd, prompt, key, schema):
+    """start the member on a pane in the committee's own cmux workspace (the first pane of a meeting creates
+    it, so member panes do not squeeze the caller's workspace). The pane works in a folder under `root`
+    (a parent the agents already trust), reads task.md and writes answer.json; a copy stays in the HR record."""
+    if not os.environ.get("CMUX_WORKSPACE_ID"):
+        raise RuntimeError(f"{who}: members run on cmux panes via sib (run agent-scout inside cmux)")
+    name = f"{today().isoformat()}-{who}-{rnd}-{os.getpid()}"
+    work = os.path.join(os.path.expanduser(str(PANES["rule"].get("root") or "/private/tmp/agent-scout")), name)
+    os.makedirs(work, exist_ok=True)
+    task, out = os.path.join(work, "task.md"), os.path.join(work, "answer.json")
+    body = agent_body(agent) if agent else ""
+    open(task, "w").write(f"{body}\n\n---\n\n{prompt}\n\n---\nAnswer format (JSON Schema):\n{json.dumps(schema)}\n")
+    role = "the blind judge" if rnd in ("judge", "egrade") else "a member"
+    ask = (f"You are {role} of the agent scouting committee. Read task.md in this folder and do the task in it. "
+           f"Do not edit any file except answer.json. Write ONLY the JSON answer (matching the schema at the end "
+           f"of the task) to answer.json in this folder, then stop.")
+    slug_ = f"scout-{who}-{rnd}-{os.getpid() % 10000}"
+    argv = ["sib", "spawn", slug_, "--no-report", "--workdir", work]
+    if runner == "codex":
+        argv.append("--codex")
+    model = resolve_model(runner, model)
+    if model and model != "default":
+        argv += ["--model", model]
+    with PANES["lock"]:  # one spawn at a time: the first one creates the committee workspace
+        for attempt in range(3):  # sib sometimes exits early with no output; a leftover state file is pruned on retry
+            place = ["--workspace", PANES["workspace"]] if PANES["workspace"] else ["--new-workspace"]
+            before = workspaces() if not PANES["workspace"] else None
+            p = subprocess.run(argv + place + ["--", ask], capture_output=True, text=True, timeout=180)
+            # a --new-workspace spawn that fails can still leave its workspace `sib-<slug>` behind; note every
+            # one so the meeting closes it, not the user
+            made = [w for w, t in workspaces().items() if w not in before and t == f"sib-{slug_}"] if before is not None else []
+            PANES["made"] += made
+            if p.returncode == 0:
+                break
+            if made:  # close the failed attempt's workspace now, before a retry opens another one
+                subprocess.run(["sib", "kill", slug_], capture_output=True, text=True)
+                left = close_workspaces(made)
+                PANES["made"] = [w for w in PANES["made"] if w not in made or w in left]
+            if (p.stdout + p.stderr).strip():
+                break
+            time.sleep(3)
+        if p.returncode == 0 and not PANES["workspace"]:
+            m = re.search(r"workspace:(\d+)", p.stdout + p.stderr)
+            PANES["workspace"] = (m and f"workspace:{m.group(1)}") or (made[0] if made else None)
+            PANES["creator"] = slug_
+        if p.returncode == 0:
+            PANES["spawned"].append(slug_)
+    if p.returncode != 0:
+        raise RuntimeError(f"{who}: sib spawn failed (exit {p.returncode}, pane `{slug_}` may be open): "
+                           f"{(p.stderr or p.stdout).strip()[-300:] or '(no output)'}")
+    deadline = time.time() + float(E("AGENT_SCOUT_TIMEOUT", "900"))
+    while time.time() < deadline:
+        if os.path.exists(out):
+            time.sleep(2)  # let the writer finish
+            try:
+                ans = parse_reply(open(out).read(), key)
+            except (RuntimeError, ValueError):
+                time.sleep(5)
+                continue
+            keep = os.path.join(HR, "run", name)
+            shutil.copytree(work, keep, dirs_exist_ok=True)
+            shutil.rmtree(work, ignore_errors=True)
+            with PANES["lock"]:
+                PANES["done"].append(slug_)  # closed at the end of the meeting, not now (see close_panes)
+            return ans
+        time.sleep(5)
+    raise RuntimeError(f"{who}: no answer in {out} before the timeout; pane `{slug_}` left open for the desk")
+
+
+def close_panes():
+    """close the answered panes. `sib kill` on the pane that created the committee workspace closes the
+    whole workspace, so that one goes last — closing it early would kill members still at work.
+    Then close every workspace this run created that holds no unanswered pane, so none stays behind."""
+    done = PANES["done"]
+    for s_ in [x for x in done if x != PANES["creator"]] + [x for x in done if x == PANES["creator"]]:
+        subprocess.run(["sib", "kill", s_], capture_output=True, text=True)
+    waiting = [x for x in PANES["spawned"] if x not in done]  # unanswered: its pane stays open for the desk
+    PANES["spawned"], PANES["done"] = waiting, []
+    keep = [PANES["workspace"]] if waiting and PANES["workspace"] else []
+    open_now = workspaces()
+    left = close_workspaces([w for w in PANES["made"] if w not in keep and w in open_now])
+    for w in left:
+        print(f"  workspace {w} ({open_now.get(w, '')}) is not idle; left open", file=sys.stderr)
+    PANES["made"] = keep + left
+    if not keep:
+        PANES["workspace"] = PANES["creator"] = None
+
+
+def run_scout(scout, rnd, prompt):
+    return run_model(scout["name"], scout["runner"], scout["agent"], scout["model"], rnd, prompt)
+
+
+def parse_reply(out, key):
+    try:
+        d = json.loads(out)
+    except ValueError:
+        m = re.search(r"\{.*\}", out, re.S)
+        if not m:
+            raise RuntimeError("scout reply is not JSON: " + out.strip()[:200])
+        d = json.loads(m.group(0))
+    if isinstance(d, dict) and key not in d:
+        if isinstance(d.get("structured_output"), dict):
+            d = d["structured_output"]
+        elif isinstance(d.get("result"), str):
+            return parse_reply(d["result"], key)
+    if not isinstance(d, dict) or not isinstance(d.get(key), list):
+        raise RuntimeError(f"scout reply has no `{key}` list: " + json.dumps(d, ensure_ascii=False)[:200])
+    return d[key]
+
+
+def slug(s):
+    return re.sub(r"[^a-z0-9:_-]+", "-", (s or "").strip().lower()).strip("-")
+
+
+def pack(data, evidence):
+    return "\n\n".join(data["packs"].get(e.strip(), f"(no pack {e.strip()})") for e in evidence.split(","))
+
+
+def propose_prompt(scout, data):
+    return (f"You are the `{scout['name']}` member of the agent scouting committee. Other members use other models, "
+            f"other approaches and other evidence; use your own approach only.\n"
+            f"Propose agent candidates from YOUR evidence below. Use a kind id from the list when one fits; "
+            f"otherwise a short new kebab-case id. Return JSON {{\"candidates\": [...]}} (may be empty).\n\n"
+            f"--- common context ---\n{data['common']}\n--- end ---\n\n"
+            f"--- your evidence ({scout['evidence']}) ---\n{pack(data, scout['evidence'])}\n--- end ---\n")
+
+
+def vote_prompt(scout, data, items):
+    lines = "\n".join(f"- idea `{c['idea']}` (kind {c['kind']}) — proposed by {', '.join(c['backers'])}: "
+                      + " / ".join(f"{p['title']}: {p['why'][:300]}" for p in c["proposals"]) for c in items)
+    return (f"You are the `{scout['name']}` scout. Other scouts proposed these candidates and the panel is one vote short.\n"
+            f"Judge each ONLY from your own evidence and method: does your evidence also show a need for an agent "
+            f"for this idea? Return JSON {{\"votes\": [{{\"idea\", \"vote\": \"yes\"|\"no\", \"why\"}}]}}, one per idea.\n\n"
+            f"Candidates:\n{lines}\n\n--- common context ---\n{data['common']}\n--- end ---\n\n"
+            f"--- your evidence ({scout['evidence']}) ---\n{pack(data, scout['evidence'])}\n--- end ---\n")
+
+
+GENERIC = {"agent", "checker", "check", "reviewer", "review", "helper", "assistant", "guard", "bot", "lead", "tool",
+           "builder", "runner", "manager", "keeper", "watcher", "scout", "the", "and", "of", "for"}
+
+
+def idea_groups(proposals):
+    """one group per idea, not per kind: two proposals are the same idea when their role names share a
+    distinctive word (scope-checker / doc-scope-checker) or are equal. Two different roles in one kind
+    stay apart, so one proposal's backers and quotes never count for another."""
+    flat = [dict(c, scout=name, role=slug(c.get("role")) or slug(c.get("kind"))) for name, cands in proposals.items()
+            for c in cands if slug(c.get("kind"))]
+    words = [set(p["role"].split("-")) - GENERIC for p in flat]
+    parent = list(range(len(flat)))
+    def root(i):
+        while parent[i] != i:
+            i = parent[i]
+        return i
+    for i in range(len(flat)):
+        for j in range(i):
+            if flat[i]["role"] == flat[j]["role"] or words[i] & words[j]:
+                parent[root(i)] = root(j)
+    groups = {}
+    for i, p in enumerate(flat):
+        groups.setdefault(root(i), []).append(p)
+    return list(groups.values())
+
+
+def apply_quorum(proposals, scouts, rule, data, vote_fn):
+    """proposals: {scout: [candidate]}. Group by idea (idea_groups); an idea passes when `pass` distinct scouts
+    back it. An idea one backer short goes to the scouts that did not propose it for a yes/no vote (when vote is on)."""
+    need, watch = int(rule.get("pass", 2)), int(rule.get("watch", 1))
+    groups = {}
+    for ps in idea_groups(proposals):
+        roles = {}
+        for p in ps:
+            roles[p["role"]] = roles.get(p["role"], 0) + 10 + int(p.get("strength") or 1)
+        idea = max(roles, key=lambda r: (roles[r], r))
+        kinds_ = [slug(p.get("kind")) for p in ps]
+        groups[idea] = {"idea": idea, "kind": max(set(kinds_), key=lambda k: (kinds_.count(k), k)), "role": idea,
+                        "backers": list(dict.fromkeys(p["scout"] for p in ps)), "voted": [], "against": [], "proposals": ps}
+    votes_log = {}
+    if str(rule.get("vote", "on")).lower() in ("on", "yes", "true", "1") and need > 1:
+        short = [g for g in groups.values() if len(g["backers"]) == need - 1]
+        for s in scouts:
+            items = [g for g in short if s["name"] not in g["backers"]]
+            if not items:
+                continue
+            try:
+                votes = vote_fn(s, items)
+            except RuntimeError as e:
+                votes_log[s["name"]] = f"error: {e}"
+                continue
+            votes_log[s["name"]] = votes
+            for v in votes:
+                g = groups.get(slug(v.get("idea")))
+                if not g:  # a member that answered by kind: only when one idea of that kind is on its ballot
+                    same = [x for x in items if x["kind"] == slug(v.get("kind"))]
+                    g = same[0] if len(same) == 1 else None
+                if g and g in items:
+                    (g["voted"] if v.get("vote") == "yes" else g["against"]).append({"scout": s["name"], "why": v.get("why", "")})
+    kinds = {k["kind"]: k for k in data.get("kinds", [])}
+    for g in groups.values():
+        n = len(g["backers"]) + len(g["voted"])
+        g["support"] = n
+        g["result"] = "pass" if n >= need else "watch" if n >= watch else "drop"
+        g["title"] = next(p["title"] for p in g["proposals"] if p["role"] == g["role"])
+        g["strength"] = sum(int(p.get("strength") or 1) for p in g["proposals"])
+        g["forms"] = sorted({p.get("form", "agent") for p in g["proposals"]})
+        g["volume"] = kinds.get(g["kind"], {}).get("corrections", 0)
+    order = {"pass": 0, "watch": 1, "drop": 2}
+    ranked = sorted(groups.values(), key=lambda g: (order[g["result"]], -g["support"], -g["strength"], -g["volume"], g["idea"]))
+    for i, g in enumerate(ranked, 1):
+        g["n"] = i
+    return ranked, votes_log
+
+
+def roster_lines():
+    try:
+        return open(ROSTER).read().splitlines()
+    except OSError:
+        return ["# Agent roster", "", "## Roles", "", "## Committee", "", "## Log"]
+
+
+def roster_write(lines):
+    real = os.path.realpath(ROSTER)
+    os.makedirs(os.path.dirname(real), exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(real))
+    with os.fdopen(fd, "w") as f:
+        f.write("\n".join(lines).rstrip() + "\n")
+    os.replace(tmp, real)
+
+
+def roster_add(section, line, unique_key=None):
+    lines = roster_lines()
+    if unique_key and any(l.startswith(f"- {unique_key} |") for l in lines):
+        return False
+    try:
+        i = next(i for i, l in enumerate(lines) if l.strip().lower() == f"## {section}".lower())
+    except StopIteration:
+        lines += ["", f"## {section}"]
+        i = len(lines) - 1
+    j = i + 1
+    while j < len(lines) and not lines[j].startswith("## "):
+        j += 1
+    while j > i + 1 and not lines[j - 1].strip():
+        j -= 1
+    lines.insert(j, line)
+    roster_write(lines)
+    return True
+
+
+def mmdd(d):
+    return d.strftime("%m-%d")
+
+
+def judge(rule, members, proposals, data):
+    """a model that is not a member grades every proposal blind (member names hidden, order shuffled by id).
+    Returns ([{id, member, kind, evidence, fit, why}], error)."""
+    spec = str(rule.get("judge") or "")
+    if not spec or spec == "off":
+        return [], None
+    runner, _, model = spec.partition(":")
+    if any(same_model(m["runner"], m["model"], runner, model) for m in members):
+        return [], f"judge {spec} is also a member; grading skipped (pick a judge outside the committee)"
+    items, back = [], {}
+    for name, cands in proposals.items():
+        for c in cands:
+            pid = f"P{len(items) + 1}"
+            back[pid] = (name, slug(c.get("kind")), slug(c.get("role")) or slug(c.get("kind")))
+            items.append(f"- {pid}: kind `{slug(c.get('kind'))}` — {c.get('title')} [{c.get('form')}]\n"
+                         f"  why: {c.get('why')}\n  evidence: " + " / ".join((c.get("evidence") or [])[:5]))
+    if not items:
+        return [], None
+    prompt = ("You judge proposals for new agents. You do not know who proposed them. For each proposal give "
+              "`evidence` 0-2 (does the quoted evidence, checked against the packs below, support the claim?) and "
+              "`fit` 0-2 (is a new agent the right answer, rather than a script, a skill or nothing?). "
+              "Return JSON {\"grades\": [{\"id\", \"evidence\", \"fit\", \"why\"}]}, one per proposal.\n\n"
+              + "\n".join(items) + f"\n\n--- context ---\n{data['common']}\n--- end ---\n\n--- evidence packs ---\n"
+              + "\n\n".join(data["packs"].values())[:90000] + "\n--- end ---\n")
+    try:
+        grades = run_model("judge", runner, None, model, "judge", prompt)
+    except RuntimeError as e:
+        return [], str(e)
+    out = []
+    for g in grades:
+        if g.get("id") in back:
+            member, kind, role = back[g["id"]]
+            out.append({"id": g["id"], "member": member, "kind": kind, "role": role, "evidence": int(g.get("evidence", 0)),
+                        "fit": int(g.get("fit", 0)), "why": g.get("why", "")})
+    return out, None
+
+
+def judge_hold(ranked, grades, rule):
+    """a passed kind whose mean judge `fit` (0-2) is below `hold_below` becomes `hold`: the quorum backs it,
+    the judge does not, so the user decides. The judge never adds support; it can only hold."""
+    floor = float(rule.get("hold_below", 0) or 0)
+    for g in ranked:
+        own = {(p["scout"], p["role"]) for p in g["proposals"]}
+        fits = [x["fit"] for x in grades if (x["member"], x.get("role")) in own]
+        g["judge_fit"] = round(sum(fits) / len(fits), 2) if fits else None
+        if g["result"] == "pass" and fits and g["judge_fit"] < floor:
+            g["result"] = "hold"
+    order = {"pass": 0, "hold": 1, "watch": 2, "drop": 3}
+    ranked.sort(key=lambda g: (order[g["result"]], -g["support"], -g["strength"], -g["volume"], g.get("idea", g["kind"])))
+    for i, g in enumerate(ranked, 1):
+        g["n"] = i
+
+
+def cmd_quorum(args):
+    scouts, rule, kinds = load_config()
+    days = int(opt(args, "--days") or rule.get("days", 21))
+    on = [s for s in scouts if s["status"] in ("on", "수습", "계약", "probation", "active") and "propose" in s["rounds"]]
+    if not on:
+        die(f"no enabled scouts in {CONFIG}")
+    data = build_packs(days, rule, kinds)
+    PANES["rule"] = rule
+    proposals, errors = {}, {}
+    def one(s):
+        try:
+            return s["name"], run_scout(s, "propose", propose_prompt(s, data)), None
+        except (RuntimeError, subprocess.TimeoutExpired, OSError) as e:
+            return s["name"], [], str(e)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(on)) as ex:  # members work at the same time
+        for name, cands, err in ex.map(one, on):
+            proposals[name] = cands
+            if err:
+                errors[name] = err
+    ranked, votes = apply_quorum(proposals, [s for s in on if s["name"] not in errors], rule, data,
+                                 lambda s, items: run_scout(s, "vote", vote_prompt(s, data, items)))
+    grades, judge_error = judge(rule, on, proposals, data)
+    judge_hold(ranked, grades, rule)
+    close_panes()  # answered panes only; an unanswered pane (and its workspace) stays open for the desk
+    day = today()
+    run = {"date": day.isoformat(), "period": [data["start"], data["end"]], "rule": rule,
+           "scouts": [dict(s, rounds=sorted(s["rounds"]), proposed=len(proposals[s["name"]]), error=errors.get(s["name"])) for s in on],
+           "proposals": proposals, "votes": votes, "candidates": ranked, "kinds": data["kinds"],
+           "judge": {"spec": rule.get("judge"), "grades": grades, "error": judge_error}}
+    os.makedirs(HR, exist_ok=True)
+    path = os.path.join(HR, f"quorum-{day.isoformat()}.json")
+    json.dump(run, open(path, "w"), ensure_ascii=False, indent=1)
+    write_md(run, path[:-5] + ".md")
+    for s in on:
+        roster_add("Committee", f"- {s['name']} | {s['runner']}:{s['model']} | {s['agent']} | 접근: {s['approach']} | "
+                   f"상태: 수습 | 시작 {mmdd(day)} | 판정 {mmdd(day + dt.timedelta(days=int(rule.get('every', 14))))} | "
+                   f"지표: agent-scout measure {s['name']} | {MEMBER_LINE}",
+                   unique_key=s["name"])
+        passed = sum(1 for g in ranked if s["name"] in g["backers"] and g["result"] in ("pass", "hold"))
+        mine = [g for g in grades if g.get("member") == s["name"]]
+        score = f" · judge {sum(g['evidence'] + g['fit'] for g in mine) / (4 * len(mine)):.2f}" if mine else ""
+        roster_add("Log", f"- {mmdd(day)} | {s['name']} | scan | proposed {len(proposals[s['name']])} · passed {passed}{score}"
+                   + (" · error" if s["name"] in errors else "") + f" | ref:quorum-{day.isoformat()}")
+    if "--json" in args:
+        print(json.dumps(run, ensure_ascii=False, indent=1))
+    else:
+        show_run(run)
+        print(f"\nsaved: {path}")
+    return 1 if len(errors) == len(on) else 0
+
+
+def write_md(run, path):
+    out = [f"# 발굴 위원회 {run['date']} (기간 {run['period'][0]}..{run['period'][1]}) — 로컬 근거", "",
+           f"규칙: pass {run['rule'].get('pass')} · vote {run['rule'].get('vote')} · watch {run['rule'].get('watch')}", "",
+           "## 발굴 에이전트별 제안", ""]
+    for s in run["scouts"]:
+        out.append(f"### {s['name']} ({s.get('runner')}:{s.get('model')}, {s['agent']}, 접근: {s.get('approach')}, 근거 {s['evidence']})"
+                   + (f" — 오류: {s['error']}" if s.get("error") else ""))
+        for c in run["proposals"].get(s["name"], []):
+            out.append(f"- `{slug(c.get('kind'))}` {c.get('title')} [{c.get('form')}, 강도 {c.get('strength')}] — {c.get('why')}")
+            for ev in (c.get("evidence") or [])[:4]:
+                out.append(f"    - {ev}")
+        out.append("")
+    out += ["## 표결", ""]
+    for name, vs in run["votes"].items():
+        if isinstance(vs, str):
+            out.append(f"- {name}: {vs}")
+        else:
+            out += [f"- {name}: `{slug(v.get('kind'))}` {v.get('vote')} — {v.get('why')}" for v in vs]
+    j = run.get("judge") or {}
+    out += ["", f"## 블라인드 채점 (심판 {j.get('spec')}, 위원 아님)", ""]
+    if j.get("error"):
+        out.append(f"- 오류: {j['error']}")
+    out += [f"- {g['id']} [{g['member']}] `{g['kind']}` 근거 {g['evidence']} · 적합 {g['fit']} — {g['why']}" for g in j.get("grades") or []]
+    out += ["", "## 쿼럼 결과", "", "| # | 결과 | kind | 역할 | 지지 | 제안 | 표결 찬성 | 표결 반대 |", "|---|---|---|---|---|---|---|---|"]
+    for g in run["candidates"]:
+        out.append(f"| {g['n']} | {g['result']} | {g['kind']} | {g['role']} | {g['support']} | {', '.join(g['backers'])} | "
+                   f"{', '.join(v['scout'] for v in g['voted']) or '-'} | {', '.join(v['scout'] for v in g['against']) or '-'} |")
+    open(path, "w").write("\n".join(out) + "\n")
+
+
+def show_run(run):
+    print(f"committee {run['date']} · period {run['period'][0]}..{run['period'][1]} · "
+          f"pass {run['rule'].get('pass')} of {len(run['scouts'])} members")
+    for s in run["scouts"]:
+        print(f"  member {s['name']:<10} {s.get('runner', '?')}:{s.get('model', '?'):<10} ({s.get('approach', s['evidence'])}): "
+              f"proposed {s['proposed']}" + (f"  ERROR {s['error'][:80]}" if s.get("error") else ""))
+    j = run.get("judge") or {}
+    if j.get("spec"):
+        gs = j.get("grades") or []
+        print(f"  judge  {j['spec']} (not a member, blind): graded {len(gs)}" + (f"  ERROR {j['error'][:80]}" if j.get("error") else ""))
+    print()
+    for g in run["candidates"]:
+        votes = "".join(f" +{v['scout']}" for v in g["voted"]) + "".join(f" -{v['scout']}" for v in g["against"])
+        jf = "" if g.get("judge_fit") is None else f" judge-fit {g['judge_fit']}"
+        print(f"{g['n']:>2}. [{g['result']:<5}] {g['role']:<28} kind={g['kind']:<26} support {g['support']}{jf} "
+              f"({', '.join(g['backers'])}{votes}) form {'/'.join(g['forms'])}")
+        print(f"      {g['title']}")
+
+
+def latest_run():
+    runs = sorted(glob.glob(os.path.join(HR, "quorum-*.json")))
+    if not runs:
+        die("no quorum run yet — run `agent-scout quorum` first")
+    return json.load(open(runs[-1]))
+
+
+def find_candidate(run, key):
+    for g in run["candidates"]:
+        if str(g["n"]) == str(key) or g["role"] == key or g.get("idea") == key:
+            return g
+    same = [g for g in run["candidates"] if g["kind"] == key]
+    if len(same) == 1:
+        return same[0]
+    if same:
+        die(f"kind {key!r} has {len(same)} ideas ({', '.join(g['role'] for g in same)}); name one by its number or role", 2)
+    die(f"no candidate {key!r} in the latest quorum run", 2)
+
+
+# ---------------------------------------------------------------- define, check, install
+
+def draft_path(role):
+    if role.endswith(".md") or "/" in role:
+        return role
+    return os.path.join(HR, "agents", f"{role}.md")
+
+
+def cmd_new(args):
+    if not args or args[0].startswith("-"):
+        die("usage: agent-scout new <role> --from <n|kind> [--area A] [--tools T] [--model M]", 2)
+    role = slug(args[0])
+    src = opt(args, "--from")
+    by_user = "--by-user" in args
+    if by_user:  # the user (or a session for the user) makes the agent; the committee evaluates it afterwards
+        if src or not opt(args, "--title"):
+            die("--by-user takes --title T (and --kind K), not --from", 2)
+        g = {"title": opt(args, "--title"), "kind": slug(opt(args, "--kind")) or "user", "result": "pass",
+             "proposals": [], "n": "-", "support": 0, "backers": [], "voted": []}
+        run = {"date": today().isoformat()}
+    elif not src:
+        die("--from <n|kind> is required (or --by-user --title T)", 2)
+    else:
+        run = json.load(open(os.path.expanduser(opt(args, "--run")))) if opt(args, "--run") else latest_run()
+        g = find_candidate(run, src)
+    path = draft_path(role)
+    if g["result"] not in ("pass",) and "--user-approved" not in args:
+        die(f"candidate {g['role']} is `{g['result']}`, not passed; the user must lift it (--user-approved)", 3)
+    if os.path.exists(path) and "--force" not in args:
+        die(f"{path} exists (use --force to overwrite)")
+    # what the role is about, not the quotes it cites (a scope checker may quote sessions from an ask-first area)
+    hit = ask_first_hit(" ".join([role, g["kind"], g["title"]]))
+    tools = opt(args, "--tools") or "Read, Grep, Glob"
+    _, rule, _ = load_config()
+    layer = (opt(args, "--layer") or ("L3" if hit else "")).upper()
+    if layer == "L1" and hit:  # an ask-first-area agent is never defined in L1 (architecture-l1-environment-neutral)
+        die(f"refused: {role} touches the ask-first area '{hit}'; L1 is public and never holds it. Use --layer L2 or L3.", 3)
+    home = opt(args, "--home") or (os.path.expanduser(str(rule["layers"].get(layer) or "")) if layer in ("L1", "L2") else "")
+    layer = layer or "TODO: L1 | L2 | L3"
+    home = home or "TODO: folder for the source (L1/L2 from the config, L3: <project>/.claude/agents)"
+    model = opt(args, "--model") or "opus"
+    evidence = "; ".join(f"{p['scout']}: {p['why'][:160]}" for p in g["proposals"])
+    quotes = [ev for p in g["proposals"] for ev in (p.get("evidence") or [])][:8]
+    if by_user:
+        origin = (f"made by:user {run['date']} kind `{g['kind']}` — not mined; the committee evaluates it "
+                  f"(agent-scout evaluate {role}) before install")
+        quote_hint = "- TODO: 2 to 5 lines from past sessions (date, session id, the user's words) that show the work"
+    else:
+        origin = (f"quorum-{run['date']} #{g['n']} kind `{g['kind']}`, support {g['support']}, backers: "
+                  f"{','.join(g['backers'] + [v['scout'] for v in g['voted']])} — {evidence.replace('|', '/')}")
+        quote_hint = "- (none given by the scouts)"
+    body = f"""---
+name: {role}
+description: "TODO: one paragraph — what this agent does, when to call it (trigger), what it never does."
+tools: {tools}
+model: {model}
+---
+
+# {g['title']}
+
+## Role card
+| field | value |
+|---|---|
+| name | {role} |
+| form | agent |
+| layer | {layer} |
+| home | {home} |
+| area | {opt(args, '--area') or 'TODO: area profile name (orch-areas.md)'} |
+| ask_first | {('yes (' + hit + ')') if hit else 'no'} |
+| triggers | TODO: when a session or the desk calls this agent |
+| not_mine | TODO: what this agent never does |
+| tools | {tools} |
+| model | {model} |
+| done_when | TODO: how a use is judged ok / miss |
+| metrics | uses, ok, corrected, repeat, asked (docs/agent-hr-design.md 5.4) |
+| evidence | {origin} |
+| contract | probation 7 days from install, advise only; judged with docs/agent-hr-design.md 5.3-5.5. Re-evaluation model: {opt(args, '--reeval') or 'none'} (5.6) |
+
+## Evidence quotes
+{chr(10).join('- ' + q for q in quotes) or quote_hint}
+
+## Instructions
+TODO: the system prompt — written from the evidence above, operational, short.
+"""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    open(path, "w").write(body)
+    if g["result"] != "pass":
+        roster_add("Log", f"- {mmdd(today())} | committee | lifted | kind {g['kind']} was `{g['result']}` | by:user | "
+                   f"role {role} | ref:quorum-{run['date']}")
+    print(path)
+    if hit:
+        print(f"note: the card touches the ask-first area '{hit}' — draft only; install needs the user's OK (--user-approved).")
+    return 0
+
+
+def read_card(path):
+    try:
+        text = open(path).read()
+    except OSError:
+        die(f"no draft at {path}")
+    fm = {}
+    m = re.match(r"^---\n(.*?)\n---\n", text, re.S)
+    if m:
+        for l in m.group(1).splitlines():
+            k, _, v = l.partition(":")
+            if v:
+                fm[k.strip()] = v.strip().strip('"')
+    card = {}
+    sec = sections(text)
+    for r in md_table(sec.get("role card", [])):
+        if len(r) >= 2:
+            card[r[0]] = r[1]
+    return text, fm, card, sec
+
+
+def role_text(text, card):
+    """the draft without its evidence: the evidence quotes section and the card's evidence cell."""
+    text = re.sub(r"\n## Evidence quotes\n.*?(?=\n## )", "\n", text, flags=re.S)
+    return text.replace(card.get("evidence", ""), "")
+
+
+def problems(path):
+    text, fm, card, sec = read_card(path)
+    out = []
+    name = os.path.basename(path)[:-3]
+    if fm.get("name") != name:
+        out.append(f"frontmatter name {fm.get('name')!r} is not the file name {name!r}")
+    for k in ("description", "tools", "model"):
+        if not fm.get(k):
+            out.append(f"frontmatter has no {k}")
+    for k in CARD_FIELDS:
+        if not card.get(k):
+            out.append(f"role card has no `{k}`")
+    if "TODO" in text:
+        out.append(f"{text.count('TODO')} TODO left")
+    instr = "\n".join(sec.get("instructions", [])).strip()
+    if len(instr) < 200:
+        out.append("instructions are missing or shorter than 200 characters")
+    if card.get("tools") and fm.get("tools") and card["tools"].replace(" ", "") != fm["tools"].replace(" ", ""):
+        out.append("role card tools differ from frontmatter tools")
+    return out, text, card
+
+
+def cmd_check(args):
+    if not args:
+        die("usage: agent-scout check <role|path>", 2)
+    path = draft_path(args[0])
+    out, _, _ = problems(path)
+    if out:
+        print(f"{path}: not ready")
+        for p in out:
+            print(f"  - {p}")
+        return 3
+    print(f"{path}: ready")
+    return 0
+
+
+def deploy_report(path):
+    """the four-part report the user reads before an agent goes in (user rule 11-24): what it does, how it is
+    measured, how it is kept or removed, and the evidence. Built from the card and the records, not the agent."""
+    text, fm, card, sec = read_card(path)
+    name = os.path.basename(path)[:-3]
+    ev, er = latest_eval(name)
+    quotes = [l[2:] for l in sec.get("evidence quotes", []) if l.startswith("- ")]
+    out = [f"# 투입 보고: {name}", "",
+           "## 1. 역할",
+           f"- 하는 일: {fm.get('description', '')}",
+           f"- 부르는 때: {card.get('triggers')}",
+           f"- 하지 않는 일: {card.get('not_mine')}",
+           f"- 도구·모델: {card.get('tools')} · {card.get('model')} · 층 {card.get('layer')} ({card.get('home')})",
+           f"- 먼저 묻는 영역: {card.get('ask_first')}",
+           "- 부르는 곳(정해야 함): 데스크 브리프 첫 줄에 카드 경로 / 세션이 서브에이전트로 호출 / 훅. 부르는 곳이 없으면"
+           " uses 가 0 이라 판정할 수 없다 (docs/agent-hr-design.md 5.3)", "",
+           "## 2. 평가 지표 (자기 보고가 아니라 세션 기록과 명부로 센다, 5.4)",
+           f"- 한 번의 호출이 ok 인 기준(done_when): {card.get('done_when')}",
+           "- uses: 창 안에서 불린 횟수 · ok: done_when 통과 비율 · corrected: 사용자가 결과를 고친 횟수 · "
+           "repeat: 막으려던 교정이 다시 나온 횟수(근거의 교정 묶음 기준) · asked: 그 일에서 사용자에게 간 질문 수", "",
+           "## 3. 선발·퇴출 (5.3, 5.5)",
+           f"- 계약: {card.get('contract')}",
+           "- 수습 7일 뒤: uses ≥ 3, ok ≥ 2/3, corrected ≤ 1 이면 계약. uses < 3 이면 7일 한 번 연장, 그래도 모자라면 해체."
+           " 판단을 틀렸으면 퇴출",
+           "- 계약 뒤 14일마다: ok ≥ 90%·repeat 0·uses ≥ 5 → 확대 후보, corrected 14일 3회 이상 → 축소, 축소 뒤에도"
+           " 그대로거나 repeat 가 기준선과 같으면 → 퇴출, uses < 3 → 해체",
+           "- 역할이 바뀌거나 치워지는 판정(확대·축소·퇴출·해체)은 데스크가 숫자를 붙여 올리고 사용자가 정한다", "",
+           "## 4. 근거",
+           f"- 출처: {card.get('evidence')}"]
+    out += [f"- {q}" for q in quotes[:8]]
+    if er:
+        c = er["counts"]
+        out += ["", f"위원회 평가 {ev['id']}: **{er['result']}** — hire {c['hire']} · revise {c['revise']} · reject "
+                    f"{c['reject']} (센 평가 {er['counted']})"]
+        for r in er["reviews"]:
+            gr = "" if r.get("grounded") is None else f", 근거 {r['grounded']}" + ("" if r.get("counted", True) else " 세지 않음")
+            out.append(f"- {r['member']}: {r['verdict']} (필요 {r['need']} · 형태 {r['fit']} · 안전 {r['safety']}{gr}) — "
+                       f"{r['why'][:200]}")
+    else:
+        out += ["", "위원회 평가: 없음 (`agent-scout evaluate " + name + "`)"]
+    return "\n".join(out)
+
+
+def cmd_report(args):
+    if not args:
+        die("usage: agent-scout report <role|path>", 2)
+    path = draft_path(args[0])
+    if not os.path.exists(path) and os.path.exists(os.path.join(AGENTS, f"{slug(args[0])}.md")):
+        path = os.path.join(AGENTS, f"{slug(args[0])}.md")
+    print(deploy_report(path))
+    return 0
+
+
+def reeval_model(card, args=()):
+    """the re-evaluation model (design 5.6): --reeval, else the card's contract text, else none."""
+    m = re.search(r"re-?evaluation model:?\s*([\w.:-]+)", card.get("contract", ""), re.I)
+    v = opt(list(args), "--reeval") or (m.group(1) if m else "")
+    return "-" if v.lower() in ("", "none", "no", "-") else v
+
+
+AGENT_LINE = "교체선: 5.3·5.5 표 | 판정자: user (역할이 그대로인 결과만 desk 기록)"  # design 12: one contract shape
+MEMBER_LINE = "교체선: review 선 미달 → bench | 판정자: user (기록: agent-scout review)"
+
+
+def contract_cells(start, reeval):
+    """the roster cells of one contract (design 5.3): probation verdict, the one extension, the 14-day verdicts."""
+    v = start + dt.timedelta(days=7)
+    return (f"판정 {mmdd(v)} | 연장 시 {mmdd(v + dt.timedelta(days=7))} | 계약 판정 {mmdd(v + dt.timedelta(days=14))}부터 14일마다 | "
+            f"재평가 모델: {reeval}")
+
+
+def cmd_install(args):
+    if not args:
+        die("usage: agent-scout install <role> [--user-approved]", 2)
+    path = draft_path(args[0])
+    out, text, card = problems(path)
+    if out:
+        print(f"{path}: not ready — run `agent-scout check {args[0]}`", file=sys.stderr)
+        return 3
+    name = os.path.basename(path)[:-3]
+    ok_user = "--user-approved" in args
+    ev, er = latest_eval(name)
+    by_user = card.get("evidence", "").startswith("made by:user")
+    if by_user and not er and not ok_user:
+        print(f"refused: {name} was made, not mined; run `agent-scout evaluate {name}` first "
+              f"(or --user-approved when the user takes it without the committee).", file=sys.stderr)
+        return 3
+    if er and er["result"] != "approve" and not ok_user:
+        print(f"refused: the committee's verdict on {name} is `{er['result']}` ({ev['id']}). Apply the fixes and "
+              f"evaluate again, or install with --user-approved when the user overrules it.", file=sys.stderr)
+        return 3
+    hit = ask_first_hit(role_text(text, card)) or (card.get("ask_first", "no").lower().startswith("yes") and "role card")
+    if not ok_user:  # user rule 11-24: every agent goes in only after the user has read the report and said yes
+        print(deploy_report(path), file=sys.stderr)
+        why = f" It also touches the ask-first area '{hit}'." if hit else ""
+        print(f"\nrefused: show this report to the user and install again with --user-approved after they agree.{why}",
+              file=sys.stderr)
+        return 3
+    _, rule, _ = load_config()
+    layer, home = card.get("layer", "").upper(), os.path.expanduser(card.get("home", ""))
+    if layer not in ("L1", "L2", "L3") or not home:
+        print("refused: the role card needs layer L1|L2|L3 and a home folder", file=sys.stderr)
+        return 3
+    private = str(rule["layers"].get("private") or "")
+    if layer == "L1" and (hit or (private and re.search(private, text, re.I))):  # L1 is public: quotes count too
+        print(f"refused: {name} carries company or ask-first context; L1 is public. Put it in L2 or L3.", file=sys.stderr)
+        return 3
+    os.makedirs(home, exist_ok=True)
+    src = os.path.join(home, f"{name}.md")
+    if os.path.exists(src) and open(src).read() != text and "--force" not in args:
+        print(f"refused: {src} exists and differs (use --force)", file=sys.stderr)
+        return 3
+    shutil.copyfile(path, src)  # the layer's repo holds the source; that repo's own flow commits it
+    dst = src
+    if layer in ("L1", "L2"):  # L3 agents load from their project folder; nothing global to deploy
+        os.makedirs(AGENTS, exist_ok=True)
+        dst = os.path.join(AGENTS, f"{name}.md")
+        shutil.copyfile(path, dst)
+    day = today()
+    roster_add("Roles", f"- {name} | agent | {layer} | {card.get('area')} | 상태: 수습 | 시작 {mmdd(day)} | "
+               + contract_cells(day, reeval_model(card, args)) + f" | 지표: agent-scout measure {name} | {AGENT_LINE} | 원본: {src}",
+               unique_key=name)
+    m = re.search(r"backers: ([\w,-]+)", card.get("evidence", ""))
+    backers = m.group(1) if m else "-"
+    if er:  # an evaluated agent: the members who said hire answer for it in `review`
+        backers = ",".join(r["member"] for r in er["reviews"] if r["verdict"] == "hire" and r.get("counted", True)) or "-"
+    roster_add("Log", f"- {mmdd(day)} | {name} | hire | backers: {backers} | "
+               + (f"{ev['id']} {er['result']} | " if er else "") + card.get("evidence", "")[:100]
+               + " | user-approved")
+    print(f"source  {src} ({layer}; commit it in that repo)")
+    print(f"installed {dst}")
+    print(f"call it: Agent(subagent_type=\"{name}\") inside a session (a sib pane) — no headless path")
+    return 0
+
+
+# ---------------------------------------------------------------- evaluate (the user makes, the committee judges)
+
+def eval_files():
+    def key(f):
+        m = re.search(r"eval-(\d{4}-\d\d-\d\d)-(\d+)\.json$", f)
+        return (m.group(1), int(m.group(2))) if m else ("", 0)
+    return sorted(glob.glob(os.path.join(HR, "eval-*.json")), key=key)
+
+
+def latest_eval(role):
+    """(run, result) of the newest evaluation that covered `role`, or (None, None)."""
+    for f in reversed(eval_files()):
+        try:
+            run = json.load(open(f))
+        except (OSError, ValueError):
+            continue
+        if role in run.get("results", {}):
+            return run, run["results"][role]
+    return None, None
+
+
+def evaluate_prompt(scout, data, drafts):
+    body = "\n\n".join(f"=== draft `{r}` ===\n{t}\n=== end of `{r}` ===" for r, t in drafts)
+    return (f"You are the `{scout['name']}` member of the agent committee. This round is EVALUATE, not propose: "
+            f"the user (or a session working for the user) wrote the agent drafts below; nobody mined them. "
+            f"Judge each draft with YOUR approach only (the `## Evaluate` part of your definition) and YOUR evidence. "
+            f"Other members use other models and approaches; do not guess what they will say.\n"
+            f"For each draft give: `verdict` hire | revise | reject; `need` 0-2 (does your evidence show the work it "
+            f"serves recurs and costs the user?); `fit` 0-2 (is an agent with this boundary the right form, rather than "
+            f"a skill, a script or nothing?); `safety` 0-2 (are tools, triggers and not_mine narrow enough, and do the "
+            f"user's own decisions — ask-first areas, production changes — stay with the user?); `why`; `fixes` "
+            f"(concrete edits to the draft, empty when none); `evidence` (1-5 lines copied from your packs or the "
+            f"transcripts they point to; empty when you found none). `hire` means: install it as written, or with the "
+            f"listed fixes only. Return JSON {{\"reviews\": [...]}}, one per draft, `role` = the draft name.\n\n"
+            f"Session ids in the packs (claude:<id>, codex:<id>) name transcripts you MAY open with Read: "
+            f"{CLAUDE_DIR}/*/<id>*.jsonl and {CODEX_DIR}/YYYY/MM/DD/*<id>*.jsonl. Keep it to a few.\n\n"
+            f"--- drafts ---\n{body}\n--- end ---\n\n"
+            f"--- common context ---\n{data['common']}\n--- end ---\n\n"
+            f"--- your evidence ({scout['evidence']}) ---\n{pack(data, scout['evidence'])}\n--- end ---\n")
+
+
+def egrade(rule, members, reviews, drafts, data):
+    """the judge grades every review blind (member names hidden): does it rest on the packs and the draft's
+    actual text, or is it generic advice? Returns ({review id: grade}, error)."""
+    spec = str(rule.get("judge") or "")
+    if not spec or spec == "off":
+        return {}, None
+    runner, _, model = spec.partition(":")
+    if any(same_model(m["runner"], m["model"], runner, model) for m in members):
+        return {}, f"judge {spec} is also a member; grading skipped (pick a judge outside the committee)"
+    items = [f"- {r['id']}: draft `{r['role']}` — verdict {r['verdict']} · need {r['need']} · fit {r['fit']} · "
+             f"safety {r['safety']}\n  why: {r['why']}\n  fixes: {' / '.join(r['fixes'][:6]) or '-'}\n"
+             f"  evidence: {' / '.join(r['evidence'][:5]) or '-'}" for r in reviews]
+    if not items:
+        return {}, None
+    prompt = ("You grade reviews of new agent drafts. You do not know who wrote them. For each review give `grounded` "
+              "0-2: 2 = it rests on lines that exist in the packs below (or the transcripts they name) and on the draft's "
+              "actual text; 1 = partly; 0 = generic advice or quotes that are not there. Do not grade whether you agree "
+              "with the verdict. Return JSON {\"grades\": [{\"id\", \"grounded\", \"why\"}]}, one per review.\n\n"
+              + "\n".join(items) + "\n\n--- drafts ---\n" + "\n\n".join(f"=== `{r}` ===\n{t}" for r, t in drafts)
+              + f"\n--- end ---\n\n--- context ---\n{data['common']}\n--- end ---\n\n--- evidence packs ---\n"
+              + "\n\n".join(data["packs"].values())[:90000] + "\n--- end ---\n")
+    try:
+        grades = run_model("judge", runner, None, model, "egrade", prompt)
+    except RuntimeError as e:
+        return {}, str(e)
+    return {g["id"]: {"grounded": int(g.get("grounded", 0)), "why": g.get("why", "")} for g in grades if g.get("id")}, None
+
+
+def eval_result(reviews, ev):
+    """reject when `reject` counted members say reject; approve when `approve` counted members say hire; else revise.
+    A review the judge grades below `ground_min` does not count (it stays in the record)."""
+    counted = [r for r in reviews if r.get("counted", True)]
+    n = {v: sum(1 for r in counted if r["verdict"] == v) for v in ("hire", "revise", "reject")}
+    if n["reject"] >= int(ev["reject"]):
+        res = "reject"
+    elif n["hire"] >= int(ev["approve"]):
+        res = "approve"
+    else:
+        res = "revise"
+    return res, n, len(counted)
+
+
+def cmd_evaluate(args):
+    members, rule, kinds = load_config()
+    ev = rule["evaluate"]
+    roles, skip = [], False
+    for a in args:
+        if skip:
+            skip = False
+        elif a in ("--days", "--kinds", "--replacing"):
+            skip = True
+        elif not a.startswith("-"):
+            roles.append(a)
+    if not roles:
+        die("usage: agent-scout evaluate <role|path>... [--kinds k1,k2] [--days N] [--json]", 2)
+    drafts, only = [], set()
+    for r in roles:
+        path = draft_path(r)
+        if not os.path.exists(path) and os.path.exists(os.path.join(AGENTS, f"{slug(r)}.md")):
+            path = os.path.join(AGENTS, f"{slug(r)}.md")  # an installed agent can be evaluated again
+        try:
+            text = open(path).read()
+        except OSError:
+            die(f"no draft or agent {r!r} ({path})")
+        drafts.append((os.path.basename(path)[:-3], text))
+        only |= {k for k in re.findall(r"kind `([\w:.-]+)`", text) if k != "user"}
+    if opt(args, "--kinds"):
+        only = {slug(k) for k in opt(args, "--kinds").split(",") if k.strip()}
+    on = [s for s in members if s["status"] in ("on", "수습", "계약", "probation", "active") and "evaluate" in s["rounds"]]
+    # nobody votes on their own seat: the member a draft would replace sits this evaluation out
+    out = {x.strip() for x in (opt(args, "--replacing") or "").split(",") if x.strip()}
+    on = [s for s in on if s["name"] not in out]
+    if not on:
+        die(f"no enabled members in {CONFIG}")
+    data = build_packs(int(opt(args, "--days") or rule.get("days", 21)), rule, kinds, only or None)
+    PANES["rule"] = rule
+    names = {r for r, _ in drafts}
+    def one(s):
+        try:
+            return s["name"], run_scout(s, "evaluate", evaluate_prompt(s, data, drafts)), None
+        except (RuntimeError, subprocess.TimeoutExpired, OSError) as e:
+            return s["name"], [], str(e)
+    reviews, errors = [], {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(on)) as ex:
+        for name, rs, err in ex.map(one, on):
+            if err:
+                errors[name] = err
+            for r in rs:
+                role = slug(r.get("role"))
+                if role not in names or r.get("verdict") not in ("hire", "revise", "reject"):
+                    continue
+                reviews.append({"id": f"R{len(reviews) + 1}", "member": name, "role": role, "verdict": r["verdict"],
+                                **{k: int(r.get(k, 0)) for k in ("need", "fit", "safety")}, "why": r.get("why", ""),
+                                "fixes": list(r.get("fixes") or []), "evidence": list(r.get("evidence") or [])})
+    if len(errors) == len(on):  # nobody answered: no meeting took place, so nothing is recorded as a verdict
+        close_panes()
+        for name, err in errors.items():
+            print(f"  member {name}: {err[:160]}", file=sys.stderr)
+        die("every member failed; no evaluation recorded (run it again from a cmux pane in the foreground of a session)")
+    grades, judge_error = egrade(rule, on, reviews, drafts, data)
+    for r in reviews:
+        g = grades.get(r["id"])
+        r["grounded"] = g["grounded"] if g else None
+        r["grounded_why"] = g["why"] if g else ""
+        r["counted"] = g is None or g["grounded"] >= int(ev["ground_min"])
+    close_panes()
+    day = today()
+    k = 1 + sum(1 for f in eval_files() if os.path.basename(f).startswith(f"eval-{day.isoformat()}-"))
+    rid = f"eval-{day.isoformat()}-{k}"
+    results = {}
+    for role, _ in drafts:
+        rs = [r for r in reviews if r["role"] == role]
+        res, n, counted = eval_result(rs, ev)
+        results[role] = {"result": res, "counts": n, "counted": counted, "reviews": rs}
+    run = {"id": rid, "date": day.isoformat(), "period": [data["start"], data["end"]], "kinds": sorted(only),
+           "rule": {k2: rule[k2] for k2 in ("evaluate", "judge") if k2 in rule},
+           "members": [dict(s, rounds=sorted(s["rounds"]), reviewed=sum(1 for r in reviews if r["member"] == s["name"]),
+                        error=errors.get(s["name"]))
+                       for s in on],
+           "results": results, "judge": {"spec": rule.get("judge"), "error": judge_error, "graded": len(grades)}}
+    os.makedirs(HR, exist_ok=True)
+    path = os.path.join(HR, f"{rid}.json")
+    json.dump(run, open(path, "w"), ensure_ascii=False, indent=1)
+    write_eval_md(run, path[:-5] + ".md")
+    for role, x in results.items():
+        roster_add("Log", f"- {mmdd(day)} | {role} | evaluate | {x['result']} · hire {x['counts']['hire']} · revise "
+                   f"{x['counts']['revise']} · reject {x['counts']['reject']} of {x['counted']} counted | ref:{rid}")
+    if "--json" in args:
+        print(json.dumps(run, ensure_ascii=False, indent=1))
+    else:
+        show_eval(run)
+        print(f"\nsaved: {path}")
+    return 1 if len(errors) == len(on) else 0
+
+
+def show_eval(run):
+    e = run["rule"]["evaluate"]
+    print(f"committee evaluation {run['id']} · approve {e['approve']} hire · reject {e['reject']} · "
+          f"{len(run['members'])} members" + (f" · kinds {','.join(run['kinds'])}" if run["kinds"] else ""))
+    for s in run["members"]:
+        print(f"  member {s['name']:<10} {s['runner']}:{s['model']:<14} reviewed {s['reviewed']}"
+              + (f"  ERROR {s['error'][:80]}" if s.get("error") else ""))
+    j = run["judge"]
+    if j.get("spec"):
+        print(f"  judge  {j['spec']} (not a member, blind): graded {j['graded']}" + (f"  ERROR {j['error'][:80]}" if j.get("error") else ""))
+    print()
+    for role, x in run["results"].items():
+        print(f"[{x['result']:<7}] {role}  hire {x['counts']['hire']} · revise {x['counts']['revise']} · reject "
+              f"{x['counts']['reject']} (counted {x['counted']})")
+        for r in x["reviews"]:
+            gr = "" if r["grounded"] is None else f" grounded {r['grounded']}" + ("" if r["counted"] else " (not counted)")
+            print(f"    {r['member']:<10} {r['verdict']:<6} need {r['need']} fit {r['fit']} safety {r['safety']}{gr}")
+
+
+def write_eval_md(run, path):
+    e = run["rule"]["evaluate"]
+    out = [f"# 위원회 평가 {run['id']} (기간 {run['period'][0]}..{run['period'][1]}) — 로컬 근거", "",
+           f"규칙: hire {e['approve']}명 이상이면 승인 · reject {e['reject']}명이면 거절 · 그 밖은 수정 · "
+           f"심판 근거 점수 {e['ground_min']} 미만인 평가는 세지 않음"
+           + (f" · 근거 범위 kind {', '.join(run['kinds'])}" if run["kinds"] else ""), "",
+           "## 위원", ""]
+    for s in run["members"]:
+        out.append(f"- {s['name']} ({s['runner']}:{s['model']}, {s['agent']}, 접근: {s['approach']}, 근거 {s['evidence']})"
+                   + (f" — 오류: {s['error']}" if s.get("error") else ""))
+    j = run["judge"]
+    out += ["", f"심판: {j.get('spec')} (위원 아님, 이름 가린 채 평가의 근거만 채점)" + (f" — 오류: {j['error']}" if j.get("error") else "")]
+    for role, x in run["results"].items():
+        out += ["", f"## {role} — {x['result']} (hire {x['counts']['hire']} · revise {x['counts']['revise']} · "
+                    f"reject {x['counts']['reject']}, 센 평가 {x['counted']})", ""]
+        for r in x["reviews"]:
+            gr = "" if r["grounded"] is None else f" · 근거 {r['grounded']}" + ("" if r["counted"] else " (세지 않음)")
+            out.append(f"### {r['member']}: {r['verdict']} (필요 {r['need']} · 형태 {r['fit']} · 안전 {r['safety']}{gr})")
+            out.append(r["why"])
+            if r["fixes"]:
+                out += ["", "고칠 점:"] + [f"- {f}" for f in r["fixes"]]
+            if r["evidence"]:
+                out += ["", "근거:"] + [f"- {x2}" for x2 in r["evidence"][:5]]
+            if r["grounded_why"]:
+                out += ["", f"심판: {r['grounded_why']}"]
+            out.append("")
+    open(path, "w").write("\n".join(out) + "\n")
+
+
+# ---------------------------------------------------------------- measure (design 5.4: counted, never self-reported)
+
+MEASURE_SCHEMA = {"type": "object", "additionalProperties": False, "required": ["grades"], "properties": {"grades": {"type": "array", "items": {
+    "type": "object", "additionalProperties": False, "required": ["id", "verdict", "why"],
+    "properties": {"id": {"type": "string"}, "verdict": {"type": "string", "enum": ["ok", "miss", "unclear", "yes", "no"]},
+                   "why": {"type": "string"}}}}}}
+KEYS["measure"] = ("grades", MEASURE_SCHEMA)
+TEST_PROJECT = "-private-tmp-agent-scout-"  # committee evaluations and trial calls: never counted as uses
+
+
+def local_day(ts):
+    try:
+        return dt.datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone().date()
+    except (ValueError, AttributeError):
+        return None
+
+
+def transcript(path):
+    """events of one Claude transcript in order: ('user', ts, text) for real user turns, ('tool', ts, name, input, id)
+    for tool calls of the main thread, ('result', id, text) for tool results."""
+    ev, cwd = [], None
+    try:
+        fh = open(path, errors="replace")
+    except OSError:
+        return cwd, ev
+    with fh:
+        for line in fh:
+            try:
+                d = json.loads(line)
+            except ValueError:
+                continue
+            if d.get("isSidechain") or d.get("isMeta"):
+                continue
+            cwd = cwd or d.get("cwd")
+            c = (d.get("message") or {}).get("content")
+            if d.get("type") == "assistant" and isinstance(c, list):
+                for x in c:
+                    if isinstance(x, dict) and x.get("type") == "tool_use":
+                        ev.append(("tool", d.get("timestamp"), x.get("name"), x.get("input") or {}, x.get("id")))
+            elif d.get("type") == "user":
+                if isinstance(c, list):
+                    for x in c:
+                        if isinstance(x, dict) and x.get("type") == "tool_result":
+                            r = x.get("content")
+                            if isinstance(r, list):
+                                r = " ".join(y.get("text", "") for y in r if isinstance(y, dict))
+                            ev.append(("result", x.get("tool_use_id"), clean(str(r or ""))[:1500]))
+                    c = " ".join(x.get("text", "") for x in c if isinstance(x, dict) and x.get("type") == "text")
+                if isinstance(c, str) and c.strip() and not c.lstrip().startswith(NOISE):
+                    ev.append(("user", d.get("timestamp"), clean(c)))
+    return cwd, ev
+
+
+def is_call(e, role):
+    return e[0] == "tool" and ((e[2] in ("Agent", "Task") and e[3].get("subagent_type") == role)
+                               or (e[2] == "Skill" and e[3].get("skill") == role))
+
+
+def role_record(role):
+    """the role's roster line and card: start, verdict day, state, re-evaluation model, done_when, evidence."""
+    lines = roster_lines()
+    line = next((l for l in lines if l.startswith(f"- {role} | ")), None)
+    src = re.search(r"원본: (\S+)", line or "")
+    card_path = next((x for x in (os.path.join(AGENTS, f"{role}.md"), src and src.group(1), draft_path(role))
+                      if x and os.path.exists(x)), None)
+    text, fm, card, sec = read_card(card_path) if card_path else ("", {}, {}, {})
+    def day(pat):
+        m = re.search(pat, line or "")
+        return m and m.group(1)
+    st = day(r"상태: (\S+)")
+    reeval = day(r"재평가 모델: ([^|\s]+)") or reeval_model(card)
+    return {"line": line, "card": card_path, "state": st or "수습", "start": day(r"시작 (\d\d-\d\d)"),
+            "verdict": day(r"판정 (\d\d-\d\d)"), "reeval": reeval, "done_when": card.get("done_when", ""),
+            "evidence": card.get("evidence", ""), "quotes": [l[2:] for l in sec.get("evidence quotes", []) if l.startswith("- ")],
+            "lines": lines}
+
+
+def year_day(mmdd_, near):
+    """MM-DD of a roster line as a date in the year closest to `near`."""
+    m, d = map(int, mmdd_.split("-"))
+    best = None
+    for y in (near.year - 1, near.year, near.year + 1):
+        try:
+            c = dt.date(y, m, d)
+        except ValueError:
+            continue
+        if best is None or abs((c - near).days) < abs((best - near).days):
+            best = c
+    return best
+
+
+def measure(role, since, until, kinds, rec):
+    """the five counts of design 5.4 from their sources; judge items for what only a judge can tell."""
+    calls, sessions = [], []
+    target = set(re.findall(r"^\[([\w:.-]+)\]", "\n".join(rec["quotes"]), re.M))
+    m = re.search(r"kind `([\w:.-]+)`", rec["evidence"])
+    if m and m.group(1) in {k for k, _ in kinds}:
+        target.add(m.group(1))
+    for f in glob.glob(os.path.join(CLAUDE_DIR, "*", "*.jsonl")):
+        proj = os.path.basename(os.path.dirname(f))
+        try:
+            if dt.date.fromtimestamp(os.path.getmtime(f)) < since:
+                continue
+        except OSError:
+            continue
+        cwd, ev = transcript(f)
+        users = [e for e in ev if e[0] == "user"]
+        if not users:
+            continue
+        sid = os.path.basename(f)[:8]
+        first = users[0][2]
+        b = re.search(r"sib/briefs/([\w.-]+)\.md", first)
+        ses = {"id": sid, "file": f, "kind": kind_of(kinds, cwd, first), "brief": b and b.group(1), "called": False,
+               "asks": 0, "corrections": [], "test": proj.startswith(TEST_PROJECT)}
+        results = {e[1]: e[2] for e in ev if e[0] == "result"}
+        for i, e in enumerate(ev):
+            d = local_day(e[1]) if e[0] in ("user", "tool") else None
+            if not d or not since <= d <= until:
+                continue
+            if e[0] == "tool" and e[2] == "AskUserQuestion":
+                ses["asks"] += 1
+            if is_call(e, role) and not ses["test"]:
+                ses["called"] = True
+                nxt = next((j for j in range(i + 1, len(ev)) if is_call(ev[j], role)), len(ev))
+                after = [x[2] for x in ev[i + 1:nxt] if x[0] == "user"][:5]  # up to the next call: a turn counts once
+                calls.append({"id": f"C{len(calls) + 1}", "session": sid, "kind": ses["kind"], "brief": ses["brief"],
+                              "at": e[1], "input": str(e[3].get("prompt") or e[3].get("args") or "")[:1500],
+                              "result": results.get(e[4], "")[:1500], "after": after,
+                              "correction": [t[:300] for t in after if CORRECTION.search(t)]})
+            if e[0] == "user" and e is not users[0] and len(e[2]) <= 160 and CORRECTION.search(e[2]):
+                ses["corrections"].append(e[2])
+        if not ses["test"]:
+            sessions.append(ses)
+    # use lines (desk's completion check) inside the window; a line names its call by session id or brief slug
+    lines = [(d, ref, r) for d, ref, r in use_lines(role, rec["lines"]) if since <= year_day(d, until) <= until]
+    matched = set()
+    for c in calls:
+        for d, ref, r in lines:
+            if (ref, d) not in matched and (c["session"] in ref or (c["brief"] and c["brief"] == ref)):
+                c["logged"] = r
+                matched.add((ref, d))
+                break
+    unmatched = [(d, ref, r) for d, ref, r in lines if (ref, d) not in matched]
+    called = {s["id"] for s in sessions if s["called"]}
+    repeat_items = [{"id": f"R{i + 1}", "session": s["id"], "called": s["id"] in called, "kind": s["kind"], "text": t[:300]}
+                    for i, (s, t) in enumerate((s, t) for s in sessions
+                                               if (not target or s["kind"] in target) for t in s["corrections"])]
+    # asked: questions in called sessions + desk records that point at those sessions or their briefs
+    keys = {s["id"] for s in sessions if s["called"]} | {s["brief"] for s in sessions if s["called"] and s["brief"]}
+    asked_desk = []
+    try:
+        for l in open(AREAS, errors="replace"):
+            if l.startswith("- ") and re.search(r"\|\s*asked\s*$", l.strip()) and any(k in l for k in keys):
+                asked_desk.append(clean(l)[2:160])
+    except OSError:
+        pass
+    try:
+        for day_, qs in json.load(open(E("AGENT_SCOUT_ASKED") or os.path.join(HOME, ".local/share/cmux/asked.json"))).items():
+            if since.isoformat() <= day_ <= until.isoformat():
+                asked_desk += [q[:160] for q in qs if any(k in q for k in keys)]
+    except (OSError, ValueError, AttributeError):
+        pass
+    kinds_called = {s["kind"] for s in sessions if s["called"]}
+    peers = [s for s in sessions if not s["called"] and s["kind"] in kinds_called]
+    return {"calls": calls, "unmatched": unmatched, "repeat_items": repeat_items, "target": sorted(target),
+            "asked": sum(s["asks"] for s in sessions if s["called"]) + len(asked_desk), "asked_desk": asked_desk,
+            "asked_peer": round(sum(s["asks"] for s in peers) / len(peers), 2) if peers else None, "peers": len(peers)}
+
+
+def measure_judge(role, rec, m, rule):
+    """one call to the judge (not a member): ok/miss/unclear per call no use line covers, yes/no per correction
+    candidate (did the user fix the role's result?) and per repeat candidate (the same correction the role was
+    hired to prevent?). Returns {id: verdict} or raises RuntimeError."""
+    spec = str(rule.get("judge") or "")
+    if not spec or spec == "off":
+        raise RuntimeError("no judge in the committee config")
+    items = []
+    for c in m["calls"]:
+        if "logged" not in c:
+            items.append(f"- {c['id']} (ok|miss|unclear by done_when) call input: {c['input'][:600]}\n  result: "
+                         f"{c['result'][:600]}\n  next user turns: " + " / ".join(t[:200] for t in c["after"]))
+        for j, t in enumerate(c["correction"]):
+            items.append(f"- {c['id']}.k{j + 1} (yes|no: does this turn correct the role's result?) {t}")
+    for r in m["repeat_items"][:200]:
+        items.append(f"- {r['id']} (yes|no: is this the same correction as the evidence below?) {r['text']}")
+    if not items:
+        return {}
+    prompt = (f"You count the results of the agent `{role}`. Its done_when: {rec['done_when']}\n"
+              f"The corrections it was hired to prevent (evidence):\n" + "\n".join(f"- {q}" for q in rec["quotes"])
+              + "\n\nGrade each item. Return JSON {\"grades\": [{\"id\", \"verdict\", \"why\"}]}, one per item.\n\n"
+              + "\n".join(items))
+    runner, _, model = spec.partition(":")
+    PANES["rule"] = rule
+    try:
+        return {g.get("id"): g.get("verdict") for g in run_model("judge", runner, None, model, "measure", prompt)}
+    finally:
+        close_panes()
+
+
+def baseline(rec, rule):
+    """the repeat baseline: the evidence's corrections per 7 days of the mining window that found them."""
+    m = re.search(r"quorum-(\d{4}-\d\d-\d\d)", rec["evidence"])
+    days = int(rule.get("days", 21))
+    if m:
+        try:
+            a, b = json.load(open(os.path.join(HR, f"quorum-{m.group(1)}.json")))["period"]
+            days = (dt.date.fromisoformat(b) - dt.date.fromisoformat(a)).days + 1
+        except (OSError, ValueError, KeyError):
+            pass
+    return round(len(rec["quotes"]) * 7 / days, 2)
+
+
+def verdict_of(rec, n, extended, shrunk):
+    """design 5.3 (probation) and 5.5 (contract): (result, decided by). Changes to the role go to the user."""
+    ok_rate = n["ok"] / n["judged"] if n["judged"] else None
+    if rec["state"] in ("수습", "probation"):
+        if n["uses"] < 3:
+            return ("해체 (연장 뒤에도 uses < 3)", "user") if extended else ("수습 연장 7일 (uses < 3)", "desk")
+        if ok_rate is not None and ok_rate >= 2 / 3 and n["corrected"] <= 1:
+            return "계약 (블라인드 비교 남음)", "desk"
+        if rec["reeval"] != "-" and ok_rate is not None and ok_rate < 2 / 3:
+            return f"재평가 {rec['reeval']} (5.6)", "user"
+        return "퇴출", "user"
+    if n["uses"] < 3:
+        return "해체", "user"
+    if n["corrected"] >= 3:
+        return ("퇴출 (축소 뒤에도 corrected)", "user") if shrunk else ("축소", "user")
+    if n["repeat"] is not None and n["repeat"] > 0 and n["repeat"] >= n["baseline"]:
+        return "퇴출 (repeat 가 기준선과 같음)", "user"
+    if ok_rate is not None and ok_rate >= 0.9 and n["repeat"] == 0 and n["uses"] >= 5:
+        return "재계약 + 확대 후보", "user"
+    return "재계약", "desk"
+
+
+def cmd_measure(args):
+    if not args or args[0].startswith("-"):
+        die("usage: agent-scout measure <role> [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--judge] [--write [--by user]] [--json]", 2)
+    role = args[0]
+    members, rule, kinds = load_config()
+    if role == "desk" or role == "judge" or role == "lead" or role.startswith("lead:"):
+        return cmd_measure_standing(role, args, rule)
+    if any(mb["name"] == role for mb in members):
+        return cmd_measure_member(role, args, members, rule)
+    rec = role_record(role)
+    if not rec["line"] and not rec["card"]:
+        die(f"no roster line and no card for {role}", 2)
+    now = today()
+    try:
+        since = dt.date.fromisoformat(opt(args, "--since")) if opt(args, "--since") else (
+            year_day(rec["start"], now) if rec["start"] else None)
+        until = dt.date.fromisoformat(opt(args, "--until")) if opt(args, "--until") else None
+    except ValueError:
+        die("--since/--until take YYYY-MM-DD", 2)
+    if not since:
+        die(f"{role} has no start date on the roster; pass --since", 2)
+    if not until:  # the verdict window: probation 7 days, contract 14 days; never past today
+        until = min(now, since + dt.timedelta(days=(7 if rec["state"] in ("수습", "probation") else 14)))
+    m = measure(role, since, until, kinds, rec)
+    graded, judge_error = {}, None
+    if "--judge" in args:
+        try:
+            graded = measure_judge(role, rec, m, rule)
+        except RuntimeError as e:
+            judge_error = str(e)
+    calls = m["calls"]
+    for c in calls:
+        c["verdict"] = c.get("logged") if c.get("logged") in ("ok", "miss") else graded.get(c["id"])
+        c["fixed"] = c.get("logged") == "corrected" or any(graded.get(f"{c['id']}.k{j + 1}") == "yes"
+                                                           for j in range(len(c["correction"])))
+    # ok is a share of the uses found: a roster use line whose session was not found is not a use, so it is
+    # shown beside the count, never added to it (11-24: uses 0 but ok 1/1)
+    ok_lines = [r for _, _, r in m["unmatched"] if r in ("ok", "miss")]
+    ok = sum(c["verdict"] == "ok" for c in calls)
+    judged = ok + sum(c["verdict"] == "miss" for c in calls)
+    unjudged = [c["id"] for c in calls if c["verdict"] not in ("ok", "miss", "unclear")]
+    corr_open = [f"{c['id']}.k{j + 1}" for c in calls for j in range(len(c["correction"]))
+                 if f"{c['id']}.k{j + 1}" not in graded and c.get("logged") != "corrected"]
+    corrected = sum(c["fixed"] for c in calls) + sum(r == "corrected" for _, _, r in m["unmatched"])
+    rep_yes = [r for r in m["repeat_items"] if graded.get(r["id"]) == "yes"]
+    rep_open = [r for r in m["repeat_items"] if r["id"] not in graded]
+    base = baseline(rec, rule)
+    n = {"uses": len(calls), "ok": ok, "judged": judged, "corrected": corrected,
+         "repeat": sum(r["called"] for r in rep_yes) if not rep_open else None,
+         "repeat_uncalled": sum(not r["called"] for r in rep_yes) if not rep_open else None,
+         "baseline": base, "asked": m["asked"]}
+    vlines = [l for l in rec["lines"] if re.match(r"^- [\d-]+ \| " + re.escape(role) + r" \| verdict \|", l)]
+    result, by = verdict_of(rec, n, any("수습 연장" in l for l in vlines), any("| 축소 |" in l for l in vlines))
+    provisional = n["uses"] >= 3 and (unjudged or corr_open or rep_open)
+    if provisional:
+        result = f"잠정 {result} — 심판 안 된 항목 있음 (--judge)"
+    rp = "?" if n["repeat"] is None else n["repeat"]
+    ru = "?" if n["repeat_uncalled"] is None else n["repeat_uncalled"]
+    line = (f"- {mmdd(now)} | {role} | verdict | 창 {mmdd(since)}..{mmdd(until)} · uses {n['uses']} · ok {ok}/{judged} · "
+            f"corrected {corrected} · repeat {rp} (기준 {base}/7일, uncalled {ru}) · asked {n['asked']} | {result} | by:{by}")
+    if "--json" in args:
+        print(json.dumps({"role": role, "window": [since.isoformat(), until.isoformat()], "counts": n, "result": result,
+                          "by": by, "line": line, "calls": calls, "unmatched_use_lines": m["unmatched"],
+                          "repeat_items": m["repeat_items"], "judge_error": judge_error}, ensure_ascii=False, indent=1))
+    else:
+        roster_n = len(use_lines(role, rec["lines"]))
+        print(f"{role} · {rec['state']} · 창 {since}..{until} · 재평가 모델 {rec['reeval']}")
+        print(f"  uses       {n['uses']:<6} Claude 세션 기록 {CLAUDE_DIR}/*/*.jsonl 의 Agent/Task subagent_type={role} "
+              f"(Skill skill={role}) 호출, {TEST_PROJECT}* 제외. 명부 use 줄 {roster_n}개(정정 줄로 뺀 것 제외)는 대조용"
+              + "".join(f"\n               {c['id']} {c['at'][:16]} {c['session']} {c['brief'] or ''}" for c in calls))
+        logged = sum(c.get("logged") in ("ok", "miss") for c in calls)
+        print(f"  ok         {ok}/{judged:<4} 호출에 맞는 명부 use 줄(데스크 완료 대조) {logged}건 + 심판 done_when 판정 "
+              f"{sum(c['id'] in graded for c in calls)}건 (unclear 는 분모에서 뺌)"
+              + (f" — 세션을 찾지 못한 use 줄 {len(ok_lines)}건은 uses 가 아니라 세지 않음: "
+                 + ", ".join(f"{d} {ref} {r}" for d, ref, r in m["unmatched"] if r in ("ok", "miss")) if ok_lines else "")
+              + (f" — 판정 안 된 호출 {', '.join(unjudged)}" if unjudged else ""))
+        print(f"  corrected  {corrected:<6} 호출 뒤 사용자 턴 5개 중 CORRECTION 에 걸린 턴 {sum(len(c['correction']) for c in calls)}건을 심판이 가림"
+              f" + 명부 `use … corrected` 줄" + (f" — 가리지 않은 후보 {len(corr_open)}건" if corr_open else ""))
+        print(f"  repeat     {rp:<6} 창 안 kind {','.join(m['target']) or '(전체)'} 세션의 교정 {len(m['repeat_items'])}건을 심판이 근거 묶음과 대조; "
+              f"uncalled {ru}; 기준 {base}/7일 (근거 교정 {len(rec['quotes'])}건, 발굴 창 기준)"
+              + (f" — 가리지 않은 후보 {len(rep_open)}건" if rep_open else ""))
+        print(f"  asked      {n['asked']:<6} 부른 세션의 AskUserQuestion + 그 세션·브리프를 가리키는 asked.json·Decision log `asked` 줄 "
+              f"{len(m['asked_desk'])}건; 부르지 않은 같은 kind 세션 평균 {m['asked_peer']} ({m['peers']}개)")
+        if judge_error:
+            print(f"  judge error: {judge_error}")
+        print(f"\n{line}")
+    if "--write" in args:
+        if provisional:
+            print("not written: the counts are provisional (run with --judge)", file=sys.stderr)
+            return 3
+        roster_add("Log", line)
+        print(f"written to {ROSTER}")
+    return 0
+
+
+# ---------------------------------------------------------------- standing roles (design 12: every agent is replaceable)
+# The desk, the area lead, the judge and each committee member stand under the same contract as an installed agent:
+# numbers from a stated source, a verdict day, a keep / revise / replace line, and the user as the one who decides.
+# Nothing here reads a role's own report as its score.
+
+BRIEF = E("AGENT_SCOUT_BRIEF") or "brief"
+DESK_EVAL = E("AGENT_SCOUT_DESK_EVAL") or os.path.join(HOME, ".local/share/desk-eval")
+BOARD = E("AGENT_SCOUT_BOARD") or os.path.join(HOME, ".local/share/cmux/board.jsonl")
+DESK_KEEP, DESK_REPLACE = 1, 5  # 7-day sum of sessions the desk closed with work left (user 11-24)
+LEAD_RATIO, LEAD_ASKED, LEAD_STOP, LEAD_BACK = 0.05, 5, 3, 2  # the area's Trial lines (orch-areas.md)
+JUDGE_LIFTED = 2  # holds the user lifted in 14 days
+
+
+def window(args, days):
+    """the verdict window: `days` days ending today (or --until); --since moves the start."""
+    try:
+        until = dt.date.fromisoformat(opt(args, "--until")) if opt(args, "--until") else today()
+        since = dt.date.fromisoformat(opt(args, "--since")) if opt(args, "--since") else until - dt.timedelta(days=days - 1)
+    except ValueError:
+        die("--since/--until take YYYY-MM-DD", 2)
+    return since, until
+
+
+def days_of(since, until):
+    return [since + dt.timedelta(days=i) for i in range((until - since).days + 1)]
+
+
+def desk_audit(day):
+    """`brief audit --day D --json`: the tool's re-judgement of every close that day (never the desk's own count)."""
+    try:
+        out = subprocess.run([BRIEF, "audit", "--day", day.isoformat(), "--json"], capture_output=True, text=True, timeout=600)
+        return json.loads(out.stdout or "[]")
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return None
+
+
+def desk_eval(since):
+    """the newest desk-eval score per set: accuracy, harm, friction and new harm against the version before.
+    A score older than the window start is reported but not used."""
+    out = []
+    for f in sorted(glob.glob(os.path.join(DESK_EVAL, "scores", "*.json"))):
+        try:
+            d = json.load(open(f))
+        except (OSError, ValueError):
+            continue
+        v = (d.get("versions") or [None])[-1]
+        m = re.match(r"(\d{4}-\d\d-\d\d)", os.path.basename(f))
+        if not v or not m:
+            continue
+        out.append({"set": d.get("set"), "day": m.group(1), "file": f, "spec": v.get("spec"), "accuracy": v.get("accuracy"),
+                    "harm": v.get("harm"), "friction": v.get("friction"),
+                    "new_harm": len((v.get("vs_prev") or {}).get("new_harm") or []),
+                    "fresh": dt.date.fromisoformat(m.group(1)) >= since})
+    latest = {}
+    for x in out:
+        latest[x["set"]] = x
+    return list(latest.values())
+
+
+def standing_lines(role, lines):
+    return [l for l in lines if re.match(r"^- [\d-]+ \| " + re.escape(role) + r" \| verdict \|", l)]
+
+
+def measure_desk(args, rule):
+    since, until = window(args, 7)
+    per_day, missing = [], []
+    for d in days_of(since, until):
+        au = desk_audit(d)
+        if au is None:
+            missing.append(d.isoformat())
+            continue
+        per_day.append((d, sum(a.get("by") == "desk" for a in au if a.get("verdict") != "open"),
+                        sum(a.get("by") == "desk" and a.get("verdict") == "left" for a in au),
+                        sum(bool(a.get("held")) or a.get("verdict") == "open" for a in au)))
+    left = sum(x[2] for x in per_day)
+    held = sum(x[3] for x in per_day)
+    ev = desk_eval(since)
+    fresh = [x for x in ev if x["fresh"]]
+    new_harm = sum(x["new_harm"] for x in fresh)
+    context = []
+    try:
+        for l in open(BOARD):
+            r = json.loads(l)
+            if since.isoformat() <= r.get("day", "") <= until.isoformat():
+                context.append(r)
+    except (OSError, ValueError):
+        pass
+    before = standing_lines("desk", roster_lines())
+    if left >= DESK_REPLACE:
+        result = f"교체 후보 (일 남은 채 닫음 {left} ≥ {DESK_REPLACE})"
+    elif left > DESK_KEEP and before and "| 수정" in before[-1]:
+        result = f"교체 후보 (수정 뒤 재발: 일 남은 채 닫음 {left})"
+    elif left > DESK_KEEP or new_harm:
+        result = "수정 (" + " · ".join(([f"일 남은 채 닫음 {left} > {DESK_KEEP}"] if left > DESK_KEEP else [])
+                                     + ([f"desk-eval 새 harm {new_harm}"] if new_harm else [])) + ")"
+    else:
+        result = "유지"
+    if not fresh:
+        result += " — 이 창의 desk-eval 없음: 판단 정확도는 재지 않음"
+    acc = " · ".join(f"{x['set']} 정답 {x['accuracy']:.0%} harm {x['harm']} 괜히 물음 {x['friction']} 새 harm {x['new_harm']}"
+                     for x in fresh) or "-"
+    line = (f"- {mmdd(today())} | desk | verdict | 창 {mmdd(since)}..{mmdd(until)} · 일 남은 채 닫음 {left} · "
+            f"끝났는데 열어 둠 {held} · desk-eval {acc} | {result} | by:user")
+    if "--json" in args:
+        print(json.dumps({"role": "desk", "window": [since.isoformat(), until.isoformat()], "left": left, "held": held,
+                          "days": [[d.isoformat(), c, l, h] for d, c, l, h in per_day], "audit_missing": missing,
+                          "desk_eval": ev, "context": context, "result": result, "line": line}, ensure_ascii=False, indent=1))
+        return line
+    print(f"desk · 창 {since}..{until} · 판정 매주 월요일 · 판정자 user (데스크는 자기 판정을 쓰지 않음)")
+    print(f"  일 남은 채 닫음  {left:<4} `{BRIEF} audit --day D --json` 의 by=desk · verdict=left (도구가 다시 판정). "
+          f"유지 ≤ {DESK_KEEP} · 수정 {DESK_KEEP + 1}~{DESK_REPLACE - 1} · 교체 후보 ≥ {DESK_REPLACE} 또는 수정 뒤 재발")
+    for d, c, l, h in per_day:
+        print(f"                  {d} 데스크가 닫음 {c} · 일 남은 채 {l} · 열어 둠 {h}")
+    if missing:
+        print(f"                  audit 실패: {', '.join(missing)}")
+    print(f"  끝났는데 열어 둠 {held:<4} 같은 audit 의 held·open (닫기 기준 위반의 다른 쪽, 교체선에는 넣지 않음)")
+    print(f"  desk-eval       {DESK_EVAL}/scores 의 세트별 최신 점수 (판정자 둘이 사용자 말로 매긴 정답, 데스크 정의를 도구 없이 재생)")
+    for x in ev:
+        print(f"                  {x['set']} {x['day']} {x['spec']}: 정답 {x['accuracy']:.0%} · harm {x['harm']} · 괜히 물음 "
+              f"{x['friction']} · 앞 버전 대비 새 harm {x['new_harm']}" + ("" if x["fresh"] else " — 창보다 오래됨, 쓰지 않음"))
+    if not fresh:
+        print("                  이 창에 새 점수가 없다: 주간 실행(weekly.sh)이 돌지 않았다")
+    print(f"  참고(판정에 안 씀) {BOARD} 의 데스크가 적거나 분류한 값:")
+    for r in context:
+        print(f"                  {r['day']} 넘긴 결정 {r.get('asked', '-')} · 스스로 가능 {r.get('avoidable', '-')} · "
+              f"고쳐 말함 {r.get('corrections', '-')} · 교훈 어김 {r.get('miss', '-')}")
+    print(f"\n{line}")
+    return line
+
+
+def area_log(key):
+    """(header, decision log lines) of one area in orch-areas.md; key is the letter (A) or the header text."""
+    try:
+        text = open(AREAS).read()
+    except OSError:
+        die(f"no area profiles: {AREAS}")
+    for head, body in re.findall(r"^## (.+?)\n(.*?)(?=^## |\Z)", text, re.M | re.S):
+        if head.split(".")[0].strip() == key or head.strip() == key:
+            log = body.split("### Decision log", 1)[-1].split("\n### ", 1)[0]
+            return head, [l for l in log.splitlines() if re.match(r"^- \d\d-\d\d \d\d:\d\d \|", l)]
+    die(f"no area {key!r} in {AREAS}", 2)
+
+
+def reverser(line, log):
+    """who undid a decision line: its `reversed_by` tag, or a later line naming its time with an undo word."""
+    m = re.search(r"\|\s*reversed_by:\s*([^|]+)", line)
+    if m:
+        return "reversed_by:" + m.group(1).strip()[:60]
+    stamp = line[2:13]
+    for l in log:
+        if l is not line and stamp in l[14:] and re.search(r"되돌|뒤집|전달하지 않|reversed|undo", l):
+            m = re.search(r"\| by:(\w+)", l)
+            return f"by:{m.group(1) if m else '?'} {l[2:13]}"
+    return None
+
+
+def measure_lead(role, args):
+    key = role.split(":", 1)[1] if ":" in role else "A"
+    head, log = area_log(key)
+    since, until = window(args, 7)
+    inside = [l for l in log if since <= year_day(l[2:7], until) <= until]
+    lead = [l for l in inside if "| by:lead |" in l]
+    rev_lead = [(l, reverser(l, log)) for l in lead]
+    rev_lead = [(l, r) for l, r in rev_lead if r]
+    rev_all = [l for l in inside if reverser(l, log)]
+    asked = [l for l in inside if re.search(r"\|\s*asked\s*(\||$)", l)]
+    ndays = len(days_of(since, until))
+    ratio = len(rev_lead) / len(lead) if lead else None
+    if len(rev_lead) >= LEAD_BACK:
+        result = f"1단계로 되돌림 (by:lead 결정 {len(rev_lead)}건 뒤집힘 ≥ {LEAD_BACK})"
+    elif len(rev_all) >= LEAD_STOP:
+        result = f"멈춤 (영역 reversed {len(rev_all)} ≥ {LEAD_STOP})"
+    elif lead and ratio <= LEAD_RATIO and len(asked) / ndays < LEAD_ASKED and len(rev_all) <= LEAD_BACK:
+        result = "다음 단계 조건 충족"
+    else:
+        result = "그대로 (다음 단계 조건 미달)" if lead else "판정 불가 (by:lead 결정 0건)"
+    r = "-" if ratio is None else f"{ratio:.0%}"
+    line = (f"- {mmdd(today())} | lead:{key} | verdict | 창 {mmdd(since)}..{mmdd(until)} · by:lead {len(lead)} · 뒤집힘 "
+            f"{len(rev_lead)} ({r}) · reversed(영역) {len(rev_all)} · asked {len(asked)} (하루 {len(asked) / ndays:.1f}) | "
+            f"{result} | by:user")
+    if "--json" in args:
+        print(json.dumps({"role": f"lead:{key}", "area": head, "window": [since.isoformat(), until.isoformat()],
+                          "lead": lead, "reversed_lead": rev_lead, "reversed_all": rev_all, "asked": asked,
+                          "result": result, "line": line}, ensure_ascii=False, indent=1))
+        return line
+    print(f"lead:{key} ({head}) · 창 {since}..{until} · 판정자 user · 조건은 그 영역 프로파일의 Trial")
+    print(f"  by:lead     {len(lead):<4} {AREAS} 의 Decision log 중 by:lead 줄 (brief lead 만 쓴다)")
+    print(f"  뒤집힘      {len(rev_lead):<4} 그중 reversed_by 가 붙었거나 뒤의 줄이 그 시각을 들어 되돌린 것 — 누가 뒤집었든 센다(사용자 11-24). "
+          f"비율 {r}, 다음 단계 ≤ {LEAD_RATIO:.0%}, {LEAD_BACK}건 이상이면 1단계로")
+    for l, who in rev_lead:
+        print(f"              {l[2:13]} ← {who}")
+    print(f"  reversed    {len(rev_all):<4} 영역 전체(데스크·영역 담당·사용자 결정)에서 뒤집힌 줄. {LEAD_STOP} 이상이면 멈춤")
+    print(f"  asked       {len(asked):<4} `| asked` 가 붙은 줄, 하루 {len(asked) / ndays:.1f} (다음 단계 < {LEAD_ASKED})")
+    print("  주의: reversed_by·asked 표시는 데스크가 쓴다. 영역 담당의 숫자에 데스크의 판단이 들어간다")
+    print(f"\n{line}")
+    return line
+
+
+def measure_judge_role(args, rule):
+    since, until = window(args, 14)
+    lines = roster_lines()
+    lifted = [l for l in lines if "| committee | lifted |" in l and since <= year_day(l[2:7], until) <= until]
+    holds = 0
+    for f in glob.glob(os.path.join(HR, "quorum-*.json")):
+        m = re.search(r"quorum-(\d{4}-\d\d-\d\d)", f)
+        if m and since <= dt.date.fromisoformat(m.group(1)) <= until:
+            try:
+                holds += sum(g.get("result") == "hold" for g in json.load(open(f)).get("candidates", []))
+            except (OSError, ValueError):
+                pass
+    result = f"교체 검토 (lifted {len(lifted)} ≥ {JUDGE_LIFTED})" if len(lifted) >= JUDGE_LIFTED else "유지"
+    line = (f"- {mmdd(today())} | judge | verdict | 창 {mmdd(since)}..{mmdd(until)} · {rule.get('judge')} · hold {holds} · "
+            f"lifted {len(lifted)} · 채점 정확도 지표 없음 | {result} | by:user")
+    if "--json" in args:
+        print(json.dumps({"role": "judge", "spec": rule.get("judge"), "window": [since.isoformat(), until.isoformat()],
+                          "holds": holds, "lifted": lifted, "result": result, "line": line}, ensure_ascii=False, indent=1))
+        return line
+    print(f"judge ({rule.get('judge')}) · 창 {since}..{until} · 판정자 user")
+    print(f"  hold        {holds:<4} {HR}/quorum-*.json 에서 심판이 보류를 건 후보")
+    print(f"  lifted      {len(lifted):<4} 명부 `committee | lifted` 줄: 사용자가 심판의 보류를 푼 수. {JUDGE_LIFTED} 이상이면 교체 검토")
+    print("  채점 정확도 지표 없음: 심판의 근거·적합 점수가 맞았는지 재는 기록이 없다")
+    print(f"\n{line}")
+    return line
+
+
+def review_verdict(r, rv):
+    why = []
+    if r["runs"] < int(rv["min_runs"]):
+        return "wait", [f"{r['runs']} of {rv['min_runs']} runs"]
+    # pass rate is about proposing: only members that sat min_runs propose meetings are held to it
+    if r["convene_runs"] >= int(rv["min_runs"]) and r["pass_rate"] < float(rv["pass_rate_min"]):
+        why.append(f"pass rate {r['pass_rate']:.2f} < {rv['pass_rate_min']}")
+    if r["judge"] is not None and r["judge"] < float(rv["judge_min"]):
+        why.append(f"judge {r['judge']:.2f} < {rv['judge_min']}")
+    if r["reversed"] > int(rv["reversed_max"]):
+        why.append(f"reversed {r['reversed']} > {rv['reversed_max']}")
+    return (("bench" if rv["on_fail"] == "bench" else "warn") if why else "keep"), why
+
+
+def cmd_measure_member(name, args, members, rule):
+    r = member_records(members)[name]
+    rv = rule["review"]
+    verdict, why = review_verdict(r, rv)
+    j = "-" if r["judge"] is None else f"{r['judge']:.2f}"
+    if "--json" in args:
+        print(json.dumps(dict(r, member=name, verdict=verdict, why=why), ensure_ascii=False, indent=1))
+        return 0
+    print(f"{name} · 위원 · 판정자 user (교체 대상 위원은 자기 자리 후보의 평가에서 빠진다: evaluate --replacing {name})")
+    print(f"  runs        {r['runs']:<5} {HR}/quorum-*.json·eval-*.json 중 앉은 회의 (발굴 {r['convene_runs']}, 평가 {r['eval_runs']})")
+    print(f"  pass rate   {r['pass_rate']:<5.2f} 통과한 제안 {r['passed']} / 제안 {r['proposed']} (발굴 회의 {rv['min_runs']}회 이상일 때만, 선 {rv['pass_rate_min']})")
+    print(f"  judge       {j:<5} 심판의 블라인드 점수 평균 (선 {rv['judge_min']})")
+    print(f"  reversed    {r['reversed']:<5} 사용자가 거절한 지지 후보 {r['rejected']} + 지지한 역할의 corrected {r['corrected']}"
+          f" + 수습 실패 {r['probation_failed']} + 거절했는데 사용자가 들인 역할 {r['overruled']} (선 {rv['reversed_max']})")
+    print(f"  hired       {r['hired']}")
+    print(f"\n{name}: {verdict}" + (f" — {'; '.join(why)}" if why else "") + "  (기록은 agent-scout review 가 남긴다)")
+    return 0
+
+
+def cmd_measure_standing(role, args, rule):
+    line = (measure_desk(args, rule) if role == "desk" else measure_judge_role(args, rule) if role == "judge"
+            else measure_lead(role, args))
+    if "--write" in args:
+        if opt(args, "--by") != "user":
+            print(f"not written: the verdict of {role} is the user's; nobody writes their own (rerun with --by user "
+                  "from the user's pane)", file=sys.stderr)
+            return 3
+        roster_add("Log", line)
+        print(f"written to {ROSTER}")
+    return 0
+
+
+def cmd_log(args):
+    if len(args) < 2 or args[1] not in ("ok", "miss", "corrected", "passed", "failed"):
+        die("usage: agent-scout log <role> ok|miss|corrected|passed|failed [--ref R]", 2)
+    roster_add("Log", f"- {mmdd(today())} | {args[0]} | use | ref:{opt(args, '--ref') or '-'} | {args[1]}")
+    return 0
+
+
+def cmd_reject(args):
+    if not args or args[0].startswith("-"):
+        die("usage: agent-scout reject <n|kind> [--why W]", 2)
+    run = latest_run()
+    g = find_candidate(run, args[0])
+    backers = g["backers"] + [v["scout"] for v in g["voted"]]
+    roster_add("Log", f"- {mmdd(today())} | committee | reject | kind {g['kind']} | backers: {','.join(backers)} | "
+               f"{(opt(args, '--why') or '-').replace('|', '/')} | ref:quorum-{run['date']}")
+    print(f"recorded: the user turned down {g['role']} (counts against {', '.join(backers)})")
+    return 0
+
+
+def voids(lines=None):
+    """correction lines of the roster: `- MM-DD | <role> | void | use ref:<R> | <why> | by:..` makes a `use` line not
+    count; `- MM-DD | <role> | void | hire backer:<member> | <why> | by:..` takes a member off a hire (and off the pass
+    it got for that role). Lines are never edited; a correction is a new line."""
+    out = {"use": set(), "backer": set()}
+    for l in lines if lines is not None else roster_lines():
+        m = re.match(r"^- [\d-]+ \| ([\w-]+) \| void \| (use ref:(\S+)|hire backer:([\w-]+))\s*\|", l)
+        if m and m.group(3):
+            out["use"].add((m.group(1), m.group(3)))
+        elif m:
+            out["backer"].add((m.group(1), m.group(4)))
+    return out
+
+
+def use_lines(role, lines=None):
+    """(MM-DD, ref, result) of the role's `use` lines that no void line cancels."""
+    lines = lines if lines is not None else roster_lines()
+    vd = voids(lines)["use"]
+    out = []
+    for l in lines:
+        m = re.match(r"^- ([\d-]+) \| " + re.escape(role) + r" \| use \| ref:(\S+) \| (\w+)", l)
+        if m and (role, m.group(2)) not in vd:
+            out.append((m.group(1), m.group(2), m.group(3)))
+    return out
+
+
+def member_records(members):
+    """per member, from every committee run and the roster — computed here, never reported by the member."""
+    runs = [json.load(open(f)) for f in sorted(glob.glob(os.path.join(HR, "quorum-*.json")))]
+    evals = [json.load(open(f)) for f in eval_files()]
+    log = roster_lines()
+    vd = voids(log)["backer"]
+    hires = {}
+    for l in log:
+        m = re.match(r"^- [\d-]+ \| ([\w-]+) \| hire \| backers: ([\w,-]+)", l)
+        if m:
+            hires[m.group(1)] = [b for b in m.group(2).split(",") if (m.group(1), b) not in vd]
+    rec = {}
+    for mb in members:
+        n = mb["name"]
+        r = {"runs": 0, "convene_runs": 0, "eval_runs": 0, "proposed": 0, "passed": 0, "graded": 0, "score": 0.0,
+             "rejected": 0, "hired": 0, "probation_passed": 0, "probation_failed": 0, "corrected": 0, "overruled": 0}
+        said = {}  # role -> this member's latest evaluate verdict
+        for ev in evals:  # an evaluation: the judge's grounding grade of each review counts like a proposal grade
+            if not any(s["name"] == n for s in ev.get("members", [])):
+                continue
+            r["runs"] += 1
+            r["eval_runs"] += 1
+            for role, x in ev.get("results", {}).items():
+                for rv in x["reviews"]:
+                    if rv["member"] == n:
+                        said[role] = rv.get("verdict")
+                    if rv["member"] == n and rv.get("grounded") is not None:
+                        r["graded"] += 1
+                        r["score"] += rv["grounded"] / 2
+        # the user went against the member: it said reject and the user put the role in anyway (user 11-24)
+        r["overruled"] = sum(1 for role, v in said.items() if v == "reject" and role in hires)
+        for run in runs:
+            if not any(s["name"] == n for s in run.get("scouts", [])):
+                continue
+            r["runs"] += 1
+            r["convene_runs"] += 1
+            r["proposed"] += len(run.get("proposals", {}).get(n, []))
+            r["passed"] += sum(1 for g in run.get("candidates", []) if n in g["backers"] and g["result"] in ("pass", "hold")
+                               and (g["role"], n) not in vd)
+            for g in (run.get("judge") or {}).get("grades") or []:
+                if g.get("member") == n:
+                    r["graded"] += 1
+                    r["score"] += (g["evidence"] + g["fit"]) / 4
+        for l in log:
+            if re.search(r"\| committee \| reject \|.*backers: [\w,-]*\b" + re.escape(n) + r"\b", l):
+                r["rejected"] += 1
+            m = re.match(r"^- [\d-]+ \| ([\w-]+) \| use \| ref:(\S+) \| (corrected|passed|failed)", l)
+            if m and n in hires.get(m.group(1), []) and (m.group(1), m.group(2)) not in voids(log)["use"]:
+                r[{"corrected": "corrected", "passed": "probation_passed", "failed": "probation_failed"}[m.group(3)]] += 1
+        r["hired"] = sum(1 for b in hires.values() if n in b)
+        r["pass_rate"] = r["passed"] / r["proposed"] if r["proposed"] else 0.0
+        r["judge"] = r["score"] / r["graded"] if r["graded"] else None
+        r["reversed"] = r["rejected"] + r["corrected"] + r["probation_failed"] + r["overruled"]
+        rec[n] = r
+    return rec
+
+
+def set_status(name, status):
+    """rewrite the member's status cell in the config (follows the symlink)."""
+    real = os.path.realpath(CONFIG)
+    lines = open(real).read().splitlines()
+    for i, l in enumerate(lines):
+        cells = l.strip().strip("|").split("|")
+        if l.strip().startswith("|") and len(cells) >= 7 and cells[0].strip() == name:
+            cells[6] = f" {status} "  # status is the 7th column; an optional `rounds` column may follow
+            lines[i] = "|" + "|".join(cells) + "|"
+    open(real, "w").write("\n".join(lines) + "\n")
+
+
+def cmd_review(args):
+    members, rule, _ = load_config()
+    rv = rule["review"]
+    rec = member_records(members)
+    out = []
+    for mb in members:
+        r = rec[mb["name"]]
+        verdict, why = review_verdict(r, rv)
+        out.append(dict(r, member=mb["name"], status=mb["status"], verdict=verdict, why=why))
+    applied = []
+    if "--no-apply" not in args:
+        for o in out:
+            if o["verdict"] == "bench" and o["status"] != "off":
+                set_status(o["member"], "off")
+                applied.append(o["member"])
+            roster_add("Log", f"- {mmdd(today())} | {o['member']} | review | {o['verdict']} | proposed {o['proposed']} · "
+                       f"passed {o['passed']} · judge {o['judge'] if o['judge'] is None else round(o['judge'], 2)} · "
+                       f"reversed {o['reversed']} · hired {o['hired']}" + (f" | {'; '.join(o['why'])}" if o["why"] else ""))
+    if "--json" in args:
+        print(json.dumps(out, ensure_ascii=False, indent=1))
+    else:
+        for o in out:
+            j = "-" if o["judge"] is None else f"{o['judge']:.2f}"
+            print(f"{o['member']:<10} {o['verdict']:<5} runs {o['runs']} · proposed {o['proposed']} · passed {o['passed']} "
+                  f"({o['pass_rate']:.2f}) · judge {j} · reversed {o['reversed']} · hired {o['hired']}"
+                  + (f"  ← {'; '.join(o['why'])}" if o["why"] else ""))
+        for m in applied:
+            print(f"benched {m}: status off in {CONFIG}. Find a replacement member (a new approach, another model) "
+                  f"with /agent-scout and add its row.")
+    return 0
+
+
+def cmd_due(args):
+    _, rule, _ = load_config()
+    runs = sorted(glob.glob(os.path.join(HR, "quorum-*.json")))
+    every = int(rule.get("every", 14))
+    if not runs:
+        print("due: the committee has never met")
+        return 0
+    last = dt.date.fromisoformat(re.search(r"quorum-(\d{4}-\d\d-\d\d)", runs[-1]).group(1))
+    nxt = last + dt.timedelta(days=every)
+    if today() >= nxt:
+        print(f"due: last meeting {last}, every {every} days")
+        return 0
+    print(f"not due: last meeting {last}, next {nxt}")
+    return 1
+
+
+# ---------------------------------------------------------------- board (read-only status of committee meetings)
+
+RUN_DIR = re.compile(r"^(\d{4}-\d\d-\d\d)-(.+)-(propose|vote|judge|evaluate|egrade)-(\d+)$")
+ROUND_KO = {"propose": "제안", "vote": "표결", "judge": "채점", "evaluate": "평가", "egrade": "채점"}
+RESULT_KO = {"pass": "통과", "hold": "보류", "watch": "관찰", "drop": "탈락",
+             "approve": "승인", "revise": "수정", "reject": "거절"}
+
+
+def meetings():
+    """committee meetings running now, from the process table: [{pid, kind, roles, started}].
+    AGENT_SCOUT_PS names a file with `ps -axo pid=,lstart=,command=` output (tests)."""
+    try:
+        out = (open(E("AGENT_SCOUT_PS")).read() if E("AGENT_SCOUT_PS") else
+               subprocess.run(["ps", "-axo", "pid=,lstart=,command="], capture_output=True, text=True, timeout=10).stdout)
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    found = []
+    for line in out.splitlines():
+        m = re.match(r"\s*(\d+)\s+(\w{3} \w{3}\s+\d+ [\d:]{8} \d{4})\s+(.*)$", line)
+        # argv[0] (or the interpreter's script) is agent-scout itself; a shell line that merely mentions it is not
+        c = m and re.match(r"(?:\S*python[\d.]*\s+)?\S*agent-scout\s+(convene|quorum|evaluate)\b(.*)$", m.group(3))
+        if not c:
+            continue
+        args, roles, skip = c.group(2).split(), [], False
+        for a in args:
+            if skip:
+                skip = False
+            elif a in ("--days", "--kinds", "--replacing"):
+                skip = True
+            elif not a.startswith("-"):
+                roles.append(os.path.basename(a)[:-3] if a.endswith(".md") else a)
+        try:
+            started = dt.datetime.strptime(" ".join(m.group(2).split()), "%a %b %d %H:%M:%S %Y")
+        except ValueError:
+            started = None
+        found.append({"pid": int(m.group(1)), "kind": "evaluate" if c.group(1) == "evaluate" else "convene",
+                      "roles": roles, "started": started})
+    return found
+
+
+def open_panes():
+    """slugs of the sib panes that are up; None when sib cannot be asked."""
+    try:
+        p = subprocess.run(["sib", "list"], capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if p.returncode:
+        return None
+    return {l.split()[0] for l in p.stdout.splitlines()[1:] if l.strip() and "(up)" in l}
+
+
+def member_calls(pid, root):
+    """{(who, round): {dir, task, answer}} for one meeting, from the work folders (`root`, while the member
+    works) and their copies in the HR record (after the answer)."""
+    calls = {}
+    for base in (os.path.join(HR, "run"), os.path.expanduser(root)):
+        for d in glob.glob(os.path.join(base, f"*-{pid}")):
+            m = RUN_DIR.match(os.path.basename(d))
+            if not m or int(m.group(4)) != pid:
+                continue
+            calls[(m.group(2), m.group(3))] = {"dir": d, "task": os.path.join(d, "task.md"), "answer": os.path.join(d, "answer.json")}
+    return calls
+
+
+def mtime(path):
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return None
+
+
+def pad(text, width):
+    """left-justify by display width (Korean takes two columns)."""
+    w = sum(2 if ord(ch) > 0x1100 else 1 for ch in text)
+    return text + " " * max(width - w, 0)
+
+
+def ago(sec):
+    sec = int(max(sec, 0))
+    return f"{sec // 60}분 {sec % 60:02d}초" if sec >= 60 else f"{sec}초"
+
+
+def answer_line(rnd, path):
+    """the member's verdict in a few words, or None while the answer is not readable yet."""
+    try:
+        d = json.loads(open(path).read())
+    except (OSError, ValueError):
+        return None
+    if rnd == "evaluate":
+        rs = d.get("reviews") or []
+        return ", ".join(f"{slug(r.get('role'))} {r.get('verdict')}" for r in rs) or "평가 0건"
+    key = {"propose": "candidates", "vote": "votes", "judge": "grades", "egrade": "grades"}.get(rnd)
+    n = len(d.get(key) or []) if isinstance(d, dict) else 0
+    return {"propose": f"후보 {n}건 제안", "vote": f"{n}건 표결", "judge": f"{n}건 채점", "egrade": f"{n}건 채점"}.get(rnd, "답함")
+
+
+def board_meeting(mt, members, rule, panes, now):
+    rounds = ("evaluate",) if mt["kind"] == "evaluate" else ("propose", "vote")
+    sit = "evaluate" if mt["kind"] == "evaluate" else "propose"
+    on = [s for s in members if s["status"] in ("on", "수습", "계약", "probation", "active") and sit in s["rounds"]]
+    calls = member_calls(mt["pid"], rule.get("root") or "/private/tmp/agent-scout")
+    title = "평가 회의 (사용자가 만든 초안 심사)" if mt["kind"] == "evaluate" else "발굴 회의 (위원이 후보 제안 → 쿼럼)"
+    start = mt["started"].strftime("%m-%d %H:%M") if mt["started"] else "?"
+    since = f" · {ago(now - mt['started'].timestamp())} 경과" if mt["started"] else ""
+    out = [f"▶ 진행 중: {title}", f"  회의 번호 {mt['pid'] % 10000} (pid {mt['pid']}) · 시작 {start}{since}"]
+    if mt["roles"]:
+        out.append(f"  심사 대상: {', '.join(mt['roles'])}")
+    out += ["", f"  {pad('위원', 10)} {pad('모델', 20)} {pad('단계', 5)}{pad('상태', 8)} {pad('창', 7)}{'걸린 시간':>7}  판정"]
+    rows = [(s["name"], f"{s['runner']}:{s['model']}", rnd) for s in on for rnd in rounds]
+    jr = "egrade" if mt["kind"] == "evaluate" else "judge"
+    rows.append(("judge", str(rule.get("judge") or "off"), jr))
+    done = 0
+    for who, model, rnd in rows:
+        if rnd == "vote" and (who, "vote") not in calls:
+            continue  # the vote round has not started (or this member has nothing to vote on)
+        c = calls.get((who, rnd))
+        label = "심판" if who == "judge" else who
+        if not c or mtime(c["task"]) is None:
+            state, pane, took, said = "대기", "-", "-", ("위원 답을 기다리는 중" if who == "judge" else "아직 안 불림")
+        else:
+            t0, t1 = mtime(c["task"]), mtime(c["answer"])
+            said = answer_line(rnd, c["answer"]) if t1 else None
+            state = "답함" if said else "작업 중"
+            done += who != "judge" and bool(said)
+            took = ago((t1 if said else now) - t0)
+            name = f"scout-{who}-{rnd}-{mt['pid'] % 10000}"
+            pane = "?" if panes is None else ("열림" if name in panes else "닫힘")
+            said = said or "-"
+        out.append(f"  {pad(label, 10)} {pad(model, 20)} {pad(ROUND_KO[rnd], 5)}{pad(state, 8)} 창 {pad(pane, 5)}"
+                   f"{took:>9}  {said}")
+    out.insert(3 if mt["roles"] else 2, f"  위원 {done}/{len(on)} 답함")
+    return out
+
+
+def board_text(now=None):
+    now = now or time.time()
+    members, rule, _ = load_config()
+    out = [f"위원회 상황판 · {dt.datetime.fromtimestamp(now).strftime('%m-%d %H:%M:%S')} (읽기 전용)", ""]
+    live = meetings()
+    if live:
+        panes = open_panes()
+        for mt in live:
+            out += board_meeting(mt, members, rule, panes, now) + [""]
+    else:
+        out += ["진행 중인 회의 없음", ""]
+    runs = sorted(glob.glob(os.path.join(HR, "quorum-*.json")))
+    if runs:
+        try:
+            run = json.load(open(runs[-1]))
+            out.append(f"■ 최근 발굴 회의 {run['date']} — 후보")
+            shown = [g for g in run.get("candidates", []) if g.get("result") != "drop"]
+            for g in shown[:10]:
+                out.append(f"  {g['n']:>2}. [{RESULT_KO.get(g['result'], g['result'])}] {g['role']} · 지지 {g['support']}"
+                           f" ({', '.join(g.get('backers', []))})")
+            if not shown:
+                out.append("  (통과·보류·관찰 후보 없음)")
+            out.append("")
+        except (OSError, ValueError, KeyError):
+            pass
+    seen = {}
+    for f in reversed(eval_files()):
+        try:
+            run = json.load(open(f))
+        except (OSError, ValueError):
+            continue
+        for role, x in run.get("results", {}).items():
+            seen.setdefault(role, (run["id"], x))
+    if seen:
+        out.append("■ 최근 평가 결과 (역할별 마지막)")
+        for role, (rid, x) in list(seen.items())[:10]:
+            n = x["counts"]
+            out.append(f"  [{RESULT_KO.get(x['result'], x['result'])}] {role} · hire {n['hire']} · revise {n['revise']} · "
+                       f"reject {n['reject']} (센 평가 {x['counted']}, {rid})")
+        out.append("")
+    installed = {m.group(1) for l in roster_lines() for m in [re.match(r"^- ([\w.-]+) \| agent \|", l)] if m}
+    waiting = []
+    for p in sorted(glob.glob(os.path.join(HR, "agents", "*.md"))):
+        role = os.path.basename(p)[:-3]
+        if role in installed or os.path.exists(os.path.join(AGENTS, f"{role}.md")):
+            continue
+        r = seen.get(role, (None, None))[1]
+        what = ("승인됨 — 보고서 읽고 OK 하면 설치 (install --user-approved)" if r and r["result"] == "approve" else
+                f"{RESULT_KO.get(r['result'], r['result'])} 판정 — 고친 뒤 다시 평가하거나 사용자가 뒤집기" if r else
+                "아직 평가 전 — evaluate 필요")
+        waiting.append(f"  {role}: {what}")
+    out.append("■ 사용자 결정 대기 초안")
+    out += waiting or ["  (없음)"]
+    return "\n".join(out)
+
+
+def cmd_board(args):
+    if "--toggle" in args:  # open the board beside a pane (the caller's by default); again: close it
+        state = os.path.join(HR, "board-pane.json")
+        try:
+            old = json.load(open(state))
+        except (OSError, ValueError):
+            old = {}
+        if old.get("surface"):
+            r = subprocess.run(["cmux", "close-surface", "--surface", old["surface"]], capture_output=True, text=True)
+            os.remove(state)
+            if r.returncode == 0:
+                print("위원회 상황판을 닫았습니다")
+                return 0
+        where = ["--surface", opt(args, "--surface")] if opt(args, "--surface") else []
+        cmd = f"{shlex.quote(os.path.realpath(__file__))} board --watch"
+        r = subprocess.run(["cmux", "new-split", "right", *where, "--command", cmd, "--focus", "false"],
+                           capture_output=True, text=True)
+        m = re.search(r"(surface:\d+)", r.stdout)
+        if r.returncode or not m:
+            die("열지 못함: " + (r.stderr or r.stdout).strip())
+        os.makedirs(HR, exist_ok=True)
+        json.dump({"surface": m.group(1)}, open(state, "w"))
+        print(f"위원회 상황판을 오른쪽에 열었습니다 ({m.group(1)}). 다시 부르면 닫습니다")
+        return 0
+    if "--watch" not in args:
+        print(board_text())
+        return 0
+    every = float(opt(args, "--every") or 5)
+    try:
+        while True:
+            text = board_text()
+            sys.stdout.write("\033[H\033[2J" + text + f"\n\n{int(every)}초마다 새로 고침 · Ctrl-C 로 끝\n")
+            sys.stdout.flush()
+            time.sleep(every)
+    except KeyboardInterrupt:
+        return 0
+
+
+def opt(args, name):
+    if name in args:
+        i = args.index(name)
+        if i + 1 < len(args):
+            return args[i + 1]
+    return None
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help", "help"):
+        print(__doc__)
+        return 0
+    cmd, args = argv[0], argv[1:]
+    if cmd == "scan":
+        scouts, rule, kinds = load_config()
+        data = build_packs(int(opt(args, "--days") or rule.get("days", 21)), rule, kinds)
+        if "--json" in args:
+            print(json.dumps({k: data[k] for k in ("start", "end", "slices", "kinds", "packs")}, ensure_ascii=False, indent=1))
+        else:
+            print(data["common"].split("\n\nAgents that already exist")[0])
+            for name, p in data["packs"].items():
+                print(f"\npack {name}: {len(p)} chars, {p.count(chr(10))} lines")
+        return 0
+    if cmd in ("quorum", "convene"):
+        return cmd_quorum(args)
+    if cmd == "evaluate":
+        return cmd_evaluate(args)
+    if cmd == "report":
+        return cmd_report(args)
+    if cmd == "review":
+        return cmd_review(args)
+    if cmd == "reject":
+        return cmd_reject(args)
+    if cmd == "due":
+        return cmd_due(args)
+    if cmd == "candidates":
+        run = latest_run()
+        print(json.dumps(run["candidates"], ensure_ascii=False, indent=1) if "--json" in args else "", end="")
+        if "--json" not in args:
+            show_run(run)
+        return 0
+    if cmd == "show":
+        if not args:
+            die("usage: agent-scout show <n|kind>", 2)
+        print(json.dumps(find_candidate(latest_run(), args[0]), ensure_ascii=False, indent=1))
+        return 0
+    if cmd == "new":
+        return cmd_new(args)
+    if cmd == "check":
+        return cmd_check(args)
+    if cmd == "install":
+        return cmd_install(args)
+    if cmd == "log":
+        return cmd_log(args)
+    if cmd == "measure":
+        return cmd_measure(args)
+    if cmd == "board":
+        return cmd_board(args)
+    if cmd == "roster":
+        print("\n".join(roster_lines()))
+        return 0
+    die(f"unknown command {cmd!r} (see agent-scout --help)", 2)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

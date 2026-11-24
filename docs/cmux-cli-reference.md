@@ -4,7 +4,7 @@
 > 목적: 에이전트(Claude/Codex)가 cmux 워크스페이스·패인·세션을 **추측 없이** 조작하기 위한 검증된 사실 모음.
 > 오늘(2026-06-17) 실제로 CLI를 두드려 확인한 내용. 당장 안 써도 나중에 참조용.
 > 위치: **L1 (agent-framework)** — 도메인 무관 프레임워크 지식. `dispatch`/`collab`/`codex` 스킬이 cmux를 다루는 근거.
-> 관련: [sib-dispatch-improvement.md](./sib-dispatch-improvement.md)(같은 L1), `agent-workspace/docs/zmx-cmux-guide.md`(L2, sib 전환 전 zmx 중심).
+> 관련: [sib-dispatch-improvement.md](./sib-dispatch-improvement.md)(같은 L1).
 
 ## TL;DR — 가장 자주 틀리는 것
 

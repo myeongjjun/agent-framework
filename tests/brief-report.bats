@@ -26,6 +26,7 @@ case "$1 $2" in
     [ -n "${STUB_SEND_FAIL:-}" ] && { echo "Error: not_found" >&2; exit 1; }
     echo '{"id":"m1","state":"queued"}' ;;
   "list-workspaces --json") echo '{"workspaces":[]}' ;;
+  "rpc agent.message.mark_read") echo "$3" > "$STUB/marked"; python3 -c 'import json,sys; print(json.dumps({"read": json.loads(sys.argv[1])["ids"]}))' "$3" ;;
   *) : ;;
 esac
 EOF
@@ -100,4 +101,23 @@ inbox() {  # $1 recipient, $2 state, $3 read_at (null or a number)
   run python3 "$BRIEF" done here
   [[ "$output" == *'brief report "<reply>"'* ]]
   [[ "$output" != *"$DESK"* ]]
+}
+
+@test "patrol: a new desk's first read retires unread messages the previous desks sent, nothing else" {
+  echo '{"snap":{},"pending":{},"notified":0,"desk":"old-desk-b"}' > "$HOME/.cache/cmux/brief-patrol.json"
+  cat > "$STUB/inbox.json" <<EOF
+{"messages":[
+ {"id":"t1","sender_surface_id":"OLD-DESK-A","recipient_surface_id":"S1","state":"queued","read_at":null,"body":"a test, reply with --reply-to"},
+ {"id":"r0","sender_surface_id":"OLD-DESK-A","recipient_surface_id":"S2","state":"read","read_at":5,"body":"done-request: earlier"},
+ {"id":"t2","sender_surface_id":"OLD-DESK-B","recipient_surface_id":"S1","state":"delivered","read_at":null,"body":"hand-written notice"},
+ {"id":"k1","sender_surface_id":"S9","recipient_surface_id":"S1","state":"queued","read_at":null,"body":"peer message"},
+ {"id":"k2","sender_surface_id":"OLD-DESK-A","recipient_surface_id":"$DESK","state":"queued","read_at":null,"body":"to the desk now"}]}
+EOF
+  CMUX_PANEL_ID="$DESK" run python3 "$BRIEF" patrol --read
+  [ "$status" -eq 0 ]
+  [ "$(cat "$STUB/marked")" = '{"ids": ["t1", "t2"]}' ]
+  [[ "$output" == *'"ev":"retired","count":2'* ]]
+  rm "$STUB/marked"
+  CMUX_PANEL_ID="$DESK" run python3 "$BRIEF" patrol --read
+  [ ! -e "$STUB/marked" ]
 }

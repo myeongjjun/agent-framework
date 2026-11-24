@@ -136,3 +136,12 @@ trace_fixture() {  # trace_fixture <constraint body> [check file content]
   run python3 -I "$LINT" --md "$T/a.md"
   [ "$status" -eq 0 ]
 }
+
+@test "--help from another directory prints an existing rule document path" {
+  cd "$T"
+  run python3 -I "$LINT" --help
+  [ "$status" -eq 0 ]
+  doc="$(printf '%s\n' "$output" | grep -oE '(^| )/[^ ]*/code-style-requirement-sentences\.md' | head -1 | tr -d ' ')"
+  [ -n "$doc" ]
+  [ -f "$doc" ]
+}

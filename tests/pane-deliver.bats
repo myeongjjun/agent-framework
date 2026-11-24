@@ -99,3 +99,75 @@ deliver() { run "$DELIVER" --surface surface:5 --workspace workspace:1 -- "$MSG"
   [ "$status" -eq 4 ]
   ! grep -q "^cmux send " "$CMUX_STUB_LOG"
 }
+
+@test "an unsent earlier message of ours in the box is cleared and the send retried (11-23 holds text)" {
+  export CMUX_STUB_SEND_HOLDS=1 \
+    CMUX_STUB_SCREEN=$'❯ done-request: an old request from a desk\n  that has since closed\n──────────────────────' \
+    CMUX_STUB_SCREEN_AFTER_ESCAPES=2 CMUX_STUB_SCREEN4=@echo \
+    CMUX_STUB_SCREEN_AFTER_ENTERS=1 CMUX_STUB_SCREEN3=$'✻ Cooking…\n──────────────────────\n❯ '
+  run "$DELIVER" --surface surface:5 --workspace workspace:1 --ours done-request: --ours desk-message: -- "$MSG"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *CLEARED* && "$output" == *DELIVERED* ]]
+  [ "$(grep -c "send-key .* escape" "$CMUX_STUB_LOG")" -eq 2 ]
+  [ "$(cat "$CMUX_STUB_LOG.last")" = "$MSG" ]
+}
+
+@test "text in the box that is not ours is left alone and the send refused (exit 7)" {
+  export CMUX_STUB_SEND_HOLDS=1 CMUX_STUB_SCREEN=$'❯ my own half-typed thought\n──────────────────────'
+  run "$DELIVER" --surface surface:5 --workspace workspace:1 --ours done-request: -- "$MSG"
+  [ "$status" -eq 7 ]
+  [[ "$output" == *"not ours: myownhalf-typedthought"* ]]
+  ! grep -q "send-key" "$CMUX_STUB_LOG"
+}
+
+# --- one deliverer: the two 11-23 screens -------------------------------------
+# sib spawn exited 5 on '…i[Pasted text #1].': the last chunk ('.') was typed
+# after the folded one, so the tail was neither drawn nor right before the rule.
+@test "a placeholder followed by the message's last chunk is submitted (11-23 '[Pasted text #1].')" {
+  MSG="do the task. --- completion contract (from sib) --- the desk checks the report against reality and closes it."
+  export PANE_DELIVER_INLINE_MAX=100000 CMUX_STUB_SCREEN="$IDLE" CMUX_STUB_SCREEN_AFTER_SENDS=1 \
+    CMUX_STUB_SCREEN2=$'❯ do the task. --- completion contract (from sib) --- the desk\n  i[Pasted text #1].\n──────────────────────\n  ⚡Opus 5.5' \
+    CMUX_STUB_SCREEN_AFTER_ENTERS=1 CMUX_STUB_SCREEN3=$'✻ Cooking…\n──────────────────────\n❯ '
+  deliver
+  [ "$status" -eq 0 ]
+  [[ "$output" == *DELIVERED* ]]
+}
+
+@test "a placeholder followed by text that is not the message's end is not proof" {
+  export CMUX_STUB_SCREEN="$IDLE" CMUX_STUB_SCREEN_AFTER_SENDS=1 \
+    CMUX_STUB_SCREEN2=$'❯ [Pasted text #1] something else\n──────────────────────'
+  deliver
+  [ "$status" -eq 5 ]
+  ! grep -q "send-key .* enter" "$CMUX_STUB_LOG"
+}
+
+# 11-23 live screen: a pane 4 columns wide wraps the box at 2 characters a
+# line; the head scrolls away and no '↑ N more' marker fits on the rule.
+NARROW=$'  ma\n  in\n  d \n  of\n  it\n────\n❯ \n────'
+narrow_box() { printf '%s' "$1" | tr -d ' ' | fold -w 2 | sed 's/^/  /'; }
+
+@test "a 4-column pane whose head scrolled away (no fold marker) is submitted (11-23)" {
+  export CMUX_STUB_SCREEN="$NARROW" CMUX_STUB_SCREEN_AFTER_SENDS=1 \
+    CMUX_STUB_SCREEN2="$(narrow_box "${MSG: -40}")"$'\n────' \
+    CMUX_STUB_SCREEN_AFTER_ENTERS=1 CMUX_STUB_SCREEN3=$'  ✻\n  Co\n  ok\n────\n❯ \n────'
+  deliver
+  [ "$status" -eq 0 ]
+  [[ "$output" == *DELIVERED* ]]
+}
+
+@test "a tail that was already on screen before the send is not proof" {
+  export CMUX_STUB_SCREEN="$(narrow_box "${MSG: -40}")"$'\n────'
+  deliver
+  [ "$status" -eq 5 ]
+  [[ "$output" == *"tail seen (already on screen before the send)"*"pane 4 columns wide"* ]]
+  ! grep -q "send-key .* enter" "$CMUX_STUB_LOG"
+}
+
+@test "text in but a codex queue notice that never clears still submits" {
+  export CMUX_STUB_SCREEN=$'›' CMUX_STUB_SCREEN_AFTER_SENDS=1 \
+    CMUX_STUB_SCREEN2="› $MSG"$'\ntab to queue message' \
+    CMUX_STUB_SCREEN_AFTER_ENTERS=1 CMUX_STUB_SCREEN3=$'• Working (1s • esc to interrupt)'
+  deliver
+  [ "$status" -eq 0 ]
+  [[ "$output" == *DELIVERED* ]]
+}

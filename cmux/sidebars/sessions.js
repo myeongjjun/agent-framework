@@ -207,18 +207,21 @@ function agentRow(e) {
     .onTap(() => jump(e()));
 }
 
+// 머리줄 집계. Collab 묶음의 줄("c:" 키)은 원래 자리에 있는 세션을 한 번 더 보여 주는 것이라 세지 않는다.
+function headerText(list) {
+  const rows = list.filter((x) => x.kind === "agent" && !String(x.key).startsWith("c:"));
+  const mine = rows.filter((x) => x.group === 0).length;
+  const run = rows.filter((x) => x.group === 1 || x.busy).length;
+  const stale = rows.filter((x) => x.group === STALE_GROUP).length;
+  return (mine ? mine + " waiting · " : "") + (run ? run + " running · " : "") + (stale ? stale + " to close · " : "") + rows.length + " sessions";
+}
+
 sidebar(() =>
   VStack({ spacing: 4 }, [
     HStack({ spacing: 6 }, [
       Text("Sessions").font(14).weight("semibold"),
       Spacer(),
-      Text(() => {
-        const rows = entries().filter((x) => x.kind === "agent");
-        const mine = rows.filter((x) => x.group === 0).length;
-        const run = rows.filter((x) => x.group === 1 || x.busy).length;
-        const stale = rows.filter((x) => x.group === STALE_GROUP).length;
-        return (mine ? mine + " waiting · " : "") + (run ? run + " running · " : "") + (stale ? stale + " to close · " : "") + rows.length + " sessions";
-      }).font(10).monospaced().color("tertiary"),
+      Text(() => headerText(entries())).font(10).monospaced().color("tertiary"),
     ]).paddingHorizontal(10),
 
     TextField("", {

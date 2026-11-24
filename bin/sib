@@ -18,7 +18,7 @@
 # base session's pane (see /dispatch workspace targeting).
 #
 # Subcommands:
-#   sib spawn <slug> [--codex] [--yolo] [--base <branch>] [--worktree]
+#   sib spawn <slug> [--codex] [--model <m>] [--yolo] [--base <branch>] [--worktree]
 #             [--workdir <path>] [--workspace <id|ref> | --new-workspace]
 #             [--no-report] [-- <prompt...>]
 #   sib list          (also prunes state of panes that are gone)
@@ -38,11 +38,33 @@ WT_ROOT="${STATE_DIR}/worktrees"
 mkdir -p "${STATE_DIR}/state" "${WT_ROOT}"
 
 die() { echo "sib: $*" >&2; exit 1; }
+# First `<kind>:<ref>` token (workspace:N, surface:N) in stdin; empty, never a
+# failure, when there is none. A bare `x="$(... | grep | head -1)"` under
+# `set -euo pipefail` ended the script with exit 1 and no output when grep
+# found nothing (11-24: the silent "sib spawn failed (exit 1, no output)").
+first_ref() { { grep -oE "$1:[^[:space:]]+" || true; } | head -1; }
+
+# The one deliverer of text to an agent pane: /pane-msg's pane-deliver.sh
+# (docs/agent-control-one-path.md §5 step 3). sib, `brief send` and /pane-msg
+# all use it. The repo copy next to this script wins over the installed one.
+deliverer() {
+  local src="$0" l d
+  while [[ -L "${src}" ]]; do
+    l="$(readlink "${src}")"; [[ "${l}" == /* ]] && src="${l}" || src="$(dirname "${src}")/${l}"
+  done
+  for d in "$(dirname "${src}")/../skills/pane-msg/scripts" "${HOME}/.claude/skills/pane-msg/scripts"; do
+    [[ -x "${d}/pane-deliver.sh" ]] && { echo "${d}/pane-deliver.sh"; return 0; }
+  done
+  return 1
+}
 need_cmux() { [[ -n "${CMUX_WORKSPACE_ID:-}" ]] || die "not inside a cmux pane (CMUX_WORKSPACE_ID unset)"; }
 surface_alive() { cmux read-screen --surface "$1" --workspace "$2" --lines 1 >/dev/null 2>&1; }
 # Working directory of a cmux workspace (its `cwd=` from sidebar-state). cmux
 # tree omits cwd; sidebar-state is the supported source. Empty if unknown.
-workspace_cwd() { cmux sidebar-state --workspace "$1" 2>/dev/null | sed -n 's/^cwd=//p' | head -1; }
+workspace_cwd() {
+  local o; o="$(cmux sidebar-state --workspace "$1" 2>/dev/null)" || return 0
+  { sed -n 's/^cwd=//p' | head -1; } <<<"${o}" || true
+}
 
 # Drop the state file of a sibling whose pane is gone (closed by `brief done`,
 # by hand, or by a cmux restart) — otherwise state/ only ever grows and a dead
@@ -51,6 +73,9 @@ workspace_cwd() { cmux sidebar-state --workspace "$1" 2>/dev/null | sed -n 's/^c
 # Prints "pruned" / "kept-worktree" / nothing (alive or cmux unreachable).
 prune_if_dead() {
   local f="$1" surface workspace worktree_managed
+  # `sib list` passes "grace": a state file written in the last minute belongs
+  # to a spawn that may still be bringing its pane up — leave it alone.
+  [[ "${2:-}" == grace && -n "$(find "$f" -mmin -1 2>/dev/null)" ]] && return 0
   # Read only the fields needed: spawn calls this mid-setup, so loading the
   # whole file would overwrite its own slug/agent.
   surface="$(state_get "$f" surface)"; workspace="$(state_get "$f" workspace)"
@@ -107,7 +132,7 @@ trust_allowlisted() {
 # State files are plain `key=value` lines with RAW values (a workdir may
 # contain spaces). Read them field by field — never `source` them, which
 # word-splits an unquoted path into a command.
-state_get() { sed -n "s/^$2=//p" "$1" | head -1; }
+state_get() { { sed -n "s/^$2=//p" "$1" 2>/dev/null | head -1; } || true; }
 load_state() {
   slug="$(state_get "$1" slug)"; agent="$(state_get "$1" agent)"
   surface="$(state_get "$1" surface)"; workspace="$(state_get "$1" workspace)"
@@ -125,6 +150,10 @@ cmd="${1:-}"; shift || true
 case "${cmd}" in -h|--help|help) usage; exit 0 ;; esac
 case "${1:-}" in -h|--help) usage; exit 0 ;; esac
 
+# Last line of defence: no failure path may end sib without a reason on
+# stderr. Expected failures call die (with a message); this catches the rest.
+trap 'echo "sib: ${cmd:-?}: unexpected failure (exit $?) at line ${LINENO}: ${BASH_COMMAND}" >&2' ERR
+
 case "${cmd}" in
 spawn)
   slug="${1:?sib spawn <slug> ...}"; shift
@@ -134,9 +163,10 @@ spawn)
   # --yolo opts into autonomous mode (skip gates) — only for unattended work.
   agent="claude"; yolo=0
   base="HEAD"; do_worktree=0; prompt=""
-  workdir=""; target_ws=""; new_ws=0; report=1
+  workdir=""; target_ws=""; new_ws=0; report=1; model=""
   while (($#)); do case "$1" in
     --codex)            agent="codex" ;;
+    --model)            shift; model="${1:?--model needs a model name}" ;;
     --yolo)             yolo=1 ;;
     --base)             shift; base="${1:?--base needs branch}" ;;
     --worktree)         do_worktree=1 ;;
@@ -151,17 +181,22 @@ spawn)
   [[ -n "${target_ws}" ]] && (( new_ws )) && die "--workspace and --new-workspace are mutually exclusive"
   if [[ "${agent}" == "codex" ]]; then
     # --approve-for-me (approvals_reviewer=auto_review): Codex's sandbox blocks
-    # network, so every kubectl/gh/ClickHouse read escalates; without this each
+    # network, so every kubectl/gh/database read escalates; without this each
     # one waits on the user pressing y. The auto-reviewer approves escalations
     # it judges in-policy and asks the user only on rejection — Codex's
     # counterpart to Claude's auto mode. ~/.codex/hooks.json guard hooks still
-    # run first (prod kubectl writes, ClickHouse DDL, ...).
+    # run first (prod kubectl writes, database DDL, ...).
     agent_cmd="codex --approve-for-me"
     (( yolo )) && agent_cmd="codex --dangerously-bypass-approvals-and-sandbox"
     ready_marker="›"
   else
     agent_cmd="claude"; (( yolo )) && agent_cmd="claude --dangerously-skip-permissions"
     ready_marker="❯"
+  fi
+  # Same flag for both agents: claude --model <m> / codex -m <m>.
+  if [[ -n "${model}" ]]; then
+    [[ "${model}" =~ ^[A-Za-z0-9._:-]+$ ]] || die "--model must be a plain model name: ${model}"
+    if [[ "${agent}" == "codex" ]]; then agent_cmd+=" -m ${model}"; else agent_cmd+=" --model ${model}"; fi
   fi
 
   if [[ -f "${STATE_DIR}/state/${slug}.env" ]]; then
@@ -216,6 +251,36 @@ spawn)
     trust="$(trust_allowlisted "$(cd "${start_dir}" && pwd -P)")"
   fi
 
+  # A spawn that fails before its agent is launched and recorded removes the
+  # workspace or pane it created — otherwise every failed --new-workspace
+  # attempt left an empty workspace behind (11-24: three closed by hand).
+  # Cleared once the state file is written: from then on `sib kill` owns it.
+  cleanup_ws="" cleanup_surface=""
+  spawn_cleanup() {
+    local rc=$?
+    (( rc == 0 )) && return 0
+    if [[ -n "${cleanup_ws}" ]]; then
+      cmux close-workspace --workspace "${cleanup_ws}" >/dev/null 2>&1 \
+        || cmux close-workspace --workspace "${cleanup_ws}" --force >/dev/null 2>&1 \
+        && echo "  closed workspace ${cleanup_ws} that this spawn created" >&2 \
+        || echo "  could not close workspace ${cleanup_ws} that this spawn created — close it in cmux" >&2
+    elif [[ -n "${cleanup_surface}" ]]; then
+      cmux close-surface --surface "${cleanup_surface}" --workspace "${ws}" >/dev/null 2>&1 \
+        || cmux close-surface --surface "${cleanup_surface}" --workspace "${ws}" --force >/dev/null 2>&1 \
+        && echo "  closed pane ${cleanup_surface} that this spawn created" >&2 \
+        || echo "  could not close pane ${cleanup_surface} that this spawn created — close it in cmux" >&2
+    fi
+    return 0
+  }
+  trap spawn_cleanup EXIT
+
+  # A failed split must say why. Under `set -e` a bare `out="$(cmux ...)"`
+  # exited 1 with cmux's message captured and never shown (11-23: a
+  # workspace too full to split again ended the spawn with no output).
+  split_failed() {
+    [[ -n "$2" ]] && echo "$2" >&2
+    die "cannot add a pane to workspace $1 — it may have no room for another split; close a pane there, or use --new-workspace"
+  }
   # Place the sibling pane. Three modes:
   #   default        — split the caller's current workspace
   #   --workspace W  — split an already-open workspace W
@@ -223,26 +288,41 @@ spawn)
   if (( new_ws )); then
     # cmux new-workspace --cwd boots a shell in start_dir; we then grab its
     # surface so the agent launch + later `sib send`/`kill` can target it.
-    wsout="$(cmux new-workspace --name "sib-${slug}" --cwd "${start_dir}" --focus false 2>&1)"
-    ws="$(grep -oE 'workspace:[^[:space:]]+' <<<"${wsout}" | head -1)"
+    wsout="$(cmux new-workspace --name "sib-${slug}" --cwd "${start_dir}" --focus false 2>&1)" \
+      || { echo "${wsout}" >&2; die "failed to create workspace"; }
+    ws="$(first_ref workspace <<<"${wsout}")"
     [[ -n "${ws}" ]] || { echo "${wsout}" >&2; die "failed to create workspace"; }
-    surface="$(cmux list-pane-surfaces --workspace "${ws}" 2>/dev/null | grep -oE 'surface:[^[:space:]]+' | head -1)"
-    [[ -n "${surface}" ]] || die "created workspace ${ws} but found no surface"
+    cleanup_ws="${ws}"
+    # A fresh workspace may not answer for its surface at once (under load
+    # cmux returns not_found for a moment): retry for ~3s, then say why.
+    surface="" lsout=""
+    for i in $(seq 1 12); do
+      lsout="$(cmux list-pane-surfaces --workspace "${ws}" 2>&1)" \
+        && surface="$(first_ref surface <<<"${lsout}")"
+      [[ -n "${surface}" ]] && break
+      sleep 0.25
+    done
+    [[ -n "${surface}" ]] || { echo "${lsout}" >&2; die "created workspace ${ws} but found no surface in it"; }
   elif [[ -n "${target_ws}" ]]; then
     ws="${target_ws}"
-    out="$(cmux new-split right --workspace "${ws}" --focus false 2>&1)"
-    surface="$(grep -oE 'surface:[^[:space:]]+' <<<"${out}" | head -1)"
-    [[ -n "${surface}" ]] || { echo "${out}" >&2; die "failed to split workspace ${ws}"; }
+    out="$(cmux new-split right --workspace "${ws}" --focus false 2>&1)" || split_failed "${ws}" "${out}"
+    surface="$(first_ref surface <<<"${out}")"
+    [[ -n "${surface}" ]] || split_failed "${ws}" "${out}"
+    cleanup_surface="${surface}"
   else
     ws="${CMUX_WORKSPACE_ID}"
-    out="$(cmux new-pane --type terminal --direction right --workspace "${ws}")"
-    surface="$(grep -oE 'surface:[^[:space:]]+' <<<"${out}" | head -1)"
-    [[ -n "${surface}" ]] || { echo "${out}" >&2; die "failed to create pane"; }
+    out="$(cmux new-pane --type terminal --direction right --workspace "${ws}" 2>&1)" || split_failed "${ws}" "${out}"
+    surface="$(first_ref surface <<<"${out}")"
+    [[ -n "${surface}" ]] || split_failed "${ws}" "${out}"
+    cleanup_surface="${surface}"
   fi
 
   # Launch the agent directly in the new pane (exec → closing pane ends it; no zmx).
-  cmux send --surface "${surface}" --workspace "${ws}" "cd $(printf %q "${start_dir}") && exec ${agent_cmd}"
-  cmux send-key --surface "${surface}" --workspace "${ws}" enter
+  # A failed launch must say why (and the cleanup trap closes the pane).
+  # shellcheck disable=SC2015  # the || branch is meant for either send failing
+  out="$(cmux send --surface "${surface}" --workspace "${ws}" "cd $(printf %q "${start_dir}") && exec ${agent_cmd}" 2>&1)" \
+    && out="$(cmux send-key --surface "${surface}" --workspace "${ws}" enter 2>&1)" \
+    || { [[ -n "${out}" ]] && echo "${out}" >&2; die "could not start ${agent} in ${ws} ${surface}"; }
 
   # Record who spawned this sibling (the caller's own pane, from cmux
   # identify). Gives "reply to my spawner" a deterministic address —
@@ -264,7 +344,11 @@ spawn)
     echo "workdir=${start_dir}"; echo "worktree_managed=${do_worktree}";
     echo "workspace_managed=${new_ws}";
     echo "spawner_surface=${spawner_surface}";
-    echo "spawner_workspace=${spawner_workspace}"; } > "${STATE_DIR}/state/${slug}.env"
+    echo "spawner_workspace=${spawner_workspace}"; } > "${STATE_DIR}/state/.${slug}.env.tmp"
+  # Atomic: a concurrent `sib list` must never read a half-written file
+  # (an empty surface= reads as "pane gone" and the state was pruned).
+  mv -f "${STATE_DIR}/state/.${slug}.env.tmp" "${STATE_DIR}/state/${slug}.env"
+  cleanup_ws="" cleanup_surface=""
 
   # Wait for the agent's own input box. Matching the marker anywhere on screen
   # is not enough: a shell prompt can use the same glyph (starship's default
@@ -277,24 +361,38 @@ spawn)
     local scr
     scr="$(cmux read-screen --surface "${surface}" --workspace "${ws}" --lines 60 2>/dev/null)" || return 1
     if [[ "${agent}" == "codex" ]]; then
-      grep -qE "^[[:space:]]*${ready_marker}" <<<"${scr}"
+      # Not a numbered option ('› 1. Update now'): that is a start-screen list.
+      grep -qE "^[[:space:]]*${ready_marker}[[:space:]]*(\$|[^[:space:]0-9]|[0-9]+([^.0-9]|\$))" <<<"${scr}"
     else
       # (claude follows the marker with U+00A0, not a space — anchor only.)
       grep -q "^${ready_marker}" <<<"${scr}" && grep -qF '──────────' <<<"${scr}"
     fi
   }
-  # Claude's folder-trust dialog blocks the pane until a human answers it.
-  trust_dialog_up() {
-    [[ "${agent}" == "claude" ]] || return 1
-    cmux read-screen --surface "${surface}" --workspace "${ws}" --lines 60 2>/dev/null \
-      | grep -qiE 'trust this folder|do you trust the files'
+  # A start screen that blocks the pane until a human answers it. Prints its
+  # name. Claude: the folder-trust dialog. Codex: the update screen and the
+  # hooks-review screen. Each is an option list drawn with the input box's
+  # own marker, and any key picks an option: Enter on the update screen runs
+  # `brew upgrade` and ends the pane; on the hooks screen it may trust hooks.
+  start_screen() {
+    local scr
+    scr="$(cmux read-screen --surface "${surface}" --workspace "${ws}" --lines 60 2>/dev/null)" || return 1
+    if [[ "${agent}" == "claude" ]]; then
+      grep -qiE 'trust this folder|do you trust the files' <<<"${scr}" && { echo trust; return 0; }
+    else
+      grep -qF 'Update available' <<<"${scr}" && grep -qE 'Update now|Skip until next version' <<<"${scr}" \
+        && { echo "update screen (Update available: Update now / Skip)"; return 0; }
+      grep -qE 'Hooks need review|Trust all and continue' <<<"${scr}" \
+        && { echo "hooks-review screen (Hooks need review: Trust all / Continue without trusting)"; return 0; }
+    fi
+    return 1
   }
-  booted=0; trust_blocked=0
+  booted=0; trust_blocked=0; blocked_by=""
   for i in $(seq 1 70); do
-    # Dialog first: its option list starts with '❯' and may sit under a rule
-    # line, so it can look like the input box.
-    if trust_dialog_up; then
-      trust_blocked=1; break
+    # Start screens first: their option list starts with the input marker and
+    # may sit under a rule line, so it can look like the input box.
+    if blocked_by="$(start_screen)"; then
+      [[ "${blocked_by}" == trust ]] && trust_blocked=1
+      break
     fi
     if agent_ui_ready; then
       booted=1; break
@@ -309,87 +407,32 @@ spawn)
     [[ -n "${prompt}" ]] && echo "  prompt not sent; after confirming: sib send ${slug} \"...\"" >&2
     exit 6
   fi
+  if [[ -n "${blocked_by}" ]]; then
+    echo "✗ sib '${slug}' (${agent}) → ${ws} ${surface} — waiting at Codex's ${blocked_by}" >&2
+    echo "  no key was sent to it; answer it in the pane (user decision) — the pane stays open" >&2
+    [[ -n "${prompt}" ]] && echo "  prompt not sent; after answering: sib send ${slug} \"...\"" >&2
+    exit 6
+  fi
   delivery=""
   if [[ -n "${prompt}" ]] && (( ! booted )); then
     # Typing into a pane whose agent never drew its input box is the
     # truncation path above — do not. The pane stays up for a manual retry.
     delivery="not sent: agent input box never appeared (~30s)"
   elif [[ -n "${prompt}" ]]; then
-    # cmux send treats \n as Enter, which would submit a partial prompt.
-    prompt="$(printf '%s' "${prompt}" | tr '\n\t' '  ')"
-    # Paste placeholders on screen. A long send arrives in chunks and the
-    # agent folds a big chunk into one ("[Pasted text #1]" claude, "[Pasted
-    # Content 1234 chars]" codex), so the prompt head is never drawn
-    # (2026-11-18 incident: long spawn prompts failed the landed check). A
-    # placeholder that was not there before the send proves the head reached
-    # the agent's TUI — a pty still in a shell never draws one.
-    paste_ids() { tr -d ' \n' | grep -oE '\[Paste(dtext#[0-9]+|dContent[0-9]+chars)' | sort -u || true; }
-    pastes_before="$(cmux read-screen --surface "${surface}" --workspace "${ws}" --lines 200 2>/dev/null | paste_ids || true)"
-    # Put the prompt in the input box first (no enter yet).
-    cmux send --surface "${surface}" --workspace "${ws}" "${prompt}"
-    # Confirm the text landed, then submit. Three traps this guards against:
-    #   1) wrap (claude + codex) — a narrow split pane soft-wraps the input, so
-    #      the first 24 chars can straddle a line break and `grep -F` never
-    #      matches them on one line. The loop then spins to its 30s cap before
-    #      submitting (measured: a 27-char codex prompt took 42s). Fix: strip
-    #      spaces+newlines from BOTH the screen and the needle so the match is
-    #      wrap-immune while keeping 24-char specificity (low false-match risk).
-    #   2) codex queue — codex queues input while MCP servers load
-    #      ("tab to queue message"); an enter sent then is swallowed. Only the
-    #      codex branch waits the notice out (regression-critical); claude has
-    #      no input queue, so it submits as soon as the text is visible.
-    #   3) truncation — the head alone proves nothing about the rest, so the
-    #      last 24 chars must be visible too. Never submit a partial prompt.
-    head_needle="$(printf '%s' "${prompt:0:24}" | tr -d ' ')"
-    tail_needle="$(printf '%s' "${prompt: -24}" | tr -d ' ')"
-    (( ${#prompt} < 24 )) && tail_needle="${head_needle}"
-    landed=0
-    for i in $(seq 1 60); do
-      scr="$(cmux read-screen --surface "${surface}" --workspace "${ws}" --lines 200 2>/dev/null || true)"
-      scr_ns="$(printf '%s' "${scr}" | tr -d ' \n')"
-      new_paste="$(comm -13 <(printf '%s\n' "${pastes_before}") <(paste_ids <<<"${scr}") | grep . || true)"
-      head_ok=0 tail_ok=0
-      grep -qF -- "${head_needle}" <<<"${scr_ns}" && head_ok=1
-      grep -qF -- "${tail_needle}" <<<"${scr_ns}" && tail_ok=1
-      if [[ -n "${new_paste}" ]]; then
-        head_ok=1
-        # The whole prompt folded: the input ends with the placeholder.
-        grep -qE '\[Paste(dtext#[0-9]+|dContent[0-9]+chars)[^]]*\]─' <<<"${scr_ns}" && tail_ok=1
-      fi
-      if (( head_ok && tail_ok )); then
-        landed=1
-        if [[ "${agent}" == "codex" ]]; then
-          grep -qF "tab to queue message" <<<"${scr}" || break
-        else
-          break
-        fi
-      fi
-      # Adaptive poll: fast (~1s total) at first to catch a quick render, then
-      # back off to 0.5s so a slow boot still resolves without busy-looping.
-      if (( i <= 10 )); then sleep 0.1; else sleep 0.5; fi
-    done
-    if (( ! landed )); then
-      delivery="not submitted: prompt did not fully appear in the input box (inspect the pane)"
+    # The first prompt goes through the one deliverer, like every later
+    # message (docs/agent-control-one-path.md §5 step 3): same landed check,
+    # same submit check. It stays inline (no file pointer): it is the task.
+    # --queue: a fresh session's own start-up work must not block its task.
+    deliver="$(deliverer)" || die "pane-deliver.sh not found (L1 install: skills/pane-msg)"
+    if out="$(PANE_DELIVER_INLINE_MAX=1000000 "${deliver}" --surface "${surface}" --workspace "${ws}" \
+                --queue -- "${prompt}" 2>&1)"; then
+      :
     else
-      cmux send-key --surface "${surface}" --workspace "${ws}" enter
-      # Confirm submission; if no work signal appeared (queue cleared a beat
-      # late, autocomplete ate the first enter), send one more enter. Newer
-      # claude builds show only a spinner line ('✻ Thinking…') while working.
-      # An emptied claude input box (marker + U+00A0/space only) also proves
-      # the submit: a short turn can finish before the first check.
-      work_signal() {
-        local s
-        s="$(cmux read-screen --surface "${surface}" --workspace "${ws}" --lines 20 2>/dev/null)" || return 1
-        grep -qiE 'working|esc to interrupt|^[[:space:]]*(·|✢|✳|✶|✻|✽|\*|\+|•)[[:space:]]+[A-Z][a-z]+(…|\.\.\.)' <<<"${s}" \
-          || { [[ "${agent}" != codex ]] && LC_ALL=C grep -qE $'^\xe2\x9d\xaf(\xc2\xa0| )*$' <<<"${s}"; }
-      }
-      sleep 1
-      work_signal || cmux send-key --surface "${surface}" --workspace "${ws}" enter
-      delivery="unconfirmed: enter sent but no work signal within ~8s (inspect the pane)"
-      for _ in $(seq 1 16); do
-        work_signal && { delivery=""; break; }
-        sleep 0.5
-      done
+      rc=$?
+      why="$(grep -E '^(UNCONFIRMED|REFUSED|pane-deliver):' <<<"${out}" | tail -1)"
+      why="${why:-$(tail -1 <<<"${out}")}"
+      delivery="${why#UNCONFIRMED: }"
+      (( rc == 5 )) || delivery="not sent (pane-deliver exit ${rc}): ${why}"
     fi
   fi
 
@@ -408,7 +451,7 @@ list)
   shopt -s nullglob
   printf '%-16s %-8s %-12s %s\n' SLUG AGENT SURFACE WORKTREE
   for f in "${STATE_DIR}"/state/*.env; do
-    case "$(prune_if_dead "$f")" in
+    case "$(prune_if_dead "$f" grace)" in
       pruned) echo "  (pruned $(basename "$f" .env): pane gone)" >&2; continue ;;
     esac
     ( load_state "$f"; st=$(surface_alive "${surface}" "${workspace}" && echo up || echo dead)
@@ -423,19 +466,13 @@ send)
   f="${STATE_DIR}/state/${slug}.env"; [[ -f "$f" ]] || die "no such sib: ${slug}"
   load_state "$f"
   surface_alive "${surface}" "${workspace}" || die "sib '${slug}' pane is gone (sib kill ${slug} to clean up)"
-  # Delegate to /pane-msg's verified delivery when deployed — single source
-  # of delivery logic (busy/approval gates, landed check, submit
-  # confirmation). A busy pane is REFUSED (exit 4) unless --queue. Falls
-  # back to a plain send when the skill is absent.
-  deliver="${HOME}/.claude/skills/pane-msg/scripts/pane-deliver.sh"
-  if [[ -x "${deliver}" ]]; then
-    echo "→ ${slug}:"
-    # shellcheck disable=SC2086  # queue_flag is intentionally word-split (one optional flag)
-    exec "${deliver}" --surface "${surface}" --workspace "${workspace}" ${queue_flag} -- "$*"
-  fi
-  cmux send --surface "${surface}" --workspace "${workspace}" "$*"
-  cmux send-key --surface "${surface}" --workspace "${workspace}" enter
-  echo "→ sent to ${slug}"
+  # The one deliverer (no plain-send fallback: a second path skips the
+  # busy/approval gates and the landed and submit checks). A busy pane is
+  # REFUSED (exit 4) unless --queue.
+  deliver="$(deliverer)" || die "pane-deliver.sh not found (L1 install: skills/pane-msg)"
+  echo "→ ${slug}:"
+  # shellcheck disable=SC2086  # queue_flag is intentionally word-split (one optional flag)
+  exec "${deliver}" --surface "${surface}" --workspace "${workspace}" ${queue_flag} -- "$*"
   ;;
 
 kill)
@@ -443,6 +480,12 @@ kill)
   keep_wt=0; [[ "${1:-}" == "--keep-worktree" ]] && keep_wt=1
   f="${STATE_DIR}/state/${slug}.env"; [[ -f "$f" ]] || die "no such sib: ${slug}"
   load_state "$f"
+  # The pane's id (the panel id `brief` keys its close records by), read while the pane is still open.
+  panel=""
+  if command -v jq >/dev/null 2>&1; then
+    panel="$(cmux rpc surface.list "{\"workspace_id\":\"${workspace}\"}" 2>/dev/null \
+      | jq -r --arg r "${surface}" '.surfaces[]? | select(.ref == $r) | .id' 2>/dev/null | head -1 || true)"
+  fi
   # End the agent by tearing down its surface. A sib-created dedicated
   # workspace holds only this one surface, and cmux refuses to close the last
   # surface — close the whole workspace instead. Otherwise just close the pane.
@@ -465,6 +508,14 @@ kill)
   if (( worktree_managed )) && (( ! keep_wt )); then
     git worktree remove --force "${worktree}" 2>/dev/null || true
     git branch -D "sib/${slug}" 2>/dev/null || true
+  fi
+  # The caller closed its worker: record it so `brief audit` does not count this close against the user
+  # or the desk as a pane closed without a report. Best-effort: a failed write never fails the kill.
+  if command -v jq >/dev/null 2>&1; then
+    jq -cn --arg slug "${slug}" --arg panel "${panel}" --arg surface "${surface}" --arg workspace "${workspace}" \
+      --arg workdir "${worktree:-}" --arg by "${CMUX_PANEL_ID:-}" --argjson at "$(date +%s)" \
+      '{at: $at, slug: $slug, panel: $panel, surface: $surface, workspace: $workspace, workdir: $workdir, by: $by}' \
+      >> "${STATE_DIR}/killed.jsonl" 2>/dev/null || true
   fi
   rm -f "$f"
   echo "✓ killed ${slug}"

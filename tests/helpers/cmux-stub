@@ -12,6 +12,29 @@ echo "cmux $*" >> "$log"
 
 sub="${1:-}"; shift || true
 
+# CMUX_STUB_SPLIT_FAIL="<msg>": the workspace has no room for another pane;
+# cmux prints the message and exits non-zero.
+if [[ -n "${CMUX_STUB_SPLIT_FAIL:-}" && ( "$sub" == new-pane || "$sub" == new-split ) ]]; then
+  echo "${CMUX_STUB_SPLIT_FAIL}"; exit 1
+fi
+
+# CMUX_STUB_FAIL_<SUB>="<msg>" (SUB upper-cased, '-' → '_', e.g.
+# CMUX_STUB_FAIL_LIST_PANE_SURFACES): that subcommand prints "Error: <msg>" on
+# stderr and exits 1, like real cmux on a transient socket/lookup error.
+# CMUX_STUB_FAIL_<SUB>_TIMES=N limits it to the first N calls.
+# CMUX_STUB_OUT_<SUB>="<text>": print <text> and exit 0 instead (an answer
+# sib cannot parse).
+key="$(tr 'a-z-' 'A-Z_' <<<"${sub}")"
+fail_var="CMUX_STUB_FAIL_${key}"; times_var="${fail_var}_TIMES"; out_var="CMUX_STUB_OUT_${key}"
+if [[ -n "${!fail_var:-}" ]]; then
+  n=$( (cat "${log}.fail-${sub}" 2>/dev/null || true) | wc -l | tr -d ' ')
+  if [[ -z "${!times_var:-}" ]] || (( n < ${!times_var} )); then
+    echo x >> "${log}.fail-${sub}"
+    echo "Error: ${!fail_var}" >&2; exit 1
+  fi
+fi
+[[ -n "${!out_var:-}" ]] && { echo "${!out_var}"; exit 0; }
+
 case "$sub" in
   new-pane)
     # real: "OK surface:N workspace:M" (varies); sib greps surface:
@@ -61,6 +84,13 @@ case "$sub" in
     # no stdout needed; the log line above is the assertion target. Count
     # sends and enters so read-screen can change what the pane shows after
     # them (CMUX_STUB_SCREEN_AFTER_SENDS / _AFTER_ENTERS below).
+    # CMUX_STUB_SEND_HOLDS=1: the prompt holds a draft, so a send is refused
+    # (like real cmux) until two escapes have cleared it.
+    if [[ "$sub" == send && "${CMUX_STUB_SEND_HOLDS:-0}" == 1 ]] \
+       && (( $( (cat "${log}.escapes" 2>/dev/null || true) | wc -l) < 2 )); then
+      echo "Error: send: the agent prompt in stub holds text someone is typing, so nothing was sent." >&2
+      exit 1
+    fi
     [[ "$sub" == send ]] && { echo x >> "${log}.sends"; printf '%s' "${!#}" > "${log}.last"; }
     [[ "$sub" == send-key && " $* " == *" enter "* ]] && echo x >> "${log}.enters"
     [[ "$sub" == send-key && " $* " == *" escape "* ]] && echo x >> "${log}.escapes"
@@ -82,10 +112,16 @@ case "$sub" in
     # CMUX_STUB_SCREEN2=@echo draws the last sent text in claude's input box.
     [[ "${CMUX_STUB_SCREEN2:-}" == @echo && -e "${log}.last" ]] \
       && CMUX_STUB_SCREEN2="❯ $(cat "${log}.last")"$'\n──────────────────────'
-    if [[ -n "${CMUX_STUB_SCREEN_AFTER_ESCAPES:-}" ]] && (( escapes >= CMUX_STUB_SCREEN_AFTER_ESCAPES )); then
-      printf '%s\n' "${CMUX_STUB_SCREEN4}"
-    elif [[ -n "${CMUX_STUB_SCREEN_AFTER_ENTERS:-}" ]] && (( enters >= CMUX_STUB_SCREEN_AFTER_ENTERS )); then
+    # CMUX_STUB_SCREEN4=@echo: after the escapes, the box is empty until a send fills it.
+    if [[ "${CMUX_STUB_SCREEN4:-}" == @echo ]]; then
+      CMUX_STUB_SCREEN4=$'❯ \n──────────────────────'
+      [[ -e "${log}.last" ]] && CMUX_STUB_SCREEN4="❯ $(cat "${log}.last")"$'\n──────────────────────'
+    fi
+    # Enters win over escapes: a box cleared, refilled and submitted shows the turn.
+    if [[ -n "${CMUX_STUB_SCREEN_AFTER_ENTERS:-}" ]] && (( enters >= CMUX_STUB_SCREEN_AFTER_ENTERS )); then
       printf '%s\n' "${CMUX_STUB_SCREEN3}"
+    elif [[ -n "${CMUX_STUB_SCREEN_AFTER_ESCAPES:-}" ]] && (( escapes >= CMUX_STUB_SCREEN_AFTER_ESCAPES )); then
+      printf '%s\n' "${CMUX_STUB_SCREEN4}"
     elif [[ -n "${CMUX_STUB_SCREEN_AFTER_SENDS:-}" ]] && (( sends >= CMUX_STUB_SCREEN_AFTER_SENDS )); then
       printf '%s\n' "${CMUX_STUB_SCREEN2}"
     elif [[ -n "${CMUX_STUB_SCREEN:-}" ]]; then
@@ -96,6 +132,12 @@ case "$sub" in
       printf '%s\n' "${CMUX_STUB_PROMPT_ECHO:-the task prompt}"
       printf 'working (esc to interrupt)\n'
     fi
+    ;;
+  rpc)
+    # `rpc surface.list`: the pane's id by ref (sib kill records it). CMUX_STUB_PANEL_ID overrides the id.
+    [[ "${1:-}" == surface.list ]] \
+      && printf '{"surfaces":[{"ref":"%s","id":"%s"}]}\n' "${CMUX_STUB_SURFACE:-surface:90}" "${CMUX_STUB_PANEL_ID:-STUB-PANEL-ID}"
+    :
     ;;
   *)
     : # tolerate anything else silently

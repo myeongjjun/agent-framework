@@ -164,7 +164,7 @@ needle이 없으면 제출된 것이다. live-smoke가 이 불변식을 쓴다.
 
 bats는 스텁이라 마커·placeholder·큐 문구가 바뀌는 드리프트를 **원천적으로 못 잡는다.**
 codex v0.141.0 wrap 케이스가 그 산증인. live-smoke는 실제 에이전트를 띄워 그 클래스를
-잡고, 회귀(미제출 / latency 초과) 시 `~/agent-workspace/.agent/inbox/`에 리포트를
+잡고, 회귀(미제출 / latency 초과) 시 `$SIB_SMOKE_INBOX`에 리포트를
 드롭한다(`/inbox` 스킬이 소비).
 
 ```bash

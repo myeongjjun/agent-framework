@@ -139,3 +139,29 @@ test('pressing a TODO row in the Desk pane runs `brief go <n>`', async ($, on) =
   expect((await ui.find({ type: 'Text', text: /시험 먼저/ }))?.text).toBe('· 2번 시험 먼저 할지 — 리뷰(2번) · 권고: 시험')
   await ui.unmount()
 })
+
+test('a decision the user already answered in its pane is drawn as answered, not as open', async ($, on) => {
+  const doc = ['Desk/261123.md', '# Desk 11-23  ·  갱신 14:20', '**지금**: x.', '## 결정 필요',
+    '- **푸시할지** — `리뷰`(2번) · 권고: 푸시', '- **지울지** — `정리`(1번) · 권고: 둠', '- **세션 없는 결정** — 권고: 보류', '\u001e',
+    JSON.stringify({ items: [{ title: 'A', do: 'x', done: false }, { title: 'B', do: 'y', done: false }] }), '\u001e', '[]', '\u001e',
+    // i=0 is answered; i=1 claims TODO 2 but the line says 1번 (the document changed in between), so it is ignored.
+    JSON.stringify([{ i: 0, n: 2, answered: true, input_at: '11-23 14:31' }, { i: 1, n: 2, answered: true, input_at: '11-23 14:32' }, { i: 2, n: 0 }]),
+  ].join('\n')
+  const calls: string[][] = []
+  harness(on, calls, { exitCode: 0, stdout: doc, stderr: '' })
+  await $.session.start({ cwd: '/', surface: 'terminal', isInteractive: true })
+
+  const pane = await $.ui.mount({ plugin: 'brief-nav', component: 'Pane', surface: 'terminal', requestId: 'desk', props: { id: 'desk', title: 'Desk', placement: 'dock' } } as any)
+  expect((await pane.find({ type: 'Text', text: /푸시할지/ }))?.text).toBe('✓ 2번 푸시할지 — 리뷰(2번) · 권고: 푸시 · 답함, 확인 대기 (14:31 입력)')
+  expect((await pane.find({ type: 'Text', text: /지울지/ }))?.text).toBe('· 1번 지울지 — 정리(1번) · 권고: 둠')
+  expect((await pane.find({ type: 'Text', text: /^결정 필요/ }))?.text).toBe('결정 필요 2')
+  await pane.unmount()
+
+  const band = await $.ui.mount({
+    plugin: 'brief-nav', component: 'AbovePrompt', surface: 'terminal',
+    props: { hasSurvey: false, isCollapsed: false, isWorking: false, maxRows: 10 },
+  } as any)
+  expect(await band.find({ type: 'Text', text: /푸시할지/ })).toBeFalsy()
+  expect((await band.find({ type: 'Text', text: /TODO/ }))?.text).toBe('결정 2 · 답함 1 · 진행 0 · 예약 0 · 끝남 0 · TODO 2/2 · 갱신 14:20')
+  await band.unmount()
+})

@@ -1,0 +1,373 @@
+#!/usr/bin/env python3
+"""brief lead — 영역 담당(Area lead) 호출. docs/area-lead-design.md 9절 2단계.
+
+  brief lead <영역> <질문|-> [--kind answer|place|close|commit|rules] [--ref <세션·커밋>] [--json] [--dry-run]
+
+데스크가 영역 세션이 사용자에게 물은 판단 질문을 넘긴다. 새 pane 없이 한 번 실행되고 끝난다.
+1. 영역 프로파일(~/.config/cmux/orch-areas.md 의 `## <영역>` 절)에서 그 종류(kind)의 권한을 읽는다.
+   user(또는 없음)면 모델을 부르지 않고 거절한다(exit 2).
+2. 묻는 일(질문 문장·선택지)이 경계(먼저 묻는 영역, 바깥 일, 보안, 되돌릴 수 없는 일, 계약)를 넘으면 모델을
+   부르지 않고 `escalate` 로 돌려준다(exit 3). 데스크는 그것을 `결정 필요`에 올린다. 부정·제외된 낱말
+   ("push 는 하지 않음")과 이름 속 낱말("doc-scope-checker")은 넘는 것이 아니고, 배경 문장에만 나온
+   낱말은 모델에게 알려 판단하게 한다.
+3. 아니면 도구 없는 비대화식 모델(claude -p --tools "")에 영역 절 전체(범위·권한표·결정 기록·교훈)와
+   질문을 주고 결정과 근거를 받는다. 결정문이 경계를 건드리면 escalate 로 낮춘다.
+4. 권한이 decide 이고 결과가 decide 면 그 영역의 Decision log 에 `by:lead` 한 줄을 더한다.
+   advise 면 권고만 돌려주고 기록하지 않는다(사용자가 고른 뒤 데스크가 `asked` 로 남긴다).
+
+<영역> 은 절 제목의 앞 글자("A")나 제목 일부("에이전트 도구"). 질문이 `-` 면 표준 입력에서 읽는다.
+--dry-run 은 모델을 부르지 않고 경계 판정과 모델에 넘길 글만 보여 준다.
+시험용 재정의: BRIEF_AREAS, BRIEF_LOCAL(먼저 묻는 영역), BRIEF_LEAD_CMD(모델 대신 실행할 명령:
+표준 입력으로 글을 받고 JSON 을 낸다), BRIEF_LEAD_MODEL(기본 opus), BRIEF_LEAD_NOW(기록 시각 MM-DD HH:MM).
+"""
+import json, os, re, shlex, subprocess, sys, tempfile, time
+
+HOME = os.path.expanduser("~")
+AREAS = os.environ.get("BRIEF_AREAS") or os.path.join(HOME, ".config/cmux/orch-areas.md")
+LOCAL = os.environ.get("BRIEF_LOCAL") or os.path.join(HOME, ".config/cmux/orch-local.md")
+KINDS = ("place", "answer", "close", "commit", "rules")
+
+# 어떤 권한표로도 영역 담당에게 넘어가지 않는 것(설계안 5.2, 데스크 정의의 Never·보안·바깥 일).
+# 보수적으로 잡는다: 잘못 걸리면 사용자에게 한 번 더 묻는 것으로 끝나고, 놓치면 넘지 말 선을 넘는다.
+BOUNDARY = {
+    "outward": [r"\bpush\b", r"\bpull request\b", r"\bPR\b", r"푸시", r"티켓", r"\bjira\b", r"위키", r"\bwiki\b",
+                r"confluence", r"컨플", r"슬랙", r"\bslack\b", r"메일", r"\bemail\b", r"아지트", r"\bagit\b",
+                r"게시", r"공지", r"배포", r"\bdeploy", r"\brelease\b", r"릴리즈", r"다른 팀", r"외부"],
+    "security": [r"비밀", r"\bsecret", r"토큰", r"\btoken", r"credential", r"자격 ?증명", r"api ?key", r"비밀번호",
+                 r"password", r"권한 규칙", r"\bpermission", r"settings\.json", r"\bmcp\b", r"훅 설정", r"hook config",
+                 r"보안", r"노출", r"\bsudo\b"],
+    "irreversible": [r"rm -rf", r"reset --hard", r"--force", r"force[- ]push", r"drop (table|database)",
+                     r"되돌릴 수 없", r"영구 삭제", r"운영 환경", r"\bproduction\b", r"\bprod\b"],
+    "contract": [r"권한표", r"계약", r"영역을?[^.?\n]{0,10}(만들|없애|넓히|추가|합치|나누)", r"\bscope\b",
+                 r"permissions? table"],
+}
+
+
+def ask_first_words(path):
+    """orch-local.md 의 Ask-first areas: 이름과 백틱 낱말(brief 의 load_areas 와 같은 규칙)."""
+    out, on = [], False
+    try:
+        for line in open(path):
+            if "Ask-first areas" in line:
+                on = True
+                continue
+            if on:
+                m = re.match(r"^\s+-\s+([^:]+):(.*)$", line)
+                if not m:
+                    if line.strip() and not line.startswith(" "):
+                        break
+                    continue
+                name = m.group(1).strip()
+                words = {name.lower()} | {t.strip("*").lower() for t in re.findall(r"`([^`]+)`", m.group(2))}
+                out.append((name, sorted(w for w in words if len(w) > 2)))
+    except OSError:
+        pass
+    return out
+
+
+# 낱말이 나왔다고 경계를 넘는 것은 아니다(11-23·11-24 의 넘김 3건이 모두 그랬다). 한 낱말은 세 가지 중 하나다.
+#  - 넘음(hard): 묻는 문장이나 선택지에서, 부정되지 않은 채 할 일로 나온다 → 모델 없이 넘긴다.
+#  - 언급(soft): 배경 문장에만 나온다 → 모델이 결정하는 행동이 그 선을 넘는지 판단한다. 결정문은 다시 검사한다.
+#  - 무시: 부정·제외("push 는 하지 않음", "widgetdb 가 아닌", "no push") 또는 이름의 일부("doc-scope-checker").
+NEG_AFTER = re.compile(r"않|안 ?하|안 ?함|말고|마세요|말 ?것|말자|금지|없이|없음|없습|없다|없는|없고|없어|아닌|아님|아니|아닙|밖|제외|빼고|이외|외의")
+NEG_BEFORE = re.compile(r"(?:\b(?:no|not|never|without|don'?t|non|except|excluding|instead of|other than)\b)[\W_]+(?:\w+\W+){0,2}$", re.I)
+CLAUSE_END = re.compile(r"[.,;:?!\n()\[\]]|\d\)")
+VERB_JOIN = re.compile(r"(?<![않안])(?:고|며|면|서|는데|지만|니까|도록)(?=\s)")
+ASKING = re.compile(r"\?|까요|할지|을지|를지|는가|나요|할까|될까|\bshould (?:i|we)\b", re.I)
+CHOICES = re.compile(r"선택지|\b(?:options?|choices?)\s*:|^\s*1\)|\s1\)\s", re.I | re.M)
+
+
+def _glued(text, s, e):
+    """낱말이 하이픈·밑줄로 이어진 이름의 일부인가(`doc-scope-checker`, `--strict-mcp-config`, `jira-sweeper`)."""
+    before = s >= 2 and text[s - 1] in "-_" and text[s - 2].isalnum()
+    after = e + 1 < len(text) and text[e] in "-_" and text[e + 1].isalnum()
+    return before or after
+
+
+def _negated(text, s, e):
+    """그 자리의 낱말이 부정·제외되었는가. 한국어는 뒤(같은 절, 이어지는 동사 앞까지), 영어는 앞 세 낱말."""
+    if NEG_BEFORE.search(text[max(0, s - 40):s]):
+        return True
+    tail = text[e:]
+    m = CLAUSE_END.search(tail)
+    tail = tail[: m.start()] if m else tail
+    j = VERB_JOIN.search(tail)
+    if NEG_AFTER.search(tail[: j.start()] if j else tail):
+        return True
+    # 괄호 안 설명은 괄호 바로 앞 말을 따른다: "하지 않음(widgetdb 초안과 위원 평가만)".
+    o, c = text.rfind("(", 0, s), text.rfind(")", 0, s)
+    if o > c and NEG_AFTER.search(text[max(0, o - 6):o]):
+        return True
+    return False
+
+
+def _asking(text, s):
+    """그 자리가 묻는 부분(질문 문장, 선택지 이후)인가. 아니면 배경 설명."""
+    ch = CHOICES.search(text)
+    if ch and s >= ch.start():
+        return True
+    a = max(text.rfind(t, 0, s) for t in (". ", ".\n", "? ", "?\n", "! ", "\n"))
+    starts = [i for i in (text.find(t, s) for t in (". ", ".\n", "?", "!", "\n")) if i >= 0]
+    sentence = text[a + 1 if a >= 0 else 0:(min(starts) + 1) if starts else len(text)]
+    return bool(ASKING.search(sentence))
+
+
+def _matches(text, ask_first):
+    """(분류, 걸린 말, 시작, 끝) — 낱말이 나온 모든 자리."""
+    low = text.lower()
+    out = []
+    for name, words in ask_first:
+        for w in words:
+            w = w.rstrip("*")
+            if w.rstrip("-"):
+                out += [("ask-first:" + name, text[m.start():m.end()], m.start(), m.end())
+                        for m in re.finditer(re.escape(w), low)]
+    for cat, pats in BOUNDARY.items():
+        for p in pats:
+            out += [(cat, m.group(0), m.start(), m.end()) for m in re.finditer(p, text, re.I)
+                    if not _glued(text, m.start(), m.end())]
+    return out
+
+
+def boundary_check(text, ask_first, whole_is_asked=False):
+    """(넘음, 언급) — 각각 [(분류, 걸린 말)], 분류마다 하나. 넘음이 있으면 그 분류는 언급에 두지 않는다.
+    whole_is_asked: 결정문처럼 글 전체가 할 일이면 배경이 없다."""
+    hard, soft = {}, {}
+    for cat, word, s, e in _matches(text, ask_first):
+        if _negated(text, s, e):
+            continue
+        if whole_is_asked or _asking(text, s):
+            hard.setdefault(cat, word)
+        else:
+            soft.setdefault(cat, word)
+    return list(hard.items()), [(c, w) for c, w in soft.items() if c not in hard]
+
+
+def boundary_hits(text, ask_first):
+    """[(분류, 걸린 말)] — 할 일로 넘는 것만. 비어 있으면 모델이 판단해도 된다."""
+    return boundary_check(text, ask_first)[0]
+
+
+def find_area(text, key):
+    """(제목, 절 시작 줄, 끝 줄) — 끝은 다음 `## ` 앞. 못 찾으면 None."""
+    lines = text.splitlines(keepends=True)
+    heads = [(i, l[3:].strip()) for i, l in enumerate(lines) if l.startswith("## ")]
+    k = key.strip().lower()
+    for n, (i, title) in enumerate(heads):
+        letter = re.match(r"^([A-Za-z0-9]+)\.", title)
+        if (letter and letter.group(1).lower() == k) or (len(k) > 1 and k in title.lower()):
+            end = heads[n + 1][0] if n + 1 < len(heads) else len(lines)
+            return title, i, end
+    return None
+
+
+def permissions(section):
+    perm = {}
+    for line in section.splitlines():
+        m = re.match(r"^\|\s*(\w+)\s*\|\s*(\w*)\s*\|", line)
+        if m and m.group(1) in KINDS:
+            perm[m.group(1)] = m.group(2) or "user"
+    return perm
+
+
+SYSTEM = """You are the area lead (영역 담당) for one work area on this machine. The desk hands you one
+judgment question that a working session asked the user. You decide it from the area profile alone.
+Rules:
+- Read the Decision log first. A logged decision by:user answers the question; follow it and cite it.
+- Never contradict a by:user line. A line with reversed_by is no longer in force.
+- Decide only what the Permissions table lets this kind decide, inside Scope.
+- Return verdict "escalate" when the question needs a new goal or scope the user never set, touches
+  another area, anything outward-facing (push, PR, tickets, wiki, messages to people), secrets or
+  permission rules, deletion with no other copy, production changes, or the area contract itself.
+- Judge the action being decided, not the words. A boundary word that appears only as background, as
+  something excluded ("push 는 하지 않음", "widgetdb 가 아닌 후보") or inside a file or agent name does
+  not make the question a boundary case. If the action you would decide does cross one, escalate.
+- Prefer the reversible, smaller option. State the decision as one action the session can take now.
+- Write decision and reason in Korean, one sentence each. based_on lists the log lines or profile lines you used.
+Reply with JSON only: {"verdict":"decide"|"escalate","decision":"...","reason":"...","based_on":["..."]}"""
+
+SCHEMA = {"type": "object", "required": ["verdict", "decision", "reason"],
+          "properties": {"verdict": {"type": "string", "enum": ["decide", "escalate"]},
+                         "decision": {"type": "string"}, "reason": {"type": "string"},
+                         "based_on": {"type": "array", "items": {"type": "string"}}}}
+
+
+def prompt_for(title, section, kind, level, question, ref, soft=()):
+    note = ""
+    if soft:
+        note = ("\nBoundary words in the background of the question (not in what is asked): "
+                + ", ".join(f"{w} ({c})" for c, w in soft)
+                + ". If the action you decide does any of these, return escalate.\n")
+    return (f"Area: {title}\nKind: {kind} (permission: {level})\nAsked by session: {ref or '-'}\n\n"
+            f"--- area profile ---\n{section.strip()}\n--- end of profile ---\n\n"
+            f"Question the session asked the user:\n{question.strip()}\n{note}")
+
+
+def run_model(prompt):
+    cmd = os.environ.get("BRIEF_LEAD_CMD")
+    env = {k: v for k, v in os.environ.items() if not k.startswith("CMUX_")}  # pane 의 에이전트로 잡히지 않게
+    if cmd:
+        argv = shlex.split(cmd)
+    else:
+        argv = ["claude", "-p", "--model", os.environ.get("BRIEF_LEAD_MODEL", "opus"), "--tools", "",
+                "--no-session-persistence", "--output-format", "json", "--json-schema", json.dumps(SCHEMA),
+                "--system-prompt", SYSTEM]
+    p = subprocess.run(argv, input=prompt, capture_output=True, text=True, env=env, cwd=tempfile.gettempdir(),
+                       timeout=float(os.environ.get("BRIEF_LEAD_TIMEOUT", "300")))
+    if p.returncode != 0:
+        raise RuntimeError(f"모델 호출 실패(exit {p.returncode}): {(p.stderr or p.stdout).strip()[:300]}")
+    return parse_reply(p.stdout)
+
+
+def parse_reply(out):
+    """claude --output-format json 의 봉투(structured_output·result) 또는 맨 JSON 을 받는다."""
+    try:
+        d = json.loads(out)
+    except ValueError:
+        m = re.search(r"\{.*\}", out, re.S)
+        if not m:
+            raise RuntimeError("모델 답이 JSON 이 아님: " + out.strip()[:200])
+        d = json.loads(m.group(0))
+    if isinstance(d, dict) and "verdict" not in d:
+        if isinstance(d.get("structured_output"), dict):
+            d = d["structured_output"]
+        elif isinstance(d.get("result"), str):
+            return parse_reply(d["result"])
+    if not isinstance(d, dict) or d.get("verdict") not in ("decide", "escalate") or not (d.get("decision") or "").strip():
+        raise RuntimeError("모델 답의 형식이 틀림: " + json.dumps(d, ensure_ascii=False)[:200])
+    return d
+
+
+def one_line(s, n=240):
+    s = re.sub(r"\s+", " ", (s or "").replace("|", "/")).strip()
+    return s if len(s) <= n else s[: n - 1] + "…"
+
+
+def append_log(path, key, line):
+    """그 영역 절의 ### Decision log 블록 끝에 한 줄을 더한다(원자적으로, 심볼릭 링크는 따라간다)."""
+    real = os.path.realpath(path)
+    text = open(real).read()
+    title, start, end = find_area(text, key)
+    lines = text.splitlines(keepends=True)
+    log = next((i for i in range(start, end) if lines[i].startswith("### Decision log")), None)
+    if log is None:
+        raise RuntimeError(f"{title} 에 ### Decision log 절이 없음")
+    at = log + 1
+    for i in range(log + 1, end):
+        if lines[i].startswith("#"):
+            break
+        if lines[i].startswith("- "):
+            at = i + 1
+    if at > 0 and not lines[at - 1].endswith("\n"):
+        lines[at - 1] += "\n"
+    lines.insert(at, line + "\n")
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(real), prefix=".orch-areas.")
+    with os.fdopen(fd, "w") as f:
+        f.write("".join(lines))
+    os.chmod(tmp, os.stat(real).st_mode & 0o777)
+    os.replace(tmp, real)
+
+
+def main(argv):
+    if len(argv) < 2 or argv[1] in ("-h", "--help", "help"):
+        print(__doc__)
+        return 0
+    args, opts, flags = [], {}, set()
+    it = iter(argv[1:])
+    for a in it:
+        if a in ("--kind", "--ref"):
+            opts[a[2:]] = next(it, "")
+        elif a in ("--json", "--dry-run"):
+            flags.add(a[2:])
+        else:
+            args.append(a)
+    if len(args) < 2:
+        print("쓰임: brief lead <영역> <질문|-> [--kind K] [--ref R] [--json] [--dry-run]", file=sys.stderr)
+        return 1
+    key, question = args[0], " ".join(args[1:])
+    if question == "-":
+        question = sys.stdin.read()
+    kind = opts.get("kind") or "answer"
+    if kind not in KINDS:
+        print(f"kind 는 {', '.join(KINDS)} 중 하나", file=sys.stderr)
+        return 1
+    try:
+        text = open(AREAS).read()
+    except OSError:
+        print(f"영역 프로파일 없음: {AREAS}", file=sys.stderr)
+        return 1
+    found = find_area(text, key)
+    if not found:
+        print(f"영역을 찾지 못함: {key} ({AREAS})", file=sys.stderr)
+        return 1
+    title, start, end = found
+    section = "".join(text.splitlines(keepends=True)[start:end])
+    level = permissions(section).get(kind, "user")
+    res = {"area": title, "kind": kind, "level": level, "question": question.strip(), "ref": opts.get("ref", ""),
+           "logged": False}
+
+    def out(code):
+        if "json" in flags:
+            print(json.dumps(res, ensure_ascii=False))
+        else:
+            name = {"decide": "결정", "advise": "권고(사용자가 고름)", "escalate": "사용자에게 넘김",
+                    "refused": "거절(권한 없음)", "dry-run": "시험(모델 안 부름)"}[res["verdict"]]
+            print(f"영역 담당 · {title} · {kind}({level}) · {name}")
+            if res.get("decision"):
+                print(f"  결정: {res['decision']}" if res["verdict"] == "decide" else f"  권고: {res['decision']}")
+            if res.get("reason"):
+                print(f"  근거: {res['reason']}")
+            for b in res.get("based_on") or []:
+                print(f"    · {b}")
+            if res.get("hits"):
+                print("  경계: " + ", ".join(f"{c}({w})" for c, w in res["hits"]))
+            if res.get("mentions"):
+                print("  언급(할 일 아님, 모델이 판단): " + ", ".join(f"{c}({w})" for c, w in res["mentions"]))
+            if res["logged"]:
+                print(f"  기록: {AREAS} 의 Decision log 에 by:lead 로 남김")
+            if res["verdict"] == "dry-run":
+                print("--- 모델에 넘길 글 ---\n" + res["prompt"])
+        return code
+
+    if level not in ("decide", "advise"):
+        res.update(verdict="refused", reason=f"권한표의 {kind} 가 {level} — 영역 담당이 관여하지 않는다")
+        return out(2)
+    hits, mentions = boundary_check(question, ask_first_words(LOCAL))
+    if mentions:
+        res["mentions"] = mentions
+    if hits:
+        res.update(verdict="escalate", hits=hits,
+                   reason="묻는 일이 영역 담당에게 넘어가지 않는 경계를 넘는다 — 데스크가 `결정 필요`에 올린다")
+        return out(3)
+    prompt = prompt_for(title, section, kind, level, question, opts.get("ref"), mentions)
+    if "dry-run" in flags:
+        res.update(verdict="dry-run", prompt=prompt)
+        return out(0)
+    try:
+        r = run_model(prompt)
+    except (RuntimeError, OSError, subprocess.TimeoutExpired, ValueError) as e:
+        print(f"영역 담당 호출 실패: {e}", file=sys.stderr)
+        return 1
+    res.update(decision=one_line(r["decision"]), reason=one_line(r.get("reason", "")),
+               based_on=[one_line(b, 160) for b in (r.get("based_on") or [])][:5])
+    if r["verdict"] == "escalate":
+        res["verdict"] = "escalate"
+        return out(3)
+    late = boundary_check(r["decision"], ask_first_words(LOCAL), whole_is_asked=True)[0]
+    if late:
+        res.update(verdict="escalate", hits=late)
+        res["reason"] = "결정문이 경계를 건드려 넘김 — " + res["reason"]
+        return out(3)
+    if level == "advise":
+        res["verdict"] = "advise"
+        return out(0)
+    res["verdict"] = "decide"
+    now = os.environ.get("BRIEF_LEAD_NOW") or time.strftime("%m-%d %H:%M")
+    ref = one_line(opts.get("ref") or "-", 120)
+    append_log(AREAS, key, f"- {now} | {kind} | by:lead | {res['decision']} — {res['reason']} | ref:{ref}")
+    res["logged"] = True
+    return out(0)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

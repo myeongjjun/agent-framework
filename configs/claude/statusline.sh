@@ -23,6 +23,12 @@
 #   ~/.cache/claude/manual-outage.json ← manual outage marker
 command -v jq >/dev/null 2>&1 || exit 0
 input=$(cat)
+# Claude 가 넘겨주는 사용률(rate_limits)을 로컬 파일 하나에 남긴다(출력은 그대로). 에이전트 사무실 계량기(brief tree --popup)가 읽는다.
+_rl=$(echo "$input" | jq -c '.rate_limits // empty' 2>/dev/null)
+if [ -n "$_rl" ]; then
+  { mkdir -p "$HOME/.cache/cmux" && printf '{"at":%s,"rate_limits":%s}\n' "$(date +%s)" "$_rl" > "$HOME/.cache/cmux/claude-limits.json.tmp" \
+    && mv -f "$HOME/.cache/cmux/claude-limits.json.tmp" "$HOME/.cache/cmux/claude-limits.json"; } 2>/dev/null
+fi
 cwd=$(echo "$input" | jq -r '.workspace.current_dir')
 dir=$(basename "$cwd")
 model=$(echo "$input" | jq -r '.model.display_name')

@@ -10,6 +10,7 @@ is installed on a machine.
 | guard-deployed-artifact-edit.sh | general | PreToolUse | Edit,Write | 3 | Warn on edits to deployed runtime (`~/.claude/skills/`, `~/.codex/skills/`, etc.) instead of source |
 | guard-permission-bypass.sh | general | PreToolUse | Edit,Write,MultiEdit | 3 | Block agent edits to permission / hook / MCP config (`~/.claude/settings.json`, hooks, etc.). Enforces `no-permission-bypass.md` constraint. |
 | guard-cherry-pick.sh | general | PreToolUse | Bash | 5 | Warn on ad-hoc `git cherry-pick` in routine worker→base integration; steer to `agent-promote.sh`. Supports `/collab` merge flow. |
+| guard-codex-exec.sh | general | PreToolUse | Bash | 5 | Block headless Codex (`codex exec`, `codex e`, `codex review`); steer to `sib spawn --codex` in a cmux pane (ADR-008). Same hook serves Codex (`~/.codex/hooks.json`). |
 | turn-end-wip-commit.sh | general | Stop | — | 30 | Auto-commit each turn's work inside a sib worker worktree (`sib/<slug>`) so `agent-promote.sh` can squash-merge cleanly. Supports `/dispatch` + `/collab`. |
 
 > **Stop / Bash hook registration is a settings.json change.** install.sh

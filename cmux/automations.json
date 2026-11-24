@@ -102,6 +102,19 @@
           "timeout_seconds": 20
         }
       ]
+    },
+    {
+      "id": "orch-patrol-input",
+      "when": {
+        "event": "agent.hook.UserPromptSubmit"
+      },
+      "then": [
+        {
+          "action": "run",
+          "command": "$HOME/.local/bin/brief patrol --input",
+          "timeout_seconds": 10
+        }
+      ]
     }
   ]
 }

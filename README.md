@@ -49,6 +49,7 @@ change L1 behaviour, it goes back to L1 (not a local override).
 | `hooks/general/guard-deployed-artifact-edit.sh` | Block agent edits to deployed runtime (~/.claude/skills, ~/.codex/skills, ...). |
 | `hooks/general/guard-permission-bypass.sh` | Block agent edits to `~/.claude/settings.json`, `hooks/**/*.sh`, `.claude.json`. |
 | `hooks/general/guard-cherry-pick.sh` | Warn on ad-hoc `git cherry-pick`; steer to `agent-promote.sh`. |
+| `hooks/general/guard-codex-exec.sh` | Block headless `codex exec` / `codex review`; Codex runs only in a cmux pane (`sib spawn --codex`). |
 | `hooks/general/turn-end-wip-commit.sh` | Auto-commit each turn inside a sib worker worktree so promote squashes cleanly. |
 | `agents/orch.md` | cmux session desk agent (`claude --agent orch`). |
 | `cmux/` | Session desk runtime: `brief`, `brief-mod`, Sessions panel, `morning-brief.sh` (runs `morning-brief.d/*.sh` after the desk), orch seeds, automation rules. |

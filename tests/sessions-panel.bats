@@ -38,3 +38,13 @@ entries() { node "$HARNESS" "$TPL" "$PLAN" "$(ws "$1" "$2")" 1100; }
   grep -q 'e().busy ? "작업 중"' "$TPL"
   grep -q 'x.group === 1 || x.busy' "$TPL"
 }
+
+@test "header counts a collab member once, though it also shows in the Collab group" {
+  teams='[{"name":"pair","last":null,"members":[{"panel":"P1","agent":"claude"},{"panel":"P2","agent":"codex"}]}]'
+  run node "$HARNESS" "$TPL" '{"at":0,"items":[]}' "$(ws idle working)" 1100 "$teams"
+  [ "$status" -eq 0 ]
+  # both sessions appear twice (own group + Collab) ...
+  [ "$(echo "$output" | grep -c '"kind":"agent"')" -eq 4 ]
+  # ... but the header counts two sessions
+  [ "$(echo "$output" | grep '^HEADER')" = "HEADER 1 running · 2 sessions" ]
+}

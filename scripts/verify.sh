@@ -147,6 +147,24 @@ fi
 [[ -f "${FRAMEWORK_ROOT}/AGENTS.md" ]] \
   && check_copy "${HOME}/.claude/AGENTS.md.framework-base" "${FRAMEWORK_ROOT}/AGENTS.md"
 
+# cmux session report rule: Claude rules copy + Codex AGENTS.md block
+if [[ -f "${FRAMEWORK_ROOT}/cmux/session-report.md" ]]; then
+  check_copy "${HOME}/.claude/rules/cmux-session-report.md" "${FRAMEWORK_ROOT}/cmux/session-report.md"
+  if ! python3 - "${HOME}/.codex/AGENTS.md" "${FRAMEWORK_ROOT}/cmux/session-report.md" <<'PY'
+import sys
+s, e = "<!-- agent-framework:cmux-session-report:start -->\n", "\n<!-- agent-framework:cmux-session-report:end -->"
+try:
+    t = open(sys.argv[1]).read()
+except OSError:
+    sys.exit(1)
+sys.exit(0 if s + open(sys.argv[2]).read().rstrip("\n") + e in t else 1)
+PY
+  then
+    say "[verify] stale or missing L1 block: ${HOME}/.codex/AGENTS.md"
+    fail=1
+  fi
+fi
+
 if (( fail == 1 )); then
   say "[verify] deployment drift — re-run install.sh"
   exit 2

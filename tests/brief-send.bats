@@ -1,8 +1,9 @@
 #!/usr/bin/env bats
 # brief send / brief done: the desk's one path to hand work to an open session.
-# An idle pane gets the text typed in (pane-deliver); a busy or approval pane gets a cmux message,
-# unless cmux does not know the pane's agent (a session older than a cmux restart, 11-23), when a
-# busy pane gets the text in its input queue instead. Every outcome says which one happened.
+# One deliverer (pane-deliver, as `sib send` and /pane-msg): an idle pane gets the text typed in, a
+# busy pane gets it in its own input queue, an approval screen gets nothing. Never a cmux message:
+# cmux wakes the workspace's agent, not the pane's (a message to one pane can reach another
+# agent in the same workspace). Every outcome says which one happened.
 # cmux and pane-deliver are stubbed; no live pane is touched.
 
 BRIEF="$BATS_TEST_DIRNAME/../cmux/brief"
@@ -34,6 +35,9 @@ EOF
 printf 'deliver' >> "$STUB/calls"; printf ' [%s]' "$@" >> "$STUB/calls"; echo >> "$STUB/calls"
 rc="${STUB_RC:-0}"; [[ " $* " == *" --queue "* ]] && rc="${STUB_QUEUE_RC:-0}"
 echo "TYPED: ${*: -1}"
+[ -n "${STUB_CLEARED:-}" ] && echo "CLEARED: stub"
+[ "$rc" -eq 7 ] && { echo "REFUSED: stub's input box holds text that is not ours: myowndraft" >&2; exit 7; }
+[ "$rc" -eq 0 ] && [[ " $* " == *" --queue "* ]] && { echo "QUEUED: stub"; exit 0; }
 [ "$rc" -eq 0 ] && echo "DELIVERED: stub" || echo "UNCONFIRMED: stub" >&2
 exit "$rc"
 EOF
@@ -52,7 +56,7 @@ EOF
   run python3 "$BRIEF" send "$A" "please rebase on main"
   [ "$status" -eq 0 ]
   [[ "$output" == "전달됨: "*"Task A" ]]
-  grep -qF "deliver [--surface] [$A] [--workspace] [W1] [--] [desk-message: please rebase on main]" "$STUB/calls"
+  grep -qF "deliver [--surface] [$A] [--workspace] [W1] [--ours] [done-request:] [--ours] [desk-message:] [--ours] [close-request:] [--] [desk-message: please rebase on main]" "$STUB/calls"
   ! grep -q "agent.*message" "$STUB/calls"
 }
 
@@ -63,29 +67,33 @@ EOF
   grep -qF "deliver [--surface] [$B] [--workspace] [W2]" "$STUB/calls"
 }
 
-@test "send: a working session gets a cmux message, not typed text" {
+@test "send: a working session gets the text in its own pane's input queue, never a cmux message (11-23 misroute)" {
   state working
   run python3 "$BRIEF" send "$A" "also check the tests"
   [ "$status" -eq 0 ]
-  [[ "$output" == "대기열: 일하는 중이라 cmux 메시지로"* ]]
-  ! grep -q "^deliver" "$STUB/calls"
-  grep -qF "[agent] [message] [$A] [--json] [--] [desk-message: also check the tests]" "$STUB/calls"
+  [[ "$output" == "대기열: 세션이 일하는 중이라 그 pane 의 입력 대기열에"* ]]
+  [ "$(grep -c "^deliver" "$STUB/calls")" -eq 1 ]
+  grep -qF "deliver [--surface] [$A] [--workspace] [W1]" "$STUB/calls"
+  grep -q "^deliver.*\[--queue\]" "$STUB/calls"
+  ! grep -q "agent.*message" "$STUB/calls"
 }
 
-@test "send: busy and cmux does not know the agent (pre-restart session) goes to the input queue" {
-  export STUB_RC=4 STUB_HAS_AGENT=false
+@test "send: a pane cmux calls idle but whose screen is busy goes to its input queue" {
+  export STUB_RC=4
   run python3 "$BRIEF" send "$A" "x"
   [ "$status" -eq 0 ]
-  [[ "$output" == "대기열: 일하는 중이고 cmux 가 이 pane 의 에이전트를 모릅니다"* ]]
+  [[ "$output" == "대기열: "* ]]
   grep -q "^deliver.*\[--queue\]" "$STUB/calls"
+  ! grep -q "agent.*message" "$STUB/calls"
 }
 
-@test "send: an approval screen and an unknown agent is reported as not delivered" {
-  export STUB_RC=3 STUB_HAS_AGENT=false
+@test "send: an approval screen is reported as not delivered and nothing is queued" {
+  export STUB_RC=3
   run python3 "$BRIEF" send "$A" "x"
   [ "$status" -eq 1 ]
   [[ "$output" == "전달 못 함: 승인 대기 화면입니다"* ]]
   ! grep -q "\[--queue\]" "$STUB/calls"
+  ! grep -q "agent.*message" "$STUB/calls"
 }
 
 @test "send: an unconfirmed submit that reached the transcript counts (narrow panes draw no spinner)" {
@@ -121,4 +129,17 @@ EOF
   [ ! -e "$STUB/calls" ] || ! grep -q "message\|^deliver" "$STUB/calls"
   [ ! -e "$HOME/.cache/cmux/brief-reports.jsonl" ]
   [ ! -e "$HOME/.cache/cmux/brief-notes.jsonl" ]
+}
+
+@test "send: an unsent desk text left in the box is cleared and the send goes through (11-23 holds text)" {
+  STUB_CLEARED=1 run python3 "$BRIEF" send "$A" "please rebase on main"
+  [ "$status" -eq 0 ]
+  [[ "$output" == "전달됨: "*"보내지 않은 글을 지우고 넣음"* ]]
+}
+
+@test "send: the user's own draft in the box is kept and the send reported as not delivered" {
+  STUB_RC=7 run python3 "$BRIEF" send "$A" "please rebase on main"
+  [ "$status" -eq 1 ]
+  [[ "$output" == "전달 못 함: 입력 칸에 사용자가 쓰던 글이 있어 넣지 않았습니다: myowndraft"* ]]
+  ! grep -q "agent.*message" "$STUB/calls"
 }

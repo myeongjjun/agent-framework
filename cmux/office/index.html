@@ -1,0 +1,403 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><title>에이전트 사무실</title>
+<style>
+:root{--bg:#f4efe6;--plank:#e9dfcc;--paper:#fffdf7;--ink:#2a2520;--muted:#7a6f62;--desk:#b98a5e;--desk-d:#8f6440;
+ --red:#d6453d;--green:#2f9e5b;--blue:#3a6fd8;--amber:#e0a020;--purple:#7c4dcc}
+html,body{margin:0;height:100%;overflow:hidden;background:var(--bg);color:var(--ink);
+ font:14px/1.5 -apple-system,"Apple SD Gothic Neo","Pretendard",sans-serif;word-break:keep-all}
+canvas{display:block;position:fixed;inset:0}
+.top{position:fixed;left:16px;top:12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;pointer-events:none;max-width:calc(100vw - min(430px,calc(100vw - 32px)) - 56px)}
+.top h1{font-size:19px;margin:0 6px 0 0}
+.pill{background:var(--paper);border:2px solid var(--ink);border-radius:999px;padding:1px 11px;font-weight:700;font-size:13px;
+ font-variant-numeric:tabular-nums;white-space:nowrap;box-shadow:0 2px 0 var(--ink)}
+.pill.g{color:var(--green)} .pill.r{color:var(--red)} .pill.a{color:#a86f00}
+.power{position:fixed;right:16px;top:12px;width:min(430px,calc(100vw - 32px));background:var(--paper);border:3px solid var(--ink);border-radius:14px;
+ box-shadow:0 4px 0 var(--ink);padding:8px 12px;font-size:13px;pointer-events:none}
+.power .h{font-size:12px;color:var(--muted);font-weight:700}
+.power .row{display:grid;gap:2px;padding:5px 0;border-top:1px dashed #d9ccb6}
+.power .row:first-of-type{border-top:0}
+.power .t{font-weight:800} .power .n{font-variant-numeric:tabular-nums}
+.power .lim{display:flex;gap:6px;align-items:center;color:var(--ink);font-size:12px}
+.power .lim img{width:24px;height:12px} .power .lim.low{color:var(--red)} .power .dim{color:var(--muted)}
+.log{position:fixed;left:16px;bottom:14px;width:min(720px,calc(100vw - 32px));background:var(--paper);border:3px solid var(--ink);
+ border-radius:14px;box-shadow:0 4px 0 var(--ink);padding:8px 12px;pointer-events:none}
+.log b.h{font-size:12px;color:var(--muted)}
+.log div{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:background 1.5s}
+.log div.new{background:#ffe7a8}
+.log time{color:var(--muted);font-variant-numeric:tabular-nums;margin-right:8px}
+.log .x{color:var(--muted)}
+#tip{position:fixed;display:none;background:var(--paper);border:2px solid var(--ink);border-radius:10px;box-shadow:0 3px 0 var(--ink);
+ padding:7px 10px;font-size:12px;max-width:420px;pointer-events:none}
+#tip .m{color:var(--muted)}
+#toast{position:fixed;left:50%;top:56px;transform:translateX(-50%);display:none;background:#2a2520;color:#fffdf7;border-radius:999px;padding:5px 14px;font-weight:700;font-size:13px;box-shadow:0 3px 0 #000}
+#orgBtn{position:fixed;right:160px;bottom:14px;background:var(--paper);border:3px solid var(--ink);border-radius:14px;box-shadow:0 4px 0 var(--ink);
+ padding:6px 12px;font:800 14px -apple-system,"Apple SD Gothic Neo",sans-serif;cursor:pointer;color:var(--ink)}
+#orgBtn:hover{background:#fff3d6}
+#org{position:fixed;left:16px;right:16px;top:12px;bottom:66px;background:var(--paper);border:3px solid var(--ink);border-radius:14px;
+ box-shadow:0 4px 0 var(--ink);display:none;flex-direction:column;z-index:6}
+#org header{display:flex;justify-content:space-between;align-items:center;padding:8px 12px;border-bottom:2px dashed #d9ccb6}
+#org header b{font-size:16px} #org header button{border:2px solid var(--ink);border-radius:8px;background:var(--paper);font-weight:800;cursor:pointer}
+#org .body{display:flex;flex:1;min-height:0}
+#orgTree{flex:1;overflow:auto;padding:12px}
+#orgSide{width:min(460px,40%);border-left:2px dashed #d9ccb6;overflow:auto;padding:10px 14px;font-size:12px}
+#orgTree .lvl{display:flex;justify-content:center;gap:14px;margin:0 0 6px}
+#orgTree .wire{width:2px;height:16px;background:var(--ink);margin:0 auto 6px}
+#orgTree .depts{display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap;justify-content:center}
+#orgTree .dept{border:2px solid var(--ink);border-radius:12px;padding:8px;min-width:210px;background:#f1e9da}
+#orgTree .dept.ask{background:#ffd0cb} #orgTree .dept.com{background:#e6dcff} #orgTree .dept.wait{background:#fff3d6}
+#orgTree .dept.gone{background:#ebe7e0;opacity:.85} #orgTree .dept.def{background:#e4e9e1}
+#orgTree .dh{font-weight:800;font-size:13px;margin-bottom:6px}
+#orgTree .dh small{font-weight:600;color:var(--muted)}
+#orgTree .nd{background:var(--paper);border:2px solid var(--ink);border-radius:10px;padding:5px 8px;margin:5px 0;cursor:pointer;font-size:12px;box-shadow:0 2px 0 var(--ink)}
+#orgTree .nd:hover,#orgTree .nd.sel{background:#ffe7a8}
+#orgTree .nd.head{border-width:3px}
+#orgTree .nd b{font-size:13px} #orgTree .nd .m{color:var(--muted)}
+#orgTree .badge{display:inline-block;border-radius:999px;padding:0 7px;font-weight:800;font-size:11px;border:1.5px solid var(--ink);margin-left:4px}
+#orgTree .b-수습{background:#cfe0ff} #orgTree .b-계약{background:#c9efd6} #orgTree .b-시험{background:#ffe7a8} #orgTree .b-은퇴{background:#ddd}
+#orgSide h3{margin:4px 0 2px;font-size:15px} #orgSide .sec{font-weight:800;margin-top:10px;font-size:12px}
+#orgSide .kv{display:grid;grid-template-columns:92px 1fr;gap:2px 8px} #orgSide .kv .m{color:var(--muted)}
+#orgSide pre{white-space:pre-wrap;font-size:11px;background:#f7f1e4;border-radius:8px;padding:8px;margin:4px 0}
+#orgSide ul{margin:2px 0;padding-left:16px} #orgSide li{margin:2px 0} #orgSide .m{color:var(--muted)}
+#orgSide .why{background:#f7f1e4;border-radius:8px;padding:6px 8px;margin:3px 0}
+.off{position:fixed;right:16px;top:14px;color:var(--red);font-weight:700;display:none}
+#arcBtn{position:fixed;right:16px;bottom:14px;background:var(--paper);border:3px solid var(--ink);border-radius:14px;box-shadow:0 4px 0 var(--ink);
+ padding:6px 12px;font:800 14px -apple-system,"Apple SD Gothic Neo",sans-serif;cursor:pointer;color:var(--ink)}
+#arcBtn:hover{background:#fff3d6}
+#arc{position:fixed;right:16px;top:58px;bottom:66px;width:min(560px,calc(100vw - 32px));background:var(--paper);border:3px solid var(--ink);border-radius:14px;
+ box-shadow:0 4px 0 var(--ink);display:none;flex-direction:column;z-index:5}
+#arc header{display:flex;justify-content:space-between;align-items:center;padding:8px 12px;border-bottom:2px dashed #d9ccb6}
+#arc header b{font-size:16px} #arc header button{border:2px solid var(--ink);border-radius:8px;background:var(--paper);font-weight:800;cursor:pointer}
+#arcList{overflow:auto;padding:6px 12px 12px}
+#arcList details{border-bottom:1px dashed #d9ccb6;padding:6px 0}
+#arcList summary{cursor:pointer;font-size:13px;list-style:none}
+#arcList summary::-webkit-details-marker{display:none}
+#arcList summary .t{color:var(--muted);font-variant-numeric:tabular-nums;margin-right:6px}
+#arcList summary .k{font-weight:800} #arcList .fail{color:var(--red)}
+#arcList .tp{color:var(--purple);font-weight:700}
+#arcList table{width:100%;border-collapse:collapse;font-size:12px;margin:6px 0}
+#arcList td{padding:2px 4px;border-top:1px solid #efe5d3;vertical-align:top}
+#arcList .r{font-weight:800;white-space:nowrap} #arcList .m{color:var(--muted)}
+#arcList pre{white-space:pre-wrap;font-size:11px;background:#f7f1e4;border-radius:8px;padding:8px;max-height:320px;overflow:auto}
+#arc .tabs button{margin-left:6px;font-size:12px} #arc .tabs button.on{background:var(--ink);color:var(--paper)}
+#arcList .sec{font-weight:800;font-size:12px;margin-top:8px} #arcList .kv{font-size:12px;display:grid;grid-template-columns:96px 1fr;gap:1px 8px}
+#arcList .kv .m{white-space:nowrap} #arcList ul{margin:2px 0 4px 16px;padding:0;font-size:12px}
+#arcList .raw{border:1px solid var(--ink);border-radius:6px;background:var(--paper);font-size:11px;cursor:pointer}
+</style></head><body>
+<canvas id="c"></canvas>
+<div class="top"><h1>🏢 에이전트 사무실</h1><span class="pill" id="clock">--:--:--</span><span class="pill" id="n">직원 0</span>
+<span class="pill g" id="w">⚙ 일하는 중 0</span><span class="pill r" id="u">! 나를 기다림 0</span><span class="pill a" id="d">? 데스크를 기다림 0</span></div>
+<div class="power" id="power"></div><div class="log" id="log"><b class="h">사무실 소식</b></div><div id="tip"></div><div id="toast"></div><button id="orgBtn" title="지금 일하는 에이전트 전체">🏢 조직도</button><div id="org"><header><b>🏢 에이전트 조직도</b><span class="m" style="font-size:12px;color:var(--muted)">칸을 누르면 계약·지표·현재 상황·시작/은퇴 근거·이력</span><button id="orgX">닫기</button></header><div class="body"><div id="orgTree">불러오는 중…</div><div id="orgSide"><div class="m">왼쪽에서 에이전트를 고르세요.</div></div></div></div><button id="arcBtn" title="끝난 위원회 회의와 투입·정리 기록">🗄 기록 보관소</button><div id="arc"><header><b>🗄 기록 보관소</b> <span style="font-size:12px;color:var(--muted)">회의 · 투입 · 정리</span><button id="arcX">닫기</button></header><div id="arcList">불러오는 중…</div></div><div class="off" id="off">서버 연결 끊김 — brief tree --popup 으로 다시 여세요</div>
+<script>
+const cv=document.getElementById("c"), g=cv.getContext("2d"), tipEl=document.getElementById("tip");
+const INK="#2a2520",PAPER="#fffdf7",MUTED="#7a6f62",DESK="#b98a5e",DESKD="#8f6440",RED="#d6453d",GREEN="#2f9e5b",BLUE="#3a6fd8",AMBER="#e0a020",PURPLE="#7c4dcc";
+const ROOM={ask:"#ffd0cb",profile:"#cfe0ff",meeting:"#e6dcff",none:"#f1e9da",out:"#e4e9e1"};
+const RART={}; // role props drawn by Codex on request (server: art_step), loaded as they arrive
+const ART={}; for(const n of ["battery-0","battery-1","battery-2","battery-3","battery-4","claude-working","claude-idle","codex-working","codex-idle","desk-agent","user","note-msg","note-report","note-input","note-new","badge-user","badge-desk"]){const i=new Image();i.src="art/"+n+".svg";ART[n]=i}
+const drawn=(n,x,y,w,h)=>{const i=ART[n];if(i&&i.complete&&i.naturalWidth){g.drawImage(i,x,y,w,h);return true}return false};
+const look=a=>`${a.agent==="codex"?"codex":"claude"}-${a.working?"working":"idle"}`;
+const ICON={new:"🚀",start:"▶",turn_ended:"⏸",input:"⌨️",handoff:"📥",report:"📮",note:"📝",closed:"💨",msg:"💬",read:"👀"};
+const LABEL={new:"출근",start:"일 시작",turn_ended:"손 멈춤",input:"내가 말함",handoff:"일 받음",report:"완료 보고",note:"노트",closed:"퇴근",msg:"메시지",read:"읽음"};
+const COLOR={msg:BLUE,report:AMBER,note:MUTED,input:RED,new:PURPLE};
+const cut=(s,k)=>s.length>k?s.slice(0,k-1)+"…":s;
+const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+let W,H,DPR,S=1,OX=0,OY=0,WW=1200,WH=800;
+function fit(){DPR=devicePixelRatio||1;W=innerWidth;H=innerHeight;cv.width=W*DPR;cv.height=H*DPR;cv.style.width=W+"px";cv.style.height=H+"px";layout()}
+addEventListener("resize",fit);
+const MEET=new Set(); ICON.meeting="🏛"; LABEL.meeting="위원회 회의";
+let A=new Map(), rooms=[], fly=[], puffs=[], floats=[], seen=new Set(), first=true, deskId=null;
+const CW=124, CH=118; // one workstation cell (world units)
+
+function actor(id,o){let a=A.get(id);if(!a){a={id,x:0,y:0,tx:0,ty:0,born:first?-1e4:performance.now(),fresh:true,ph:Math.random()*6};A.set(id,a)}Object.assign(a,o);a.gone=null;return a}
+let POWER=null;
+// 사무실의 모든 시각은 KST(Asia/Seoul)로 고정한다: 브라우저가 어느 시간대에 있든 같게 보인다
+const KST=(t,o)=>new Date(t).toLocaleString("en-GB",Object.assign({timeZone:"Asia/Seoul",hour12:false},o));
+const kHMS=t=>KST(t,{hour:"2-digit",minute:"2-digit",second:"2-digit"});
+const kMDHM=t=>`${+KST(t,{month:"numeric"})}/${+KST(t,{day:"numeric"})} ${KST(t,{hour:"2-digit",minute:"2-digit"})}`;
+const fmt=n=>n>=1e8?(n/1e8).toFixed(2)+"억":n>=1e4?Math.round(n/1e4).toLocaleString()+"만":String(Math.round(n));
+function update(d){
+  POWER=d.power||null; powerPanel();
+  for(const [r,v] of Object.entries(d.role_art||{})) if(!RART[r]||RART[r].v!==v){const i=new Image();i.src=`role-art/${encodeURIComponent(r)}.svg?v=${v}`;i.v=v;RART[r]=i}
+  const t=d.tree, alive=new Set(["user"]);
+  actor("user",{kind:"user",name:"나"});
+  deskId=t.desk?t.desk.panel.toLowerCase():null;
+  if(deskId){alive.add(deskId);actor(deskId,{kind:"desk",panel:t.desk.panel,name:"데스크",working:t.desk.state==="working",
+    info:`<b>☀ 데스크</b> (orch)<br><span class="m">${esc(t.desk.title||"")} · ${esc(t.desk.state)}</span>`})}
+  rooms=t.areas.filter(a=>a.sessions.length||a.kind==="profile").map(a=>({name:a.name,kind:a.kind,decides:a.decides,topic:a.topic||"",m:[]}));
+  for(const m of [...MEET]) if(!rooms.some(r=>r.kind==="meeting"&&r.name===m)){MEET.delete(m);  // a meeting ends: its record goes to the archive
+    logLine({at:d.now,what:"meeting",title:`${m} 끝 — 🗄 기록 보관소에 남음`},true)}
+  for(const r of rooms) if(r.kind==="meeting"&&!MEET.has(r.name)){MEET.add(r.name);  // a meeting opens: say what it is about
+    if(!first) logLine({at:d.now,what:"meeting",title:`${r.name} 시작 — ${r.topic||"주제 확인 중"}`,text:r.decides},true)}
+  const walk=(n,room,parent)=>{const id=n.panel.toLowerCase();alive.add(id);
+    room.m.push(actor(id,{kind:"s",panel:n.panel,session:n.session,name:n.name||n.title||id.slice(0,8),agent:n.agent,role:n.role,working:n.state==="working",who:n.waiting.who,parent,
+      spawner:n.spawned_by.kind==="desk"?deskId:(n.spawned_by.panel||"").toLowerCase()||null,
+      info:`<b>${esc(n.name||n.title)}</b> <span class="m">[${esc(n.agent)}]</span>${n.role?`<br>역할: ${esc(n.role)}`:""}${n.name&&n.name!==n.title?`<br><span class="m">제목: ${esc(cut(n.title||"",60))}</span>`:""}<br>띄움: ${esc(n.spawned_by.label)}<br>기다림: ${esc(n.waiting.label)}<br><span class="m">${esc(n.cwd||"")}</span>`}));
+    n.children.forEach(c=>walk(c,room,id))};
+  rooms.forEach(r=>t.areas.find(b=>b.name===r.name).sessions.forEach(n=>walk(n,r,null)));
+  // helpers: a second agent in a pane, or a background `codex exec` / `claude -p` run — beside its session, else in the outside room
+  const out={name:"cmux 밖에서 도는 에이전트",kind:"out",decides:"데스크가 모름 · 관찰만",m:[]};
+  for(const h of d.helpers||[]){const id=h.id.toLowerCase(), host=(h.host||"").toLowerCase();alive.add(id);
+    const a=actor(id,{kind:"h",name:h.label,agent:h.kind,working:h.state==="working",who:"none",host:A.has(host)?host:null,
+      info:`<b>${esc(h.label)}</b> <span class="m">[${esc(h.kind)}]</span><br>${esc(h.origin)}${h.host&&A.has(host)?" · "+esc(A.get(host).name):""}`});
+    if(!a.host) out.m.push(a)}
+  if(out.m.length) rooms.push(out);
+  for(const [id,a] of A) if(!alive.has(id)&&!a.gone){a.gone=performance.now();puff(a.x,a.y-20)}
+  layout();
+  const s=d.stats; document.getElementById("n").textContent=`직원 ${s.sessions}`+(s.helpers?` · 도우미 ${s.helpers}`:"");document.getElementById("w").textContent=`⚙ 일하는 중 ${s.working}`;
+  document.getElementById("u").textContent=`! 나를 기다림 ${s.user}`;document.getElementById("d").textContent=`? 데스크를 기다림 ${s.desk}`;
+  const fresh=[];for(const e of d.events){const k=e.at+e.what+(e.panel||"")+(e.id||"");if(!seen.has(k)){seen.add(k);if(!first||d.now-e.at<60)fresh.push(e)}}
+  if(first) d.events.slice(0,5).reverse().forEach(e=>logLine(e,false));
+  fresh.sort((a,b)=>a.at-b.at).forEach((e,i)=>setTimeout(()=>play(e),i*400));
+  first=false;
+}
+function layout(){
+  if(!W) return;
+  // rooms in rows (world units), then the whole office is scaled to the window
+  const maxRow=Math.max(900,W/Math.max(.6,Math.min(1,W/1500))-40);
+  let x=0,y=250,rowH=0,rowsArr=[[]];
+  for(const r of rooms){const n=r.m.length, cols=Math.max(2,Math.ceil(Math.sqrt(n*1.7))), rws=Math.ceil(n/cols);
+    r.top=r.topic?26:0;  // a meeting room's topic line sits under its header
+    r.w=cols*CW+36; r.h=rws*CH+60+r.top;
+    if(x>0&&x+r.w>maxRow){x=0;y+=rowH+40;rowH=0;rowsArr.push([])}
+    r.x=x;r.y=y;x+=r.w+34;rowH=Math.max(rowH,r.h);rowsArr[rowsArr.length-1].push(r)}
+  WW=Math.max(900,...rowsArr.map(rw=>rw.length?rw[rw.length-1].x+rw[rw.length-1].w:0)); WH=y+rowH+10;
+  for(const rw of rowsArr){const w=rw.length?rw[rw.length-1].x+rw[rw.length-1].w:0, off=(WW-w)/2; rw.forEach(r=>r.x+=off)}
+  for(const r of rooms){const cols=Math.round((r.w-36)/CW); r.m.forEach((a,j)=>{a.tx=r.x+18+CW*(j%cols)+CW/2; a.ty=r.y+46+r.top+CH*Math.floor(j/cols)+CH/2+6})}
+  const k={}; for(const a of A.values()) if(a.kind==="h"&&a.host){const h=A.get(a.host);if(!h)continue;const i=k[a.host]=(k[a.host]||0)+1;
+    a.tx=h.tx-62;a.ty=h.ty-30-Math.min(i-1,2)*30}  // stack upward in the gap left of the desk, never over the name tag
+  const U=A.get("user"); if(U){U.tx=WW/2-150;U.ty=118}
+  const D=deskId&&A.get(deskId); if(D){D.tx=WW/2+120;D.ty=128}
+  const logH=(document.getElementById("log").offsetHeight||150)+24;  // the news box is drawn over the canvas: keep rooms above it
+  S=Math.min(1.25,(W-40)/WW,(H-60-logH)/WH); OX=(W-WW*S)/2; OY=60;
+  // the power card sits over the top-right corner: slide the user and desk boxes left until the desk box clears it
+  const pw=document.getElementById("power").getBoundingClientRect();
+  if(U&&D&&pw.width&&OY+(D.ty+46)*S>pw.top&&OY+(D.ty-88)*S<pw.bottom){
+    const over=OX+(D.tx+150)*S-(pw.left-12);
+    if(over>0){const dx=Math.min(over/S,U.tx-110); U.tx-=dx; D.tx-=dx}}
+  // a room whose header would sit under the power card: start the rooms below the card (and shrink to fit)
+  if(pw.width&&rooms.some(r=>OX+(r.x+r.w)*S>pw.left-12&&OY+r.y*S<pw.bottom+8)){
+    const top=rooms.reduce((m,r)=>Math.min(m,r.y),1e9);
+    for(let i=0;i<3;i++){OY=Math.max(60,pw.bottom+8-top*S);S=Math.min(1.25,(W-40)/WW,(H-OY-logH)/WH);OX=(W-WW*S)/2;
+      OY=Math.max(60,pw.bottom+8-top*S)}
+    for(const r of rooms){const cols=Math.round((r.w-36)/CW); r.m.forEach((a,j)=>{a.tx=r.x+18+CW*(j%cols)+CW/2; a.ty=r.y+46+r.top+CH*Math.floor(j/cols)+CH/2+6})}}
+  for(const a of A.values()) if(a.fresh){a.x=a.tx;a.y=a.ty;a.fresh=false}
+}
+const at=id=>{const a=id&&A.get(id);return a&&!a.gone?a:null};
+function play(e){
+  logLine(e,true);
+  const p=(e.panel||"").toLowerCase(), f=(e.from_panel||"").toLowerCase(), to=at(p);
+  if(e.what==="msg") return send(at(f)||{x:WW-20,y:20},to,"msg");
+  if(e.what==="report") return send(to,at(deskId)||at("user"),"report");
+  if(e.what==="note") return send(to,at(deskId),"note");
+  if(e.what==="input") return send(at("user"),to,"input");
+  if(e.what==="handoff") return to&&pop(to,"📥");  // work handed over by the agent that spawned it, not typed by the user
+  if(e.what==="new"){const s=to&&at(to.spawner); if(s) return send(s,to,"new"); if(to) puff(to.x,to.y-20); return}
+  if(!to) return;
+  if(e.what==="read") return pop(to,"👀");
+  if(e.what==="start") return pop(to,"💡");
+  if(e.what==="turn_ended") return pop(to,"☕");
+}
+function send(a,b,kind){if(a&&b) fly.push({a,b,kind,t0:performance.now(),dur:1500,trail:[]})}
+function puff(x,y){puffs.push({x,y,t0:performance.now()})}
+function pop(a,icon){floats.push({a,icon,t0:performance.now()})}
+function logLine(e,isNew){
+  const L=document.getElementById("log"), div=document.createElement("div");
+  const x=e.text||e.note||"";
+  div.innerHTML=`<time>${kHMS(e.at*1000)}</time>${ICON[e.what]||"•"} <b>${LABEL[e.what]||esc(e.what)}</b> ${esc(cut(e.title||"",48))}${x?` <span class="x">— ${esc(cut(x,80))}</span>`:""}`;
+  if(isNew){div.className="new";setTimeout(()=>div.className="",1600)}
+  L.appendChild(div); while(L.children.length>7) L.children[1].remove();
+}
+// ── drawing helpers (world units) ──
+function rr(x,y,w,h,r,fill,stroke=INK,lw=3,shadow=4){
+  if(shadow){g.fillStyle=INK;g.beginPath();g.roundRect(x,y+shadow,w,h,r);g.fill()}
+  g.fillStyle=fill;g.beginPath();g.roundRect(x,y,w,h,r);g.fill(); if(lw){g.lineWidth=lw;g.strokeStyle=stroke;g.stroke()}}
+function text(s,x,y,size=12,color=INK,weight=700,align="center"){g.font=`${weight} ${size}px -apple-system,"Apple SD Gothic Neo",sans-serif`;g.fillStyle=color;g.textAlign=align;g.fillText(s,x,y)}
+function fitText(s,maxW,font){s=String(s??"");g.font=font;if(g.measureText(s).width<=maxW)return s;while(s.length>1&&g.measureText(s+"…").width>maxW)s=s.slice(0,-1);return s+"…"}
+const F13=`700 13px -apple-system,"Apple SD Gothic Neo",sans-serif`, F12=`600 12px -apple-system,"Apple SD Gothic Neo",sans-serif`;
+function tagW(s){g.font=F13;return g.measureText(s).width+16}
+function tag(s,x,y,fill=PAPER,color=INK,left=false){g.font=`700 13px -apple-system,"Apple SD Gothic Neo",sans-serif`;const w=g.measureText(s).width+16;if(left)x+=w/2;rr(x-w/2,y-13,w,21,10,fill,INK,2,2);text(s,x,y+3,13,color)}
+function bubble(x,y,s,color){rr(x-11,y-13,22,20,7,PAPER,INK,2,2);g.fillStyle=PAPER;g.beginPath();g.moveTo(x-4,y+6);g.lineTo(x-8,y+12);g.lineTo(x+2,y+6);g.fill();
+  g.strokeStyle=INK;g.lineWidth=2;g.beginPath();g.moveTo(x-4,y+7);g.lineTo(x-8,y+12);g.lineTo(x+2,y+7);g.stroke();text(s,x,y+2,14,color,900)}
+const SKIN={claude:"#e07a52",codex:"#34507a"};
+function avatar(a,now,x,y,r=20){
+  // shape says who (Claude round, Codex rounded square), colour says state (idle = greyed out)
+  const col=a.working?(SKIN[a.agent]||SKIN.claude):"#c9bfae", sq=a.agent==="codex";
+  if(a.working){g.strokeStyle=GREEN;g.lineWidth=3.5;g.beginPath();g.arc(x,y,r+7,now/260,now/260+4.2);g.stroke()}
+  g.fillStyle=INK;g.beginPath();sq?g.roundRect(x-r,y-r+3,r*2,r*2,9):g.arc(x,y+3,r,0,6.29);g.fill(); // hard shadow
+  g.fillStyle=col;g.beginPath();sq?g.roundRect(x-r,y-r,r*2,r*2,9):g.arc(x,y,r,0,6.29);g.fill();
+  g.lineWidth=2.5;g.strokeStyle=INK;g.stroke();
+  g.fillStyle=PAPER;g.strokeStyle=PAPER;g.lineWidth=2.5;g.lineCap="round";
+  if(a.working){const bl=Math.sin(now/900+a.ph*7)>.97;g.beginPath();
+    if(bl){g.moveTo(x-9,y-3);g.lineTo(x-4,y-3);g.moveTo(x+4,y-3);g.lineTo(x+9,y-3);g.stroke()}
+    else{g.arc(x-6.5,y-3,3,0,6.29);g.arc(x+6.5,y-3,3,0,6.29);g.fill()}
+    g.beginPath();g.arc(x,y+4,6,.2,Math.PI-.2);g.stroke()}
+  else{g.beginPath();g.moveTo(x-10,y-2);g.quadraticCurveTo(x-6.5,y+1,x-3,y-2);g.moveTo(x+3,y-2);g.quadraticCurveTo(x+6.5,y+1,x+10,y-2);g.stroke()}
+  g.lineCap="butt";
+}
+function mini(a,now){ // a helper beside its session's desk
+  let al=Math.min(1,(now-a.born)/500); if(a.gone){al=1-(now-a.gone)/900;if(al<=0){A.delete(a.id);return}}
+  g.globalAlpha=al; if(!drawn(look(a),a.x-18,a.y-22,36,36)){g.save();g.translate(a.x,a.y);g.scale(.55,.55);avatar(a,now,0,0);g.restore()} g.globalAlpha=1}
+// ── power: tokens as electricity ──
+function powerPanel(){ // tokens and what is left of each account's limits, as text (never drawn over the office)
+  const el=document.getElementById("power"); if(!POWER){el.style.display="none";return} el.style.display="block";
+  const left=w=>w?(w.resets_at&&w.resets_at*1000<Date.now()?100:Math.max(0,Math.round(100-w.used))):null;
+  const hm=t=>t?new Date(t*1000).toLocaleString("ko-KR",{timeZone:"Asia/Seoul",month:"numeric",day:"numeric",hour:"2-digit",minute:"2-digit",hour12:false}):"";
+  let h='<span class="h">⚡ 전력 — 토큰과 남은 한도</span>';
+  for(const [f,name] of [["claude","Claude"],["codex","Codex"]]){const p=POWER[f]||{};
+    h+=`<div class="row"><div><span class="t">${name}</span> <span class="n">오늘 ${fmt(p.today||0)} · 지금 ${fmt(p.per_min||0)}/분</span></div>`;
+    const homes=Object.entries(p.limits||{});
+    if(!homes.length) h+=`<div class="lim dim">남은 한도: 정보 없음</div>`;
+    for(const [k,l] of homes){const who=k==="claude"?"":(k==="codex"?"기본":k.replace(/^codex-/,""))+" · ", a5=left(l.primary), wk=left(l.secondary);
+      if(a5==null&&wk==null){h+=`<div class="lim dim">${esc(who)}${esc(l.plan||"?")}: 시간 한도 없음</div>`;continue}
+      const low=Math.min(a5??100,wk??100), bat=Math.max(0,Math.min(4,Math.round(low/25)));
+      h+=`<div class="lim${low<25?" low":""}"><img src="art/battery-${bat}.svg" alt="">${esc(who)}5시간 <b>${a5??"-"}%</b> · 주간 <b>${wk??"-"}%</b> 남음 <span class="dim">(${hm(l.primary&&l.primary.resets_at)} 재설정)</span></div>`}
+    h+=`</div>`}
+  el.innerHTML=h;
+}
+const tokOf=a=>POWER&&POWER.sessions&&a.session?POWER.sessions[a.session]||0:0;
+function bulb(x,y,tok,now){ // the worker's light: brighter the more tokens it spent in the last 2 minutes
+  const lv=tok>0?Math.min(1,.35+Math.log10(1+tok)/7):0, fl=lv?1+Math.sin(now/90+x)*.04:1;
+  if(lv){const gr=g.createRadialGradient(x,y,2,x,y,26*lv*fl);gr.addColorStop(0,`rgba(255,214,90,${.75*lv})`);gr.addColorStop(1,"rgba(255,214,90,0)");
+    g.fillStyle=gr;g.beginPath();g.arc(x,y,26*lv*fl,0,6.29);g.fill()}
+  g.fillStyle=lv?`hsl(45 100% ${62+lv*22}%)`:"#e6dccb";g.strokeStyle=INK;g.lineWidth=2;
+  g.beginPath();g.arc(x,y,8,Math.PI*.8,Math.PI*2.2);g.lineTo(x+4,y+9);g.lineTo(x-4,y+9);g.closePath();g.fill();g.stroke();
+  g.fillStyle="#8a8070";g.fillRect(x-4,y+10,8,5);g.strokeRect(x-4,y+10,8,5);
+  if(lv){g.strokeStyle="#a86f00";g.lineWidth=1.5;g.beginPath();g.moveTo(x-3,y+6);g.lineTo(x-1.5,y);g.lineTo(x+1.5,y+3);g.lineTo(x+3,y-2);g.stroke()}
+}
+function station(a,now){
+  let al=Math.min(1,(now-a.born)/500); if(a.gone){al=1-(now-a.gone)/900;if(al<=0){A.delete(a.id);return}}
+  g.globalAlpha=al; const x=a.x,y=a.y;
+  const bob=a.working?Math.sin(now/160+a.ph)*1.2:0;
+  if(a.working){g.fillStyle="#2f9e5b33";g.beginPath();g.ellipse(x,y+14,40,9,0,0,6.29);g.fill()}
+  if(!drawn(look(a),x-38,y-62+bob,76,76)){avatar(a,now,x,y-22+bob);rr(x-34,y+4,68,8,4,a.working?DESK:"#d9ccb6",INK,2,0)}
+  const rp=a.role&&RART[a.role]; if(rp&&rp.complete&&rp.naturalWidth) g.drawImage(rp,x+12,y-26,30,30);  // the role's prop on the desk
+  tag(fitText(a.name,CW-30,F13),x,y+32, a.working?"#d9f5e1":PAPER);
+  bulb(x-26,y-66,tokOf(a),now);
+  const by=y-74+Math.sin(now/280+a.ph)*2;
+  if(a.who==="user"){if(!drawn("badge-user",x+16,by,28,28)) bubble(x+24,y-52,"!",RED)}
+  else if(a.who==="desk"){if(!drawn("badge-desk",x+16,by,28,28)) bubble(x+24,y-52,"?",AMBER)}
+  else if(!a.working){g.globalAlpha=al*(.35+.35*Math.sin(now/700+a.ph));text("z",x-24,y-48-((now/60+a.ph*10)%12),12,MUTED,800);text("z",x-16,y-56-((now/60+a.ph*10)%12),9,MUTED,800)}
+  g.globalAlpha=1;
+}
+function draw(now){
+  g.setTransform(DPR,0,0,DPR,0,0);
+  g.fillStyle="#f4efe6";g.fillRect(0,0,W,H);
+  g.translate(OX,OY);g.scale(S,S);
+  // floor planks
+  for(let y=-OY/S,i=0;y<(H-OY)/S;y+=40,i++){g.fillStyle=i%2?"#f1e8d9":"#f4ecde";g.fillRect(-OX/S,y,W/S,40);
+    g.fillStyle="#e8dcc6";g.fillRect(-OX/S,y+38,W/S,2);for(let x=-OX/S+(i%3)*90;x<(W-OX)/S;x+=270)g.fillRect(x,y+6,2,28)}
+  for(const a of A.values()){a.x+=(a.tx-a.x)*.1;a.y+=(a.ty-a.y)*.1}
+  // the boss seat and the reception
+  const U=at("user"),D=at(deskId);
+  if(U){rr(U.x-90,U.y-78,180,124,16,"#ffd0cb");tag("👤 내 자리",U.x,U.y-56,PAPER);
+    if(!drawn("user",U.x-38,U.y-44,76,76)){rr(U.x-26,U.y-30,52,52,26,PAPER,INK,3,3);text("👤",U.x,U.y+8,28)}}
+  if(D){rr(D.x-150,D.y-88,300,134,16,"#ffe7a8");tag("☀ 데스크 · 접수·배치·대조",D.x,D.y-66,PAPER);
+    if(!drawn("desk-agent",D.x-66,D.y-54,132,88)){avatar({agent:"claude",working:D.working,ph:1},now,D.x-40,D.y-14,24);
+      rr(D.x-80,D.y+4,160,18,5,DESK,INK,2,0);text("☀",D.x+40,D.y-8,22)}}
+  if(U&&D){g.setLineDash([6,8]);g.lineDashOffset=-now/50;g.strokeStyle="#2a252055";g.lineWidth=2;g.beginPath();g.moveTo(U.x+90,U.y-10);g.lineTo(D.x-150,D.y-20);g.stroke();g.setLineDash([])}
+  for(const r of rooms){rr(r.x,r.y,r.w,r.h,18,ROOM[r.kind]||ROOM.none);
+    const title=fitText(({ask:"🛑 ",profile:"🗂 ",meeting:"🏛 ",out:"🛰 "}[r.kind]||"📦 ")+r.name+(r.kind==="ask"?" · 먼저 묻는 방":""),r.w-60,F13);
+    tag(title,r.x+16,r.y+20,PAPER,INK,true);
+    const room=r.w-tagW(title)-(r.kind==="profile"?72:40);  // what is left of the header line for the room's rule
+    if(r.kind==="profile"){ // the area lead: not a resident agent — an on-call seat run by its profile
+      const px=r.x+r.w-30,py=r.y+24;g.setLineDash([3,3]);g.strokeStyle=INK;g.lineWidth=2;g.fillStyle=PAPER;g.beginPath();g.arc(px,py,11,0,6.29);g.fill();g.stroke();g.setLineDash([]);
+      text("담당",px,py+4,9,MUTED,800);if(room>60)text(fitText("영역 담당 · 호출형 · "+(r.decides||""),room,F12),px-18,py+5,12,MUTED,600,"right");
+      if(!r.m.length) text("(열린 세션 없음)",r.x+r.w/2,r.y+r.h/2+10,12,MUTED,600)}
+    else if(room>60) text(fitText(r.decides||"",room,F12),r.x+r.w-14,r.y+25,12,MUTED,600,"right");
+    if(r.topic){const F14=`800 14px -apple-system,"Apple SD Gothic Neo",sans-serif`;text(fitText("주제 · "+r.topic,r.w-32,F14),r.x+18,r.y+54,14,PURPLE,800,"left")}
+    g.fillStyle=ROOM[r.kind]||ROOM.none;g.fillRect(r.x+r.w/2-26,r.y+r.h-3,52,6)}  // door gap
+  // who-sent-whom: faint dotted threads from the spawner
+  g.setLineDash([2,7]);g.lineWidth=1.5;g.strokeStyle="#2a25202a";
+  for(const a of A.values()){if(a.kind!=="s"||a.gone)continue;const s=at(a.parent)||(a.spawner?at(a.spawner):null);
+    if(s){g.beginPath();g.moveTo(s.x,s.y-10);g.quadraticCurveTo((s.x+a.x)/2,Math.min(s.y,a.y)-40,a.x,a.y-10);g.stroke()}}
+  g.setLineDash([]);
+  for(const a of A.values()) if(a.kind==="h"&&a.host&&at(a.host)){const h=at(a.host);g.setLineDash([2,4]);g.strokeStyle="#2a252066";g.lineWidth=1.5;
+    g.beginPath();g.moveTo(a.x+8,a.y);g.lineTo(h.x-14,h.y-22);g.stroke();g.setLineDash([])}
+  for(const a of A.values()) if(a.kind==="s"||(a.kind==="h"&&!a.host)) station(a,now); else if(a.kind==="h") mini(a,now);
+  // flying paper
+  fly=fly.filter(o=>{const k=Math.min(1,(now-o.t0)/o.dur),e=k<.5?2*k*k:1-Math.pow(-2*k+2,2)/2;
+    const ax=o.a.x,ay=o.a.y-30,bx=o.b.x,by=o.b.y-30,mx=(ax+bx)/2,my=Math.min(ay,by)-120;
+    const x=(1-e)**2*ax+2*(1-e)*e*mx+e*e*bx, y=(1-e)**2*ay+2*(1-e)*e*my+e*e*by, c=COLOR[o.kind]||BLUE;
+    o.trail.push([x,y]);if(o.trail.length>22)o.trail.shift();
+    o.trail.forEach(([tx,ty],i)=>{if(i%2)return;g.globalAlpha=i/o.trail.length*.8;g.fillStyle=c;g.beginPath();g.arc(tx,ty,2.5,0,6.29);g.fill()});g.globalAlpha=1;
+    g.save();g.translate(x,y);g.rotate(Math.sin(now/120)*.15);if(!drawn({msg:"note-msg",report:"note-report",input:"note-input",new:"note-new"}[o.kind]||"note-msg",-22,-18,44,35)){rr(-17,-13,34,26,6,PAPER,INK,2.5,3);text(ICON[o.kind]||"✉️",0,9,15)}g.restore();
+    if(k>=1){puff(bx,by+10);pop(o.b,ICON[o.kind]);return false}return true});
+  puffs=puffs.filter(p=>{const k=(now-p.t0)/500;g.globalAlpha=1-k;g.strokeStyle=INK;g.lineWidth=2.5;
+    g.beginPath();g.arc(p.x,p.y,10+k*26,0,6.29);g.stroke();g.globalAlpha=1;return k<1});
+  floats=floats.filter(f=>{const k=(now-f.t0)/1500;g.globalAlpha=Math.max(0,1-k);text(f.icon,f.a.x+26,f.a.y-62-k*34,20);g.globalAlpha=1;return k<1});
+  document.getElementById("clock").textContent=kHMS(Date.now());
+  requestAnimationFrame(draw);
+}
+function hitAt(ev){const x=(ev.clientX-OX)/S,y=(ev.clientY-OY)/S;let hit=null;
+  for(const a of A.values()) if(a.info&&!a.gone&&(a.kind==="h"&&a.host?Math.hypot(a.x-x,a.y-y)<22:Math.abs(a.x-x)<46&&y>a.y-70&&y<a.y+40)) hit=a;
+  return hit}
+const goPanel=a=>a?(a.panel||(a.host&&A.get(a.host)&&A.get(a.host).panel)||null):null;  // a helper goes to the session that runs it
+cv.addEventListener("click",async ev=>{const a=hitAt(ev),p=goPanel(a);if(!p)return;
+  const t=document.getElementById("toast");t.textContent="→ "+cut(a.kind==="h"&&a.host?A.get(a.host).name:a.name,40)+" (으)로 이동";t.style.display="block";
+  try{const r=await fetch("go",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({panel:p})});
+    if(!r.ok) t.textContent="이동 못 함: "+(await r.text()).slice(0,80)}catch(e){t.textContent="이동 못 함: 서버 연결 끊김"}
+  clearTimeout(t._h);t._h=setTimeout(()=>t.style.display="none",2200)});
+cv.addEventListener("mousemove",ev=>{const hit=hitAt(ev);cv.style.cursor=goPanel(hit)?"pointer":"default";
+  if(hit){const tk=tokOf(hit);tipEl.innerHTML=hit.info+(hit.session?`<br>💡 최근 2분 토큰: <b>${tk?fmt(tk):"없음"}</b>`:"")+(goPanel(hit)?`<br><span class="m">클릭하면 이 세션으로 이동</span>`:"");tipEl.style.display="block";tipEl.style.left=Math.min(ev.clientX+14,W-440)+"px";tipEl.style.top=ev.clientY+14+"px"}else tipEl.style.display="none"});
+async function tick(){const off=document.getElementById("off");
+  try{const r=await fetch("data",{cache:"no-store"});update(await r.json());off.style.display="none"}catch(e){off.style.display="block"}
+  setTimeout(tick,1000)}
+// 기록 보관소: 회의실은 회의가 끝나면 사라지지만, 끝난 회의(발굴·심사, 실패 포함)와 그 뒤 각 역할이 어떻게 됐는지는 여기 남는다
+const RC={통과:GREEN,승인:GREEN,수정:AMBER,보류:AMBER,관찰:MUTED,거절:RED,탈락:RED};
+async function openArchive(){const box=document.getElementById("arc"),L=document.getElementById("arcList");box.style.display="flex";
+  try{const ms=await (await fetch("archive",{cache:"no-store"})).json();
+    if(!ms.length){L.textContent="아직 끝난 회의가 없습니다.";return}
+    L.innerHTML=ms.map(m=>{const t=m.record&&!m.time_known?`${+KST(m.at*1000,{month:"numeric"})}/${+KST(m.at*1000,{day:"numeric"})} <span title="명부에는 날짜만 있고 시각 기록이 없음">--:--</span>`:kMDHM(m.at*1000);
+      if(m.record){const i=m.items[0];return `<details><summary><span class="t">${t}</span><span class="k">${m.what==="투입"?"📌":"📦"} ${esc(m.what)}</span> · <span class="tp">${esc(m.topic)}</span>${i.fate&&i.fate!==m.what?` <span class="m">· 지금 ${esc(cut(i.fate,30))}</span>`:""}</summary>
+        <div class="m" style="font-size:12px;margin-top:4px">명부 기록: ${esc(i.detail)}</div></details>`}
+      const rows=m.items.map(i=>`<tr><td>${esc(i.role)}</td><td class="r" style="color:${RC[i.result]||INK}">${esc(i.result)}</td><td class="m">${esc(i.detail)}</td><td>${esc(i.fate||"—")}</td></tr>`).join("");
+      const mem=m.members.map(x=>esc(x.name)+(x.model?`<span class="m">(${esc(x.model)})</span>`:"")+(x.error?` <span class="fail" title="${esc(x.error)}">✗</span>`:"")).join(" · ");
+      return `<details><summary><span class="t">${t}</span><span class="k ${m.failed?"fail":""}">🏛 ${esc(m.what)}</span> · <span class="tp">${esc(m.topic)}</span> <span class="m">· ${m.items.length}건</span></summary>
+        <div class="m" style="font-size:12px;margin-top:4px">위원: ${mem||"—"}</div>
+        ${rows?`<table><tr class="m"><td>역할</td><td>결과</td><td>근거</td><td>그 뒤</td></tr>${rows}</table>`:`<div class="m" style="font-size:12px">결과 없음${m.failed?" — 위원이 답하지 못한 회의":""}</div>`}
+        ${m.md?`<button class="raw" data-md="${esc(m.md)}">회의록 원문 보기</button>`:""}</details>`}).join("")}
+  catch(e){L.textContent="기록을 못 불러옴: 서버 연결 끊김"}}
+document.getElementById("arcBtn").onclick=()=>{const b=document.getElementById("arc");if(b.style.display==="flex"){b.style.display="none";return}document.getElementById("org").style.display="none";openArchive()};
+document.getElementById("arcX").onclick=()=>document.getElementById("arc").style.display="none";
+document.getElementById("arcList").addEventListener("click",async ev=>{const b=ev.target.closest(".raw");if(!b)return;
+  const pre=b.nextElementSibling&&b.nextElementSibling.tagName==="PRE"?b.nextElementSibling:null;if(pre){pre.remove();b.textContent="회의록 원문 보기";return}
+  const p=document.createElement("pre");p.textContent="불러오는 중…";b.after(p);b.textContent="원문 닫기";
+  try{const r=await fetch("archive/"+encodeURIComponent(b.dataset.md));p.textContent=r.ok?await r.text():"원문 없음"}catch(e){p.textContent="못 불러옴"}});
+
+// 조직도: 위원회 위원도 에이전트 하나 — 부서만 가른다. 칸마다 계약(기간)·지표·현재 상황·시작/은퇴 근거·이력
+let ORG=null;
+const badge=st=>{const k=/수습/.test(st)?"수습":/계약/.test(st)?"계약":/시험/.test(st)?"시험":/은퇴|합쳐|퇴출|벤치|빠짐/.test(st)?"은퇴":"";return st?`<span class="badge b-${k}">${esc(cut(st,14))}</span>`:""};
+const ndHTML=n=>{const c=n.contract||{};return `<div class="nd${n.head?" head":""}" data-n="${esc(n.name)}"><b>${esc(n.name)}</b>${badge(n.status)}<br><span class="m">${esc(n.kind)}${n.model?" · "+esc(cut(n.model,26)):""}</span>${c.start?`<br><span class="m">계약 ${esc(c.start)} → ${esc(cut(c.probation||c.cycle||"",22))}</span>`:""}</div>`};
+async function openOrg(){const T=document.getElementById("orgTree");T.textContent="불러오는 중… (지표를 모으는 데 몇 초 걸림)";
+  try{const OJ=await (await fetch("org",{cache:"no-store"})).json();ORG=OJ.nodes;const ASK=new Set(OJ.ask||[]);
+    const by=d=>ORG.filter(n=>n.dept===d), desk=ORG.find(n=>n.name==="desk");
+    const special=["데스크","위원회","투입 전 초안","명부에 없는 정의","은퇴"];
+    const areas=[...new Set(ORG.map(n=>n.dept).filter(d=>!special.includes(d)))].sort();
+    const dept=(d,cls,note)=>{const ns=by(d);if(!ns.length)return "";const h=ns.filter(n=>n.head),r=ns.filter(n=>!n.head);
+      return `<div class="dept ${cls}"><div class="dh">${esc(d)} <small>${note||""} · ${ns.length}</small></div>${h.map(ndHTML).join("")}${h.length&&r.length?'<div class="wire" style="height:8px"></div>':""}${r.map(ndHTML).join("")}</div>`};
+    T.innerHTML=`<div class="lvl"><div class="nd head" style="cursor:default"><b>👤 사용자</b><br><span class="m">모든 투입·퇴출 판정자</span></div></div><div class="wire"></div>
+      <div class="lvl">${desk?ndHTML(desk).replace('<b>desk</b>','<b>☀ 데스크 (desk)</b>'):""}</div><div class="wire"></div>
+      <div class="depts">${areas.map(a=>dept(a,ASK.has(a)?"ask":"",ASK.has(a)?"먼저 묻는 영역":"영역")).join("")}${dept("위원회","com","에이전트를 발굴·심사")}</div>
+      <div class="wire" style="background:transparent"></div>
+      <div class="depts">${dept("투입 전 초안","wait","사용자 확인 대기")}${dept("명부에 없는 정의","def","계약 줄 없음")}${dept("은퇴","gone","합쳐짐·퇴출·예전 위원")}</div>`}
+  catch(e){T.textContent="조직도를 못 불러옴: 서버 연결 끊김"}}
+function orgSide(name){const n=ORG&&ORG.find(x=>x.name===name);if(!n)return;
+  document.querySelectorAll("#orgTree .nd").forEach(x=>x.classList.toggle("sel",x.dataset.n===name));
+  const kv=(k,v)=>v?`<span class="m">${k}</span><span>${v}</span>`:"",c=n.contract||{};
+  const act=(n.activity||[]).map(a=>`<li><span class="m">${esc(a.day)} · ${esc(a.what)}</span> ${esc(a.text)}</li>`).join("");
+  document.getElementById("orgSide").innerHTML=`<h3>${esc(n.name)} ${badge(n.status)}</h3><div class="m">${esc(n.dept)} · ${esc(n.kind)}</div>
+    <div class="sec">이력</div><div class="kv">${kv("모델",esc(n.model)+(n.file_model&&!String(n.model).endsWith(n.file_model)?` <span class="m">(정의 파일은 ${esc(n.file_model)}, 실행은 위원회 설정을 따름)</span>`:""))}${kv("층",esc(n.layer))}${kv("도구",esc(n.tools))}${kv("접근",esc(n.approach))}${kv("보는 근거",esc(n.evidence))}${kv("맡는 회의",esc(n.rounds))}${kv("원본",esc(n.source))}</div>
+    ${n.about?`<div class="why">${esc(n.about)}</div>`:""}
+    <div class="sec">계약</div><div class="kv">${kv("시작",esc(c.start))}${kv("수습 판정",esc(c.probation))}${kv("연장 시",esc(c.extend))}${kv("계약 뒤 판정",esc(c.cycle))}${kv("교체선",esc(c.line))}${kv("판정자",esc(c.decider||n.decider))}</div>${c.start?"":'<div class="m">계약 줄 없음</div>'}
+    <div class="sec">현재 상황</div><div>${esc(n.status||"-")}${n.agree?` · 최종 판정과 일치 ${esc(n.agree)}`:""}</div>
+    ${n.metrics?`<div class="sec">평가 지표 <span class="m">(${esc(n.metric_cmd||"agent-scout measure")})</span></div><pre>${esc(n.metrics)}</pre>`:""}
+    <div class="sec">시작 근거</div><div class="why">${esc(n.hired_why||"기록 없음")}</div>${(n.hired_fix||[]).map(x=>`<div class="why m">정정: ${esc(x)}</div>`).join("")}
+    ${n.retired_why?`<div class="sec">은퇴 근거</div><div class="why">${esc(n.retired_why)}</div>`:""}
+    <div class="sec">이력 · ${(n.activity||[]).length}건 <span class="m">(심사·고용·사용·판정·정정, 오래된 것부터)</span></div><ul>${act||"<li>없음</li>"}</ul>`}
+document.getElementById("orgTree").addEventListener("click",ev=>{const d=ev.target.closest(".nd[data-n]");if(d)orgSide(d.dataset.n)});
+document.getElementById("orgBtn").onclick=()=>{const o=document.getElementById("org");if(o.style.display==="flex"){o.style.display="none";return}
+  document.getElementById("arc").style.display="none";o.style.display="flex";openOrg()};
+document.getElementById("orgX").onclick=()=>document.getElementById("org").style.display="none";
+if(location.hash.startsWith("#org")){document.getElementById("org").style.display="flex";openOrg().then(()=>{const n=decodeURIComponent(location.hash.slice(5));if(n)orgSide(n)})}
+if(location.hash==="#archive") openArchive();  // brief tree --popup 으로 열 때 보관소부터 펼칠 수 있게
+fit();requestAnimationFrame(draw);tick();
+</script></body></html>

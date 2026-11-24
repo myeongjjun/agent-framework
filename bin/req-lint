@@ -1,7 +1,8 @@
 #!/usr/bin/env -S python3 -I
 """req-lint — check requirement sentences against RFC 2119 + ASD-STE100.
 
-The rule is agent-context/constraints/code-style-requirement-sentences.md.
+The rule is agent-context/constraints/code-style-requirement-sentences.md in
+the agent-framework repo: {RULE_DOC}
 A requirement sentence states one requirement with one RFC 2119 keyword:
 
     [If|When <condition>, ]<subject> MUST|MUST NOT|SHOULD|SHOULD NOT|MAY <verb> ...
@@ -209,7 +210,8 @@ def main(argv: list[str]) -> int:
     argv = [a for a in argv if a != "--json"]
     findings = []
     if argv and argv[0] in ("-h", "--help"):
-        print(__doc__)
+        rule = Path(__file__).resolve().parents[1] / "agent-context/constraints/code-style-requirement-sentences.md"
+        print(__doc__.replace("{RULE_DOC}", str(rule)))
         return 0
     if argv and argv[0] == "--trace":
         if len(argv) > 2:

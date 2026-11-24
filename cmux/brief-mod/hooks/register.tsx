@@ -12,11 +12,11 @@ import type { EngineInterface, Register } from 'claude-code'
 import type { DeskView, TodoItem } from '../types'
 
 const PANE = 'desk'
-const desk = atom({ plugin: 'brief-nav', key: 'desk' } as const, null, { shape: 'desk-2' })
+const desk = atom({ plugin: 'brief-nav', key: 'desk' } as const, null, { shape: 'desk-3' })
 const SEP = '\u001e'
 // 가장 최근 데스크 문서와 TODO 파일을 한 번에 읽는다.
 // 문서 경로는 brief 에 묻는다: 세션의 cwd 가 바뀌어도(orch 가 cd 한 경우) 같은 문서를 읽어야 한다.
-const LOAD = `f=$("$HOME/.local/bin/brief" doc 2>/dev/null); printf '%s\\n' "Desk/\${f##*/}"; [ -n "$f" ] && cat "$f"; printf '\\n${SEP}\\n'; cat "$HOME/.cache/cmux/brief-plan.json" 2>/dev/null; printf '\n${SEP}\n'; "$HOME/.local/bin/brief" board --json 2>/dev/null`
+const LOAD = `f=$("$HOME/.local/bin/brief" doc 2>/dev/null); printf '%s\\n' "Desk/\${f##*/}"; [ -n "$f" ] && cat "$f"; printf '\\n${SEP}\\n'; cat "$HOME/.cache/cmux/brief-plan.json" 2>/dev/null; printf '\n${SEP}\n'; "$HOME/.local/bin/brief" board --json 2>/dev/null; printf '\n${SEP}\n'; "$HOME/.local/bin/brief" answered 2>/dev/null`
 
 const SECTIONS: Record<string, 'decisions' | 'running' | 'standing' | 'finished'> = {
   '결정 필요': 'decisions',
@@ -30,11 +30,11 @@ const plain = (line: string) =>
 
 // 데스크 문서에서 타임라인 위쪽(지금 상태)만 읽는다.
 export function parseDesk(raw: string): DeskView {
-  const [docPart = '', planPart = '', boardPart = ''] = raw.split(SEP)
+  const [docPart = '', planPart = '', boardPart = '', answeredPart = ''] = raw.split(SEP)
   const lines = docPart.split('\n')
   const view: DeskView = {
     file: (lines.shift() ?? '').trim(), updated: '', now: '',
-    decisions: [], running: [], standing: [], finished: [], todo: [], board: [],
+    decisions: [], running: [], standing: [], finished: [], todo: [], board: [], answered: [],
   }
   let section = ''
   for (const line of lines) {
@@ -59,6 +59,17 @@ export function parseDesk(raw: string): DeskView {
     view.todo = items.map((it, i): TodoItem => ({ n: i + 1, title: it.title ?? '', do: it.do ?? '', done: !!it.done, review: !!it.review && !it.done }))
   } catch {
     view.todo = []
+  }
+  // P12: 결정이 올라온 뒤 그 세션 pane 에 사용자가 입력했으면, 데스크가 문서를 고치기 전에도 그 줄을 "답함"으로 본다.
+  // brief answered 는 문서 순서(i)와 TODO 번호(n)로 준다. 그 사이 문서가 바뀌어 번호가 어긋난 줄은 쓰지 않는다.
+  try {
+    const rows = JSON.parse(answeredPart) as { i?: number; n?: number; answered?: boolean; input_at?: string }[]
+    view.answered = view.decisions.map((text, i) => {
+      const r = rows.find(x => x.i === i)
+      return r?.answered && r.n === todoOf(text) && r.n > 0 ? (r.input_at ?? '').slice(-5) || '?' : ''
+    })
+  } catch {
+    view.answered = view.decisions.map(() => '')
   }
   try {
     const rows = JSON.parse(boardPart) as { k?: string; text?: string; warn?: boolean }[]
@@ -109,6 +120,9 @@ async function refresh($: EngineInterface): Promise<void> {
     // 읽지 못하면 지난 상태를 그대로 둔다.
   }
 }
+
+// 사용자가 그 pane 에서 이미 답한 결정: 데스크가 확인하고 문서를 고칠 때까지 이렇게 흐리게 둔다.
+export const ANSWERED = '답함, 확인 대기'
 
 // 결정 줄이 가리키는 TODO 번호("…(1번)"). 없으면 0.
 export const todoOf = (text: string): number => Number(/\((\d+)번\)/.exec(text)?.[1] ?? 0)
@@ -172,9 +186,11 @@ export const register: Register = on => {
 
     const { Box, Text, Button } = $.ui.resolve(e)
     const left = view.todo.filter(it => !it.done).length
-    const shown = view.decisions.slice(0, 3)
+    const open = view.decisions.filter((_, i) => !view.answered[i])
+    const shown = open.slice(0, 3)
+    const waiting = view.decisions.length - open.length
     const counts = [
-      `결정 ${view.decisions.length}`, `진행 ${view.running.length}`, `예약 ${view.standing.length}`,
+      `결정 ${open.length}`, waiting ? `답함 ${waiting}` : '', `진행 ${view.running.length}`, `예약 ${view.standing.length}`,
       `끝남 ${view.finished.length}`, `TODO ${left}/${view.todo.length}`,
       view.updated ? `갱신 ${view.updated}` : '',
     ].filter(Boolean).join(' · ')
@@ -195,8 +211,8 @@ export const register: Register = on => {
             ? <Button key={`band-go-${i}`} plain onPress={() => void press($, ['go', String(n)])}><Text color="warning">{label}</Text></Button>
             : <Text color="warning" wrap="truncate-end">{label}</Text>
         })}
-        {view.decisions.length > shown.length && (
-          <Text dimColor>{`  … 결정 ${view.decisions.length - shown.length}건 더 (/desk)`}</Text>
+        {open.length > shown.length && (
+          <Text dimColor>{`  … 결정 ${open.length - shown.length}건 더 (/desk)`}</Text>
         )}
         <Text dimColor>{counts}</Text>
       </Box>
@@ -253,11 +269,13 @@ export const register: Register = on => {
           </Box>
         )}
         <Box flexDirection="column" marginTop={1}>
-          <Text bold color="warning">{`결정 필요 ${view.decisions.length}`}</Text>
+          <Text bold color="warning">{`결정 필요 ${view.decisions.filter((_, i) => !view.answered[i]).length}`}</Text>
           {view.decisions.length === 0 && <Text dimColor>  없음</Text>}
           {view.decisions.map((text, i) => (
             <Box flexDirection="column">
-              <Text wrap="wrap" color="warning">{`· ${decisionHead(text, true)}`}</Text>
+              {view.answered[i]
+                ? <Text wrap="wrap" dimColor>{`✓ ${decisionHead(text, true)} · ${ANSWERED} (${view.answered[i]} 입력)`}</Text>
+                : <Text wrap="wrap" color="warning">{`· ${decisionHead(text, true)}`}</Text>}
               {todoOf(text) > 0 && (
                 <Button key={`dec-go-${i}`} plain dimColor onPress={go(todoOf(text))}>{`   → ${todoOf(text)}번 세션으로 가기`}</Button>
               )}

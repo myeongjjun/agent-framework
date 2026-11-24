@@ -292,6 +292,40 @@ if [[ -f "${FRAMEWORK_ROOT}/AGENTS.md" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# 5a) cmux session completion report — reaches every session, not only the
+#     ones `sib spawn` starts. Claude Code loads ~/.claude/rules/*.md in
+#     every session; Codex reads ~/.codex/AGENTS.md, which another layer
+#     owns, so L1 keeps only a marked block inside it.
+# ---------------------------------------------------------------------------
+report_src="${FRAMEWORK_ROOT}/cmux/session-report.md"
+if [[ -f "${report_src}" ]]; then
+  deploy_copy "${report_src}" "${HOME}/.claude/rules/cmux-session-report.md" 644 "rules/cmux-session-report.md"
+  codex_md="${HOME}/.codex/AGENTS.md"
+  if (( DRY_RUN == 1 )); then
+    printf '  [dry-run] update L1 block in %s\n' "${codex_md}"
+  else
+    mkdir -p "$(dirname "${codex_md}")"
+    L1_BLOCK_SRC="${report_src}" python3 - "${codex_md}" <<'PY'
+import os, sys
+path, start, end = sys.argv[1], "<!-- agent-framework:cmux-session-report:start -->", "<!-- agent-framework:cmux-session-report:end -->"
+block = start + "\n" + open(os.environ["L1_BLOCK_SRC"]).read().rstrip("\n") + "\n" + end
+try:
+    text = open(path).read()
+except FileNotFoundError:
+    text = ""
+if start in text and end in text:
+    head, rest = text.split(start, 1)
+    new = head + block + rest.split(end, 1)[1]
+else:
+    new = text.rstrip("\n") + ("\n\n" if text.strip() else "") + block + "\n"
+if new != text:
+    open(path, "w").write(new)
+PY
+  fi
+  ok "codex AGENTS.md L1 block → ${codex_md}"
+fi
+
+# ---------------------------------------------------------------------------
 # 5b) Ownership manifest. An owned target that this run did not deploy has
 #     left L1: remove it if it is still exactly what L1 wrote.
 # ---------------------------------------------------------------------------
