@@ -582,7 +582,7 @@ trusted() { jq -e --arg d "$1" '.projects[$d].hasTrustDialogAccepted == true' "$
 @test "a prompt in a 4-column pane (head wrapped away, no fold marker) is submitted (11-23)" {
   export CMUX_STUB_SCREEN="$BOOT_SCREEN" CMUX_STUB_SCREEN_AFTER_SENDS=2 \
     CMUX_STUB_SCREEN2=$'  ay\n  an\n  d \n  th\n  e \n  ta\n  il\n  en\n  d \n  of\n  it\n────' \
-    CMUX_STUB_SCREEN_AFTER_ENTERS=2 CMUX_STUB_SCREEN3=$'  ✻\n────\n❯\u00a0\n────'
+    CMUX_STUB_SCREEN_AFTER_ENTERS=2 CMUX_STUB_SCREEN3=$'  ✻\n────\n❯\xc2\xa0\n────'
   run "$SIB" spawn narrow --workdir "$WORKDIR" --no-report -- "a long head that the agent folded away and the tail end of it"
   [ "$status" -eq 0 ]
   [ "$(grep -c "cmux send-key .* enter" "$CMUX_STUB_LOG")" -eq 2 ]

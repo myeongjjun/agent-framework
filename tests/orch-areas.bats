@@ -82,7 +82,7 @@ EOF
   [ -z "$output" ]
 }
 
-@test "orch definition: stage 2 hands judgment questions to the area lead before 결정 필요" {
+@test "orch definition: stage 2 hands judgment questions to the area lead before the decisions-needed block" {
   grep -q 'The area lead is a one-shot call, not a pane: `brief lead <area>' "$ORCH"
   grep -q 'You MUST call the area lead before you put such a question under `결정 필요`' "$ORCH"
   grep -q 'You MUST NOT override a `by:lead` decision yourself' "$ORCH"

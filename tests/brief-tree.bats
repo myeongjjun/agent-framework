@@ -253,7 +253,7 @@ PY
   printf 'slug=old-work\nagent=claude\nsurface=surface:5\nworktree_managed=0\nspawner_surface=surface:99\n' > "$BRIEF_SIB_STATE/old-work.env"
   mkdir -p "$HOME/meet"; printf '=== draft `tool-builder` ===\nbody\n=== end of `tool-builder` ===\n' > "$HOME/meet/task.md"
   printf 'slug=scout-redteam-evaluate-42\nagent=codex\nsurface=surface:6\nworktree_managed=0\nspawner_surface=surface:2\nworkdir=%s\n' "$HOME/meet" > "$BRIEF_SIB_STATE/scout-redteam-evaluate-42.env"
-  sed -i '' 's/{"ref":"surface:4","id":"CCCC-PANEL"}/{"ref":"surface:5","id":"DDDD-PANEL"},{"ref":"surface:6","id":"EEEE-PANEL"}/' "$BRIEF_CMUX"
+  sed -i.bak 's/{"ref":"surface:4","id":"CCCC-PANEL"}/{"ref":"surface:5","id":"DDDD-PANEL"},{"ref":"surface:6","id":"EEEE-PANEL"}/' "$BRIEF_CMUX" && rm -f "$BRIEF_CMUX.bak"
   proj="$HOME/.claude/projects/$(python3 -c 'import re,sys;print(re.sub(r"[^A-Za-z0-9]","-",sys.argv[1]))' "$HOME/.local/share/cmux/desk")"
   mkdir -p "$proj" "$HOME/.claude/agents"
   echo '{"x":"sib spawn old-work → W1 surface:5 [booted]"}' > "$proj/s1.jsonl"
@@ -297,7 +297,7 @@ assert m.art_step({"scout-redteam": "", "scout-replay": ""}, now=1000 + 90000)  
 print("ok")
 PY
   [ "$status" -eq 0 ]
-  [ "${lines[-1]}" = "ok" ]
+  [ "${lines[${#lines[@]}-1]}" = "ok" ]
   grep -q 'sib spawn office-art-1000 --codex --no-report --workdir .*/art/jobs/office-art-1000 --new-workspace -- Read task.md' "$STUB/sib-calls"
   grep -q 'sib kill office-art-1000' "$STUB/sib-calls"
   [ "$(grep -c 'sib spawn' "$STUB/sib-calls")" = "2" ]

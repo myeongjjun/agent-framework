@@ -193,7 +193,7 @@ EOF2
   [[ "$output" == *'"k": "사용자에게 넘김"'* ]]
   [[ "$output" == *"오늘 6건 · 데스크가 할 수 있었던 것 4 (배치 2 · 닫기 2)"* ]]
   # The top block is rewritten: a decision that left the document still counts for the day.
-  sed -i '' '/S3 후속/d' "$BRIEF_DESK_DIR"/Desk/*.md
+  sed -i.bak '/S3 후속/d' "$BRIEF_DESK_DIR"/Desk/*.md && rm -f "$BRIEF_DESK_DIR"/Desk/*.md.bak
   run python3 "$BRIEF" board --log
   [[ "$output" == *"오늘 6건"* ]]
   run python3 "$BRIEF" board --trend 3

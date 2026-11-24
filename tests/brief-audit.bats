@@ -7,6 +7,8 @@ A=AAAA-PANEL
 DESK=DESK-PANEL
 
 setup() {
+  # Board days and held spans read local time; pin it so the suite is the same on every machine.
+  export TZ=UTC
   export HOME="$BATS_TEST_TMPDIR/home"
   mkdir -p "$HOME/.claude/projects/p" "$HOME/bin" "$HOME/.cache/cmux"
   export BRIEF_CMUX="$HOME/bin/cmux" BRIEF_DESK_PANEL="$DESK" BRIEF_PATROL_MIN=0
@@ -282,7 +284,7 @@ EOF
   [[ "$output" == *"프롬프트 제안일 수 있음"* ]]
 }
 
-@test "audit: a declarative line with 골라 is not a question" {
+@test "audit: a declarative line with the verb \"pick\" (Korean) is not a question" {
   transcript <<EOF
 $(line assistant 2026-11-19T01:00:00Z '[{"type":"text","text":"- 제 변경만 골라 커밋했습니다. 남은 미커밋은 그 세션 것입니다."}]')
 EOF
@@ -339,16 +341,17 @@ EOF
 }
 
 @test "done-request: the desk's request does not end a held span, the 60 minutes run from the finish" {
+  # The board day starts at 05:00 local (UTC here), so the close at 07:06Z falls on 11-19.
   transcript <<EOF
-$(line assistant 2026-11-19T01:00:00Z '[{"type":"text","text":"Done. nothing left."}]')
-$(line user 2026-11-19T01:50:00Z '"done-request: this session looks finished"' ',"origin":{"kind":"human"}')
-$(line assistant 2026-11-19T01:50:10Z '[{"type":"text","text":"done-report: ready | did: x"}]')
-$(line user 2026-11-19T02:05:00Z '"one more thing"' ',"origin":{"kind":"human"}')
+$(line assistant 2026-11-19T06:00:00Z '[{"type":"text","text":"Done. nothing left."}]')
+$(line user 2026-11-19T06:50:00Z '"done-request: this session looks finished"' ',"origin":{"kind":"human"}')
+$(line assistant 2026-11-19T06:50:10Z '[{"type":"text","text":"done-report: ready | did: x"}]')
+$(line user 2026-11-19T07:05:00Z '"one more thing"' ',"origin":{"kind":"human"}')
 EOF
   python3 - "$repo" <<'EOF' >> "$HOME/.cache/cmux/brief-closed.jsonl"
 import json, sys, calendar
 print(json.dumps({"panel": "AAAA-PANEL", "title": "Task A", "cwd": sys.argv[1], "agent": "claude", "session": "sid-a",
-                  "at": calendar.timegm((2026, 11, 19, 2, 6, 0)), "closed": True, "verified": "ok"}))
+                  "at": calendar.timegm((2026, 11, 19, 7, 6, 0)), "closed": True, "verified": "ok"}))
 EOF
   run python3 "$BRIEF" audit --day 2026-11-19 --json
   python3 -c "import json,sys; a=json.loads(sys.argv[1])[0]; assert [h[1]-h[0] for h in a['held']] == [3900], a['held']" "$output"
