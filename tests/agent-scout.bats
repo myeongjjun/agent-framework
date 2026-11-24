@@ -77,6 +77,7 @@ EOF
 #!/usr/bin/env bash
 cat >"$CALLS.$SCOUT_NAME.$SCOUT_ROUND"
 echo "$SCOUT_NAME $SCOUT_ROUND" >>"$CALLS"
+case " $SCOUT_FAIL " in *" $SCOUT_NAME "*) echo "pane waiting at a trust screen" >&2; exit 6 ;; esac
 cand() { printf '{"kind":"%s","role":"%s","title":"%s","why":"w","evidence":["e1"],"form":"agent","strength":%s}' "$1" "$2" "$3" "$4"; }
 case "$SCOUT_NAME/$SCOUT_ROUND" in
   volume/propose)   echo "{\"candidates\":[$(cand research doc-scope-checker 'Checks research scope' 2),$(cand chart-review chart-pr-reviewer 'Reviews chart PRs' 1)]}" ;;
@@ -287,6 +288,40 @@ assert r["friction"]["corrected"]==1 and r["friction"]["hired"]==1 and r["handof
   [ "$status" -eq 1 ]
   AGENT_SCOUT_TODAY=2026-12-07 run "$AS" due
   [ "$status" -eq 0 ]
+}
+
+@test "failed meeting: no member sat, so it is saved as failed-convene and neither due nor review counts it" {
+  SCOUT_FAIL="volume friction handoff" run "$AS" convene
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"not counted"* ]]
+  [ -f "$AGENT_SCOUT_HR/failed-convene-2026-11-23.json" ] && [ ! -e "$AGENT_SCOUT_HR/quorum-2026-11-23.json" ]
+  ! grep -q "상태: 수습" "$AGENT_SCOUT_ROSTER"                     # nobody sat: no probation starts
+  grep -q "| volume | scan | proposed 0 · passed 0 · error | ref:failed-convene-2026-11-23" "$AGENT_SCOUT_ROSTER"
+  SCOUT_FAIL="volume friction handoff" run "$AS" convene         # a second try the same day keeps the first record
+  [ -f "$AGENT_SCOUT_HR/failed-convene2-2026-11-23.json" ]
+  run "$AS" due
+  [ "$status" -eq 0 ]
+  # a record from before this fix: every member errored under the quorum- name
+  mv "$AGENT_SCOUT_HR/failed-convene-2026-11-23.json" "$AGENT_SCOUT_HR/quorum-2026-11-22.json"
+  run "$AS" due
+  [ "$status" -eq 0 ]
+  run "$AS" review --json --no-apply
+  echo "$output" | python3 -c 'import json,sys; assert all(x["runs"]==0 and x["verdict"]=="wait" for x in json.load(sys.stdin))'
+}
+
+@test "partial meeting: a member whose pane failed did not sit; the others' run counts" {
+  SCOUT_FAIL="handoff" "$AS" convene >/dev/null
+  run "$AS" due
+  [ "$status" -eq 1 ]
+  ! grep -q "^- handoff |.*상태: 수습" "$AGENT_SCOUT_ROSTER"
+  grep -q "^- volume |.*상태: 수습" "$AGENT_SCOUT_ROSTER"
+  run "$AS" review --json --no-apply
+  echo "$output" | python3 -c '
+import json,sys
+r={x["member"]:x for x in json.load(sys.stdin)}
+assert r["handoff"]["runs"]==0 and r["handoff"]["verdict"]=="wait", r["handoff"]
+assert r["volume"]["runs"]==1
+'
 }
 
 @test "one control path: every member (claude or codex) runs on a sib pane; never headless" {

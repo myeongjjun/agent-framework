@@ -880,25 +880,36 @@ def cmd_quorum(args):
            "proposals": proposals, "votes": votes, "candidates": ranked, "kinds": data["kinds"],
            "judge": {"spec": rule.get("judge"), "grades": grades, "error": judge_error}}
     os.makedirs(HR, exist_ok=True)
-    path = os.path.join(HR, f"quorum-{day.isoformat()}.json")
+    failed = len(errors) == len(on)
+    if failed:  # no member sat: not a meeting. Keep the record under a name that `due` and `review` do not count.
+        k = 1
+        while os.path.exists(os.path.join(HR, f"failed-convene{k if k > 1 else ''}-{day.isoformat()}.json")):
+            k += 1
+        name = f"failed-convene{k if k > 1 else ''}-{day.isoformat()}"
+    else:
+        name = f"quorum-{day.isoformat()}"
+    path = os.path.join(HR, name + ".json")
     json.dump(run, open(path, "w"), ensure_ascii=False, indent=1)
     write_md(run, path[:-5] + ".md")
     for s in on:
-        roster_add("Committee", f"- {s['name']} | {s['runner']}:{s['model']} | {s['agent']} | 접근: {s['approach']} | "
-                   f"상태: 수습 | 시작 {mmdd(day)} | 판정 {mmdd(day + dt.timedelta(days=int(rule.get('every', 14))))} | "
-                   f"지표: agent-scout measure {s['name']} | {MEMBER_LINE}",
-                   unique_key=s["name"])
+        if s["name"] not in errors:  # a member that never sat does not start its probation here
+            roster_add("Committee", f"- {s['name']} | {s['runner']}:{s['model']} | {s['agent']} | 접근: {s['approach']} | "
+                       f"상태: 수습 | 시작 {mmdd(day)} | 판정 {mmdd(day + dt.timedelta(days=int(rule.get('every', 14))))} | "
+                       f"지표: agent-scout measure {s['name']} | {MEMBER_LINE}",
+                       unique_key=s["name"])
         passed = sum(1 for g in ranked if s["name"] in g["backers"] and g["result"] in ("pass", "hold"))
         mine = [g for g in grades if g.get("member") == s["name"]]
         score = f" · judge {sum(g['evidence'] + g['fit'] for g in mine) / (4 * len(mine)):.2f}" if mine else ""
         roster_add("Log", f"- {mmdd(day)} | {s['name']} | scan | proposed {len(proposals[s['name']])} · passed {passed}{score}"
-                   + (" · error" if s["name"] in errors else "") + f" | ref:quorum-{day.isoformat()}")
+                   + (" · error" if s["name"] in errors else "") + f" | ref:{name}")
     if "--json" in args:
         print(json.dumps(run, ensure_ascii=False, indent=1))
     else:
         show_run(run)
         print(f"\nsaved: {path}")
-    return 1 if len(errors) == len(on) else 0
+    if failed:
+        print(f"no member sat: the meeting failed and is not counted (`due` and `review` skip {name})", file=sys.stderr)
+    return 1 if failed else 0
 
 
 def write_md(run, path):
@@ -950,8 +961,27 @@ def show_run(run):
         print(f"      {g['title']}")
 
 
+def sat(run, name):
+    """the member sat in the run: it was seated and its round did not end in an error."""
+    return any(s["name"] == name and not s.get("error") for s in run.get("scouts") or run.get("members") or [])
+
+
+def held_runs():
+    """quorum-*.json paths of meetings that were held: at least one member sat. A meeting where every member
+    failed (pre-fix records kept the quorum- name) is no meeting; new ones are saved as failed-convene-*."""
+    out = []
+    for f in sorted(glob.glob(os.path.join(HR, "quorum-*.json"))):
+        try:
+            run = json.load(open(f))
+        except (OSError, ValueError):
+            continue
+        if any(not s.get("error") for s in run.get("scouts", [])):
+            out.append(f)
+    return out
+
+
 def latest_run():
-    runs = sorted(glob.glob(os.path.join(HR, "quorum-*.json")))
+    runs = held_runs()
     if not runs:
         die("no quorum run yet — run `agent-scout quorum` first")
     return json.load(open(runs[-1]))
@@ -2132,7 +2162,7 @@ def use_lines(role, lines=None):
 
 def member_records(members):
     """per member, from every committee run and the roster — computed here, never reported by the member."""
-    runs = [json.load(open(f)) for f in sorted(glob.glob(os.path.join(HR, "quorum-*.json")))]
+    runs = [json.load(open(f)) for f in held_runs()]
     evals = [json.load(open(f)) for f in eval_files()]
     log = roster_lines()
     vd = voids(log)["backer"]
@@ -2148,7 +2178,7 @@ def member_records(members):
              "rejected": 0, "hired": 0, "probation_passed": 0, "probation_failed": 0, "corrected": 0, "overruled": 0}
         said = {}  # role -> this member's latest evaluate verdict
         for ev in evals:  # an evaluation: the judge's grounding grade of each review counts like a proposal grade
-            if not any(s["name"] == n for s in ev.get("members", [])):
+            if not sat(ev, n):  # a member whose pane failed did not sit; infrastructure is not its record
                 continue
             r["runs"] += 1
             r["eval_runs"] += 1
@@ -2162,7 +2192,7 @@ def member_records(members):
         # the user went against the member: it said reject and the user put the role in anyway (user 11-24)
         r["overruled"] = sum(1 for role, v in said.items() if v == "reject" and role in hires)
         for run in runs:
-            if not any(s["name"] == n for s in run.get("scouts", [])):
+            if not sat(run, n):
                 continue
             r["runs"] += 1
             r["convene_runs"] += 1
@@ -2233,7 +2263,7 @@ def cmd_review(args):
 
 def cmd_due(args):
     _, rule, _ = load_config()
-    runs = sorted(glob.glob(os.path.join(HR, "quorum-*.json")))
+    runs = held_runs()
     every = int(rule.get("every", 14))
     if not runs:
         print("due: the committee has never met")
@@ -2392,7 +2422,7 @@ def board_text(now=None):
             out += board_meeting(mt, members, rule, panes, now) + [""]
     else:
         out += ["진행 중인 회의 없음", ""]
-    runs = sorted(glob.glob(os.path.join(HR, "quorum-*.json")))
+    runs = held_runs()
     if runs:
         try:
             run = json.load(open(runs[-1]))
