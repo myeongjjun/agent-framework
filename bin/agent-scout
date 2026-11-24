@@ -77,6 +77,9 @@ CONFIG = E("AGENT_SCOUT_CONFIG") or os.path.join(HOME, ".config/cmux/agent-commi
 AGENT_SRC = E("AGENT_SCOUT_AGENT_SRC") or os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "agents")
 ROSTER = E("AGENT_SCOUT_ROSTER") or os.path.join(HOME, ".config/cmux/orch-roster.md")
 HR = E("AGENT_SCOUT_HR") or os.path.join(HOME, ".local/share/cmux/hr")
+# member panes work in folders under here. It is under $HOME so sib can pre-trust it from its allowlist
+# (install adds `<root>/*`); a root outside $HOME stops every pane at the agent's trust screen.
+PANE_ROOT = "~/.local/share/cmux/hr/panes"
 AGENTS = E("AGENT_SCOUT_AGENTS") or os.path.join(HOME, ".claude/agents")
 SKILLS = E("AGENT_SCOUT_SKILLS") or os.path.join(HOME, ".claude/skills")
 CLAUDE_DIR = E("AGENT_SCOUT_CLAUDE_DIR") or os.path.join(HOME, ".claude/projects")
@@ -154,7 +157,7 @@ def load_config():
                        # optional 8th column: which meetings the member sits in (default both)
                        "rounds": {x.strip() for x in (r[7] if len(r) > 7 and r[7] else "propose,evaluate").split(",")}})
     rule = {"pass": 2, "vote": "on", "watch": 1, "days": 21, "slices": 3, "exclude": r"/tmp/|/private/var/",
-            "every": 14, "judge": "claude:fable", "root": "/private/tmp/agent-scout"}
+            "every": 14, "judge": "claude:fable", "root": PANE_ROOT}
     settings(sec.get("quorum", []), rule)
     settings(sec.get("judge", []), rule)
     settings(sec.get("schedule", []), rule)
@@ -546,14 +549,37 @@ def same_model(r1, m1, r2, m2):
     return r1 == r2 and res(r1, m1) == res(r2, m2)
 
 
+def pane_root(rule):
+    return os.path.expanduser(str(rule.get("root") or PANE_ROOT))
+
+
+def check_pane_root(rule):
+    """members work unattended: a pane whose folder is not pre-trusted waits at the trust screen until the
+    meeting times out. Ask sib before any pane opens and stop with the fix instead."""
+    if E("AGENT_SCOUT_CMD") or not os.environ.get("CMUX_WORKSPACE_ID"):
+        return  # no panes in this run (a fake scout, or run_pane refuses outside cmux)
+    root = pane_root(rule)
+    os.makedirs(root, exist_ok=True)
+    probe = os.path.join(root, f"{today().isoformat()}-member-round-0")  # the shape of a member's work folder
+    try:
+        p = subprocess.run(["sib", "trusted", probe], capture_output=True, text=True, timeout=30)
+        ok, why = p.returncode == 0, (p.stderr or p.stdout).strip()
+    except (OSError, subprocess.TimeoutExpired) as e:
+        ok, why = False, str(e)
+    if not ok:
+        die(f"pane root {root} is not pre-trusted, so every member pane would stop at the trust screen ({why}).\n"
+            f"Fix: keep `root:` under $HOME (default {PANE_ROOT}) and add the line `{root.replace(HOME, '~', 1)}/*` "
+            f"to sib's trusted-dirs (scripts/install.sh adds it for the default root). No meeting was held.", 6)
+
+
 def run_pane(who, runner, agent, model, rnd, prompt, key, schema):
     """start the member on a pane in the committee's own cmux workspace (the first pane of a meeting creates
     it, so member panes do not squeeze the caller's workspace). The pane works in a folder under `root`
-    (a parent the agents already trust), reads task.md and writes answer.json; a copy stays in the HR record."""
+    (sib pre-trusts it: see check_pane_root), reads task.md and writes answer.json; a copy stays in the HR record."""
     if not os.environ.get("CMUX_WORKSPACE_ID"):
         raise RuntimeError(f"{who}: members run on cmux panes via sib (run agent-scout inside cmux)")
     name = f"{today().isoformat()}-{who}-{rnd}-{os.getpid()}"
-    work = os.path.join(os.path.expanduser(str(PANES["rule"].get("root") or "/private/tmp/agent-scout")), name)
+    work = os.path.join(pane_root(PANES["rule"]), name)
     os.makedirs(work, exist_ok=True)
     task, out = os.path.join(work, "task.md"), os.path.join(work, "answer.json")
     body = agent_body(agent) if agent else ""
@@ -856,6 +882,7 @@ def cmd_quorum(args):
     on = [s for s in scouts if s["status"] in ("on", "수습", "계약", "probation", "active") and "propose" in s["rounds"]]
     if not on:
         die(f"no enabled scouts in {CONFIG}")
+    check_pane_root(rule)
     data = build_packs(days, rule, kinds)
     PANES["rule"] = rule
     proposals, errors = {}, {}
@@ -1376,6 +1403,7 @@ def eval_result(reviews, ev):
 
 def cmd_evaluate(args):
     members, rule, kinds = load_config()
+    check_pane_root(rule)
     ev = rule["evaluate"]
     roles, skip = [], False
     for a in args:
@@ -2377,7 +2405,7 @@ def board_meeting(mt, members, rule, panes, now):
     rounds = ("evaluate",) if mt["kind"] == "evaluate" else ("propose", "vote")
     sit = "evaluate" if mt["kind"] == "evaluate" else "propose"
     on = [s for s in members if s["status"] in ("on", "수습", "계약", "probation", "active") and sit in s["rounds"]]
-    calls = member_calls(mt["pid"], rule.get("root") or "/private/tmp/agent-scout")
+    calls = member_calls(mt["pid"], pane_root(rule))
     title = "평가 회의 (사용자가 만든 초안 심사)" if mt["kind"] == "evaluate" else "발굴 회의 (위원이 후보 제안 → 쿼럼)"
     start = mt["started"].strftime("%m-%d %H:%M") if mt["started"] else "?"
     since = f" · {ago(now - mt['started'].timestamp())} 경과" if mt["started"] else ""

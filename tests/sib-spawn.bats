@@ -472,6 +472,55 @@ trusted() { jq -e --arg d "$1" '.projects[$d].hasTrustDialogAccepted == true' "$
   ! trusted "$(cd "$HOME/work/proj" && pwd -P)"
 }
 
+@test "an allowlisted workdir is pre-trusted for codex in its config.toml, once" {
+  trust_setup
+  mkdir -p "$HOME/.codex"; printf 'model = "m"\n' > "$HOME/.codex/config.toml"
+  unset CODEX_HOME
+  d="$(cd "$HOME/work/proj" && pwd -P)"
+  run "$SIB" spawn tr-cx --codex --workdir "$HOME/work/proj"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"pre-trusted"* ]]
+  grep -qxF "[projects.\"$d\"]" "$HOME/.codex/config.toml"
+  grep -qx 'model = "m"' "$HOME/.codex/config.toml"
+  python3 -c 'import sys,tomllib; c=tomllib.load(open(sys.argv[1],"rb")); assert c["projects"][sys.argv[2]]["trust_level"]=="trusted"' "$HOME/.codex/config.toml" "$d"
+  run "$SIB" spawn tr-cx2 --codex --workdir "$HOME/work/proj"
+  [ "$(grep -cF "[projects.\"$d\"]" "$HOME/.codex/config.toml")" -eq 1 ]
+}
+
+@test "codex: a dir outside the allowlist, or one the user marked untrusted, is not changed" {
+  trust_setup
+  mkdir -p "$HOME/.codex"
+  d="$(cd "$HOME/work/proj" && pwd -P)"
+  printf '[projects."%s"]\ntrust_level = "untrusted"\n' "$d" > "$HOME/.codex/config.toml"
+  cp "$HOME/.codex/config.toml" "$HOME/before.toml"
+  run "$SIB" spawn tr-cx3 --codex --workdir "$HOME/work/proj"
+  run "$SIB" spawn tr-cx4 --codex --workdir "$HOME/other"
+  cmp "$HOME/.codex/config.toml" "$HOME/before.toml"
+}
+
+@test "a codex pane stuck at its trust screen is reported, not claimed ready" {
+  trust_setup
+  export CMUX_STUB_SCREEN="  Trust this folder? Codex can read, edit, and run files here
+› 1. Trust and continue
+  2. Open restricted"
+  run "$SIB" spawn tr-cx-stuck --codex --workdir "$HOME/other" -- "do the thing"
+  [ "$status" -eq 6 ]
+  [[ "$output" == *"Codex's trust-folder dialog"* ]]
+  ! grep -q "cmux send .*do the thing" "$CMUX_STUB_LOG"
+}
+
+@test "sib trusted answers from the allowlist and writes nothing" {
+  trust_setup
+  cp "$HOME/.claude.json" "$HOME/before.json"
+  run "$SIB" trusted "$HOME/work/new-room"            # need not exist yet
+  [ "$status" -eq 0 ]
+  run "$SIB" trusted "$HOME/other"
+  [ "$status" -eq 1 ]
+  run "$SIB" trusted /private/tmp/agent-scout/x        # outside HOME: never
+  [ "$status" -eq 1 ]
+  cmp "$HOME/.claude.json" "$HOME/before.json"
+}
+
 @test "a pane stuck at the trust dialog is reported, not claimed ready" {
   trust_setup
   export CMUX_STUB_SCREEN="Do you trust the files in this folder?

@@ -80,7 +80,7 @@ that would replace a member is evaluated with `evaluate --replacing <member>`, w
                 # one session in the agent-tooling area that runs `/agent-scout` (meeting, then `agent-scout review`).
 
 ## Panes
-- root: /private/tmp/agent-scout   # member panes work in folders under here; pick a parent Claude and Codex already trust
+- root: ~/.local/share/cmux/hr/panes   # member panes work in folders under here; must be under $HOME and in sib's trusted-dirs as `<root>/*`
 Each meeting opens its own cmux workspace for the member panes, so they do not squeeze the caller's
 workspace. A pane is closed once its answer is read; a pane that does not answer stays open.
 

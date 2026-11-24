@@ -264,6 +264,34 @@ if [[ -d "${CMUX_SRC}" ]]; then
   done
   [[ -d "${ORCH_DATA}/.git" ]] || run git -C "${ORCH_DATA}" init -q
 
+  # Committee member panes (agent-scout) run unattended in folders under the
+  # pane root. sib pre-trusts a folder for Claude and Codex only when it is
+  # under $HOME and matches its allowlist, so list `<root>/*` there.
+  PANE_ROOT_OLD="/private/tmp/agent-scout"     # pre-2026-11 default: outside $HOME, never trusted
+  # shellcheck disable=SC2088  # a literal `~/` pattern: sib expands it
+  PANE_ROOT_PAT="~/.local/share/cmux/hr/panes/*"
+  SIB_TRUST="${XDG_CONFIG_HOME:-${HOME}/.config}/sib/trusted-dirs"
+  committee="${ORCH_DATA}/agent-committee.md"
+  if [[ -f "${committee}" ]] && grep -qE "^- root: ${PANE_ROOT_OLD}([[:space:]]|$)" "${committee}"; then
+    if (( DRY_RUN == 1 )); then
+      printf '  [dry-run] committee pane root %s → %s\n' "${PANE_ROOT_OLD}" "${PANE_ROOT_PAT%/\*}"
+    else
+      sed "s#^- root: ${PANE_ROOT_OLD}\$#- root: ${PANE_ROOT_PAT%/\*}#; s#^- root: ${PANE_ROOT_OLD}[[:space:]].*#- root: ${PANE_ROOT_PAT%/\*}#" \
+        "${committee}" > "${committee}.tmp" && mv -f "${committee}.tmp" "${committee}"
+      ok "committee pane root ${PANE_ROOT_OLD} → ${PANE_ROOT_PAT%/\*} (sib cannot pre-trust outside \$HOME)"
+    fi
+  fi
+  if ! grep -qE '^[[:space:]]*~/\.local/share/cmux/hr/panes/\*[[:space:]]*(#.*)?$' "${SIB_TRUST}" 2>/dev/null; then
+    if (( DRY_RUN == 1 )); then
+      printf '  [dry-run] add %s to %s\n' "${PANE_ROOT_PAT}" "${SIB_TRUST}"
+    else
+      mkdir -p "$(dirname "${SIB_TRUST}")"
+      [[ -s "${SIB_TRUST}" ]] || printf '# sib: dirs a sibling may start in without the trust dialog\n' > "${SIB_TRUST}"
+      printf '# agent-scout committee member panes (added by agent-framework install)\n%s\n' "${PANE_ROOT_PAT}" >> "${SIB_TRUST}"
+      ok "sib trusted-dirs: ${PANE_ROOT_PAT} (committee member panes)"
+    fi
+  fi
+
   if (( DRY_RUN == 1 )); then
     "${FRAMEWORK_ROOT}/bin/cmux-automations-merge" "${CMUX_SRC}/automations.json" --dry-run >/dev/null \
       && printf '  [dry-run] merge %s\n' "${CMUX_SRC}/automations.json"

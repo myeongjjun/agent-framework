@@ -199,3 +199,17 @@ first_hook() { basename "$(ls "$FW"/hooks/general/*.sh | head -1)"; }
   run "$VERIFY"
   [ "$status" -eq 0 ]
 }
+
+@test "committee member panes: install lists the pane root in sib's allowlist once, and moves the old /tmp root" {
+  mkdir -p "$HOME/.local/share/cmux/orch"
+  sed 's|^- root: .*|- root: /private/tmp/agent-scout   # old default|' "$FW/cmux/seeds/agent-committee.md" \
+    > "$HOME/.local/share/cmux/orch/agent-committee.md"
+  "$INSTALL" >/dev/null
+  grep -qx '~/.local/share/cmux/hr/panes/\*' "$HOME/.config/sib/trusted-dirs"
+  grep -qx -- '- root: ~/.local/share/cmux/hr/panes' "$HOME/.local/share/cmux/orch/agent-committee.md"
+  "$INSTALL" >/dev/null
+  [ "$(grep -c 'hr/panes' "$HOME/.config/sib/trusted-dirs")" -eq 1 ]
+  mkdir -p "$HOME/.local/share/cmux/hr/panes"
+  SIB_EXTRA_PATH= run "$HOME/.local/bin/sib" trusted "$HOME/.local/share/cmux/hr/panes/2026-11-25-jobs-propose-1"
+  [ "$status" -eq 0 ]
+}

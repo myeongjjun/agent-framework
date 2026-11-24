@@ -24,6 +24,7 @@
 #   sib list          (also prunes state of panes that are gone)
 #   sib send <slug> [--queue] <text...>
 #   sib kill <slug> [--keep-worktree]
+#   sib trusted <dir>  (exit 0 when <dir> is in the pre-trust allowlist; writes nothing)
 #
 # Talk to a sibling by focusing its cmux pane and typing, or `sib send <slug> "..."`.
 # Trade-off vs zmx: no detached persistence — the agent lives only while its pane is open.
@@ -87,21 +88,22 @@ prune_if_dead() {
   if (( worktree_managed )); then echo kept-worktree; else rm -f "$f"; echo pruned; fi
 }
 
-# Pre-trust allowlisted start dirs so a claude sibling does not stop at Claude
-# Code's "trust this folder" dialog (nobody is at a desk-spawned pane to answer
-# it). The allowlist is user-owned: one pattern per line in $SIB_TRUST_FILE,
+# Pre-trust allowlisted start dirs so a sibling does not stop at the agent's
+# folder-trust screen (nobody is at a desk-spawned pane to answer it): Claude
+# Code's "trust this folder" dialog, Codex's "Trust this folder?" screen. The
+# allowlist is user-owned: one pattern per line in $SIB_TRUST_FILE,
 # '~/' expands to $HOME, '#' starts a comment, '*' matches within ONE path
 # segment (so '~/dev/*' covers ~/dev/x but not ~/dev/x/y). Only dirs under
 # $HOME are eligible. Anything not listed keeps the dialog — sib then reports
 # it instead of claiming the session is ready.
 SIB_TRUST_FILE="${SIB_TRUST_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/sib/trusted-dirs}"
-# Echoes: "already" | "added" | nothing (not eligible / could not write).
-trust_allowlisted() {
-  local dir="$1" line pat hit=0 cfg tmp home
+# Exit 0 when the physical dir $1 is under $HOME and matches the allowlist.
+trust_listed() {
+  local dir="$1" line pat home
   # $dir is physical (pwd -P); compare it with the physical $HOME too, or a
   # HOME under a symlink (macOS /var → /private/var) never matches.
-  home="$(cd "${HOME}" 2>/dev/null && pwd -P)" || return 0
-  [[ -f "${SIB_TRUST_FILE}" && "${dir}" == "${home}"/* ]] || return 0
+  home="$(cd "${HOME}" 2>/dev/null && pwd -P)" || return 1
+  [[ -f "${SIB_TRUST_FILE}" && "${dir}" == "${home}"/* ]] || return 1
   while IFS= read -r line || [[ -n "${line}" ]]; do
     line="${line%%#*}"
     line="${line#"${line%%[![:space:]]*}"}"; line="${line%"${line##*[![:space:]]}"}"
@@ -111,9 +113,15 @@ trust_allowlisted() {
     # Same depth first, so '*' cannot swallow a '/'.
     local ds="${dir//[^\/]/}" ps="${pat//[^\/]/}"
     # shellcheck disable=SC2053  # $pat is intentionally a glob
-    if [[ ${#ds} -eq ${#ps} && "${dir}" == ${pat} ]]; then hit=1; break; fi
+    if [[ ${#ds} -eq ${#ps} && "${dir}" == ${pat} ]]; then return 0; fi
   done < "${SIB_TRUST_FILE}"
-  (( hit )) || return 0
+  return 1
+}
+# Claude: hasTrustDialogAccepted in ~/.claude.json.
+# Echoes: "already" | "added" | nothing (not eligible / could not write).
+trust_allowlisted() {
+  local dir="$1" cfg tmp
+  trust_listed "${dir}" || return 0
   command -v jq >/dev/null 2>&1 || return 0
   cfg="${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json"
   [[ -f "${cfg}" ]] || return 0
@@ -127,6 +135,21 @@ trust_allowlisted() {
     chmod 600 "${tmp}" && mv -f "${tmp}" "${cfg}" && echo added && return 0
   fi
   rm -f "${tmp}"
+}
+# Codex: a [projects."<dir>"] table with trust_level = "trusted" in config.toml.
+# An existing table for the dir is left alone (an explicit "untrusted" stays).
+# Echoes: "already" | "added" | nothing (not eligible / could not write).
+trust_codex() {
+  local dir="$1" cfg
+  trust_listed "${dir}" || return 0
+  [[ "${dir}" != *[\"\\]* ]] || return 0   # never write a key that needs escaping
+  cfg="${CODEX_HOME:-$HOME/.codex}/config.toml"
+  [[ -d "$(dirname "${cfg}")" ]] || return 0
+  if [[ -f "${cfg}" ]] && grep -qxF "[projects.\"${dir}\"]" "${cfg}"; then
+    echo already; return 0
+  fi
+  printf '\n[projects."%s"]\ntrust_level = "trusted"\n' "${dir}" >> "${cfg}" 2>/dev/null && echo added
+  return 0
 }
 
 # State files are plain `key=value` lines with RAW values (a workdir may
@@ -245,10 +268,12 @@ spawn)
     start_dir="${wt}"
   fi
   [[ -d "${start_dir}" ]] || die "start dir does not exist: ${start_dir}"
-  # Claude keys trust by its physical cwd, so resolve symlinks first.
+  # Claude and Codex key trust by the physical cwd, so resolve symlinks first.
   trust=""
   if [[ "${agent}" == "claude" ]]; then
     trust="$(trust_allowlisted "$(cd "${start_dir}" && pwd -P)")"
+  else
+    trust="$(trust_codex "$(cd "${start_dir}" && pwd -P)")"
   fi
 
   # A spawn that fails before its agent is launched and recorded removes the
@@ -369,8 +394,8 @@ spawn)
     fi
   }
   # A start screen that blocks the pane until a human answers it. Prints its
-  # name. Claude: the folder-trust dialog. Codex: the update screen and the
-  # hooks-review screen. Each is an option list drawn with the input box's
+  # name. Claude: the folder-trust dialog. Codex: the folder-trust screen, the
+  # update screen and the hooks-review screen. Each is an option list drawn with the input box's
   # own marker, and any key picks an option: Enter on the update screen runs
   # `brew upgrade` and ends the pane; on the hooks screen it may trust hooks.
   start_screen() {
@@ -379,6 +404,7 @@ spawn)
     if [[ "${agent}" == "claude" ]]; then
       grep -qiE 'trust this folder|do you trust the files' <<<"${scr}" && { echo trust; return 0; }
     else
+      grep -qE 'Trust this folder\?|Trust and continue' <<<"${scr}" && { echo trust; return 0; }
       grep -qF 'Update available' <<<"${scr}" && grep -qE 'Update now|Skip until next version' <<<"${scr}" \
         && { echo "update screen (Update available: Update now / Skip)"; return 0; }
       grep -qE 'Hooks need review|Trust all and continue' <<<"${scr}" \
@@ -402,7 +428,7 @@ spawn)
     if (( i <= 10 )); then sleep 0.1; else sleep 0.5; fi
   done
   if (( trust_blocked )); then
-    echo "✗ sib '${slug}' (${agent}) → ${ws} ${surface} — waiting at Claude's trust-folder dialog" >&2
+    echo "✗ sib '${slug}' (${agent}) → ${ws} ${surface} — waiting at $([[ ${agent} == codex ]] && echo Codex || echo Claude)'s trust-folder dialog" >&2
     echo "  ${start_dir} is not in ${SIB_TRUST_FILE}; confirm in the pane, or add it there (user decision)" >&2
     [[ -n "${prompt}" ]] && echo "  prompt not sent; after confirming: sib send ${slug} \"...\"" >&2
     exit 6
@@ -519,6 +545,18 @@ kill)
   fi
   rm -f "$f"
   echo "✓ killed ${slug}"
+  ;;
+
+trusted)
+  # Read-only: is <dir> covered by the allowlist (so a spawn there is pre-trusted)?
+  # A dir that does not exist yet is judged by its path, its parent resolved.
+  d="${1:?sib trusted <dir>}"
+  if [[ -d "${d}" ]]; then d="$(cd "${d}" && pwd -P)"
+  elif [[ -d "$(dirname "${d}")" ]]; then d="$(cd "$(dirname "${d}")" && pwd -P)/$(basename "${d}")"
+  fi
+  if trust_listed "${d}"; then echo "trusted: ${d}"; exit 0; fi
+  echo "not trusted: ${d} (not under \$HOME, or no pattern in ${SIB_TRUST_FILE} matches)" >&2
+  exit 1
   ;;
 
 *)

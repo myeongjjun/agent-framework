@@ -652,6 +652,7 @@ case "$cmd" in
     IFS=- read -r _ who rnd _ <<<"$slug"
     SCOUT_NAME=$who SCOUT_ROUND=$rnd "$FAKE" <"$w/task.md" >"$w/answer.json" ;;
   kill) [ -f "$T/owner.$slug" ] && { ws=$(cat "$T/owner.$slug"); grep -vw -- "$ws" "$WS" >"$WS.n"; mv "$WS.n" "$WS"; }; echo "✓ killed $slug" ;;
+  trusted) [ -z "$UNTRUSTED" ] || { echo "not trusted: $slug" >&2; exit 1; } ;;
 esac
 EOF
   chmod +x "$T/bin/cmux" "$T/bin/sib"
@@ -693,6 +694,20 @@ codex_models() {
   [[ "$output" == *"member volume"*"proposed 2"* ]]           # members answered on sib panes
   [ "$(wc -l <"$T/made")" -eq 3 ]                              # two failed attempts left a workspace each, then the committee's
   [ "$(cat "$WS")" = "$(printf '  workspace:1  caller\n* workspace:2  other  [selected]')" ]
+}
+
+@test "panes: a pane root sib does not pre-trust stops the meeting before any pane opens" {
+  sed -i.bak 's/^- judge: claude:fable/- judge: off/; s/^- vote: on/- vote: off/' "$AGENT_SCOUT_CONFIG"
+  mv "$AGENT_SCOUT_CMD" "$T/fake-scout.real"; panes_stub
+  printf '\n## Panes\n- root: %s/work\n' "$T" >>"$AGENT_SCOUT_CONFIG"
+  UNTRUSTED=1 PATH="$T/bin:$PATH" run "$AS" convene
+  [ "$status" -eq 6 ]
+  [[ "$output" == *"not pre-trusted"*"trusted-dirs"* ]]
+  grep -q "^trusted $T/work/2026-11-23-member-round-0" "$T/sib-args"   # asked about a member folder's shape
+  ! grep -q "^spawn" "$T/sib-args"
+  [ -z "$(ls "$AGENT_SCOUT_HR" 2>/dev/null | grep -E 'quorum|failed')" ]   # no meeting record: none was held
+  UNTRUSTED=1 PATH="$T/bin:$PATH" run "$AS" evaluate x
+  [ "$status" -eq 6 ]
 }
 
 @test "board: the live meeting (members, panes, answers, judge), the latest results and the drafts waiting; read only" {
