@@ -2,7 +2,7 @@
 # check-update.sh — pull agent-framework updates from origin and re-install.
 #
 # Intended for periodic (cron) invocation:
-#   */30 * * * * ~/personal/agent-framework/scripts/check-update.sh
+#   */30 * * * * <repo>/scripts/check-update.sh
 #
 # Behaviour:
 #   1. git fetch origin (HEAD of default branch)

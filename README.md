@@ -11,7 +11,7 @@ multi-persona agent baseline.
 ## Layering
 
 ```
-L1  ── this repo  (~/personal/agent-framework)
+L1  ── this repo  (cloned anywhere; the path is per machine)
         Global baseline. Every persona inherits.
         Contents: ACP skills, codex skill, sib, security guards,
                   AGENTS.md base, critical constraints.

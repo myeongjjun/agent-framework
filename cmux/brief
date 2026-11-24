@@ -163,7 +163,7 @@ def sessions():
         if not agents or not proj.get("panel_id"):
             continue
         a = agents[0]
-        out.append({
+        x = {
             "panel": proj["panel_id"],
             "workspace": proj.get("workspace_id"),
             "title": it.get("label", ""),
@@ -172,7 +172,10 @@ def sessions():
             "state": a.get("state"),
             "session": a.get("session_id"),
             "last_activity": a.get("last_activity_at"),
-        })
+        }
+        if x["state"] == "working" and x["agent"] == "claude" and turn_ended(x):
+            x["state"] = "idle"
+        out.append(x)
     out.sort(key=lambda s: s["last_activity"] or "", reverse=True)
     return out
 
@@ -349,6 +352,24 @@ def transcript(x):
            else os.path.join(HOME, ".claude/projects/*", sid + ".jsonl"))
     hits = glob.glob(pat)
     return max(hits, key=os.path.getmtime) if hits else None
+
+
+def turn_ended(x):
+    """Claude 세션의 대화 기록에서 마지막 턴이 끝났는지. cmux 의 working 은 턴이 끝난 뒤에도 묵는다
+    (11-22: 한 세션이 턴을 끝낸 2분 뒤부터 4시간 working 으로 보였다. 턴이 끝난 뒤 cmux 의
+    Stop 훅 뒤에 도는 것이 상태를 다시 바꾼 것으로 보인다). 끝 = 마지막 user·assistant 줄 뒤에 Claude 가
+    쓰는 turn_duration 줄이 있다. 기록이 없거나 못 읽으면 False(cmux 상태를 그대로 쓴다)."""
+    path = transcript(x)
+    for line in reversed(tail(path, 400_000) if path else []):
+        try:
+            o = json.loads(line)
+        except ValueError:
+            continue
+        if o.get("type") == "system" and o.get("subtype") == "turn_duration":
+            return True
+        if o.get("type") in ("user", "assistant"):
+            return False
+    return False
 
 
 def epoch(iso):

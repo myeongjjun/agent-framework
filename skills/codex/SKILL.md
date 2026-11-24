@@ -156,5 +156,5 @@ spawn/kill.)
 |---|---|---|
 | `stdout is not a terminal` | Called bare `codex` without TTY | Use `sib spawn --codex` (a cmux pane) |
 | Not inside cmux (`$CMUX_WORKSPACE_ID` empty) | Headless context | Stop and ask the user to run the task in cmux; never use `codex exec` |
-| `trust_level required` | repo path not trusted | `cd <repo> && codex login --trust` (or edit `~/.codex/config.toml`) |
+| `Untrusted project-local configuration is disabled`, or a `Trust this folder?` screen | repo path not trusted | Add the repo to sib's trust allowlist (`sib trusted <dir>` checks it), or add `[projects."<repo>"]` with `trust_level = "trusted"` to `~/.codex/config.toml`. Codex's own hint, `codex exec --trust`, is headless, so do not use it here |
 | Slow startup, MCP loading | MCP enabled in config | Disable MCP in `~/.codex/config.toml` (default state) |

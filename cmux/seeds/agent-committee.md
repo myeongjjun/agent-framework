@@ -89,7 +89,7 @@ Where an installed agent's source goes. The committee itself is L1; the agents i
 the layer of their work: L1 for company-free roles (public repo), L2 for the persona, L3 for a
 domain (the project's `.claude/agents`, active only in that project). `install` refuses L1 when the
 card carries ask-first context or matches `private`.
-- L1: ~/personal/agent-framework/agents
+# L1 defaults to the agents folder of the agent-framework clone that runs agent-scout.
 - L2:              # the persona repo's agents folder, set in the local copy
 - private:         # regex of company words that must not reach L1, set in the local copy
 

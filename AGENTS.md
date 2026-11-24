@@ -63,9 +63,11 @@ override what an upper layer installs.
 | `~/.config/cmux/`, `~/.local/bin/brief` | cmux session desk (orch, Sessions panel, morning brief) |
 | `~/.cmuxterm/automations.json` | L1 rules, merged by id |
 
-Install: `bash ~/personal/agent-framework/scripts/install.sh`.
-Update: `bash ~/personal/agent-framework/scripts/check-update.sh` (cron).
-Verify: `bash ~/personal/agent-framework/scripts/verify.sh` (called from SessionStart hook).
+Run these from the clone of this repo (its location is per machine):
+
+Install: `bash scripts/install.sh`.
+Update: `bash scripts/check-update.sh` (cron).
+Verify: `bash scripts/verify.sh` (called from SessionStart hook).
 
 ## ADR / Constraint conventions
 

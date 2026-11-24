@@ -143,3 +143,22 @@ EOF
   [[ "$output" == "전달 못 함: 입력 칸에 사용자가 쓰던 글이 있어 넣지 않았습니다: myowndraft"* ]]
   ! grep -q "agent.*message" "$STUB/calls"
 }
+
+@test "send: cmux's working is not trusted when the transcript shows the turn ended (11-22: working for 4h after the turn)" {
+  state working
+  printf '%s\n' '{"type":"user","message":{"content":"go"}}' '{"type":"assistant","message":{"stop_reason":"end_turn"}}' \
+    '{"type":"system","subtype":"turn_duration"}' '{"type":"system","subtype":"away_summary"}' > "$HOME/.claude/projects/p/sid-a.jsonl"
+  run python3 "$BRIEF" send "$A" "also check the tests"
+  [ "$status" -eq 0 ]
+  [[ "$output" == "전달됨: "* ]]
+  ! grep -q "^deliver.*\[--queue\]" "$STUB/calls"
+}
+
+@test "send: a transcript whose last turn is still open keeps cmux's working" {
+  state working
+  printf '%s\n' '{"type":"system","subtype":"turn_duration"}' '{"type":"user","message":{"content":"next"}}' > "$HOME/.claude/projects/p/sid-a.jsonl"
+  run python3 "$BRIEF" send "$A" "also check the tests"
+  [ "$status" -eq 0 ]
+  [[ "$output" == "대기열: "* ]]
+  grep -q "^deliver.*\[--queue\]" "$STUB/calls"
+}
