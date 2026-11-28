@@ -744,6 +744,19 @@ codex_models() {
   [[ "$output" == *"진행 중인 회의 없음"* ]]
 }
 
+@test "board: a meeting run by Homebrew's framework Python (argv[0] .../MacOS/Python) is still live" {
+  mkdir -p "$T/bin"
+  py=/opt/homebrew/Cellar/python@3.13/3.13.1/Frameworks/Python.framework/Versions/3.13/Resources/Python.app/Contents/MacOS/Python
+  echo "4242 Mon Nov 23 10:00:00 2026     $py /x/bin/agent-scout evaluate research-helper --days 21" >"$T/ps"
+  printf '#!/bin/sh\necho "SLUG AGENT SURFACE WORKTREE"\n' >"$T/bin/sib"
+  chmod +x "$T/bin/sib"
+  PATH="$T/bin:$PATH" AGENT_SCOUT_PS="$T/ps" run "$AS" board
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "진행 중: 평가 회의"        # grep, not [[ ]]: bash 3.2 ignores a failed [[ ]] mid-test
+  echo "$output" | grep -q "심사 대상: research-helper"
+  ! echo "$output" | grep -q "진행 중인 회의 없음"
+}
+
 desk_fixture() {  # fake `brief audit`: 11-23 has LEFT closes the desk left with work, plus one by the user
   export AGENT_SCOUT_BRIEF="$T/brief" AGENT_SCOUT_DESK_EVAL="$T/desk-eval" AGENT_SCOUT_BOARD="$T/board.jsonl"
   cat >"$T/brief" <<'EOF'

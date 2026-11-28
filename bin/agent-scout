@@ -2324,8 +2324,9 @@ def meetings():
     found = []
     for line in out.splitlines():
         m = re.match(r"\s*(\d+)\s+(\w{3} \w{3}\s+\d+ [\d:]{8} \d{4})\s+(.*)$", line)
-        # argv[0] (or the interpreter's script) is agent-scout itself; a shell line that merely mentions it is not
-        c = m and re.match(r"(?:\S*python[\d.]*\s+)?\S*agent-scout\s+(convene|quorum|evaluate)\b(.*)$", m.group(3))
+        # argv[0] (or the interpreter's script) is agent-scout itself; a shell line that merely mentions it is not.
+        # The interpreter may be python3 or Homebrew's framework binary .../MacOS/Python.
+        c = m and re.match(r"(?:\S*(?i:python)[\d.]*\s+)?\S*agent-scout\s+(convene|quorum|evaluate)\b(.*)$", m.group(3))
         if not c:
             continue
         args, roles, skip = c.group(2).split(), [], False
