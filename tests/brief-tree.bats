@@ -87,10 +87,10 @@ q() { python3 -c "import json,sys; d=json.load(sys.stdin); print($1)"; }
   [ "$(echo "$output" | q 'd["areas"][1]["sessions"][0]["children"][0]["waiting"]["who"]')" = "desk" ]
   run python3 "$BRIEF" tree
   [ "$status" -eq 0 ]
-  [[ "$output" == *"👤 사용자"* ]]
-  [[ "$output" == *"☀ 데스크"* ]]
-  [[ "$output" == *"띄움: /collab: Tool work"* ]]
-  [[ "$output" == *"기다림: 데스크의 대조"* ]]
+  [[ "$output" == *"👤 사용자"* ]] || false
+  [[ "$output" == *"☀ 데스크"* ]] || false
+  [[ "$output" == *"띄움: /collab: Tool work"* ]] || false
+  [[ "$output" == *"기다림: 데스크의 대조"* ]] || false
   [[ "$output" == *"📮 완료 보고"* ]]
 }
 
@@ -127,7 +127,7 @@ x["label"]="Fresh session"; x["projections"][0]["panel_id"]="EEEE-PANEL"; d["ite
   [ "$status" -eq 0 ]
   grep -q 'new-split right --command .*tree --watch' "$STUB/calls"
   run python3 "$BRIEF" tree --toggle
-  [[ "$output" == *"닫았습니다"* ]]
+  [[ "$output" == *"닫았습니다"* ]] || false
   grep -q 'close-surface --surface surface:9' "$STUB/calls"
   [ ! -f "$HOME/.cache/cmux/brief-tree-pane.json" ]
 }
@@ -136,7 +136,7 @@ x["label"]="Fresh session"; x["projections"][0]["panel_id"]="EEEE-PANEL"; d["ite
   printf '#!/usr/bin/env bash\necho "$@" > "%s/chrome-args"\nexec sleep 60\n' "$STUB" > "$HOME/bin/chrome"; chmod +x "$HOME/bin/chrome"
   BRIEF_CHROME="$HOME/bin/chrome" run python3 "$BRIEF" tree --popup
   [ "$status" -eq 0 ]
-  [[ "$output" == *"열었습니다"* ]]
+  [[ "$output" == *"열었습니다"* ]] || false
   st="$HOME/.cache/cmux/brief-tree-popup.json"
   url=$(python3 -c "import json;print(json.load(open('$st'))['url'])")
   srv=$(python3 -c "import json;print(json.load(open('$st'))['server'])")
@@ -146,10 +146,10 @@ x["label"]="Fresh session"; x["projections"][0]["panel_id"]="EEEE-PANEL"; d["ite
   [ "$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' "$url")" = "200" ]
   kill -0 "$srv"; kill -0 "$br"
   run python3 "$BRIEF" tree --popup
-  [[ "$output" == *"닫았습니다"* ]]
+  [[ "$output" == *"닫았습니다"* ]] || false
   [ ! -f "$st" ]
   sleep 0.5
-  ! kill -0 "$srv" 2>/dev/null
+  ! kill -0 "$srv" 2>/dev/null || false
   ! kill -0 "$br" 2>/dev/null
 }
 
@@ -171,7 +171,7 @@ x["label"]="Fresh session"; x["projections"][0]["panel_id"]="EEEE-PANEL"; d["ite
   grep -q 'cmux focus-window --window MAIN-WIN' "$STUB/calls"
   grep -q 'cmux focus-panel --panel AAAA-PANEL --workspace W1 --window MAIN-WIN' "$STUB/calls"
   [ "$stranger" = "열린 세션이 아님 400" ]                          # only open sessions can be focused
-  [[ "$page" == *"에이전트 사무실"* ]]
+  [[ "$page" == *"에이전트 사무실"* ]] || false
   [ "$art" = "200 image/svg+xml" ]
   [ "$escape" = "404" ]
   [ "$(echo "$data" | q 'd["stats"]["sessions"]')" = "3" ]
@@ -201,8 +201,8 @@ for h in m.helper_agents(ss, ps_out=ps, current=cur):
 PY
   [ "$status" -eq 0 ]
   [ "${#lines[@]}" -eq 3 ]                                       # ended agent, app-server and plain sessions are not helpers
-  [[ "$output" == *"codex|AAAA-PANEL|pane|codex (같은 pane)"* ]]
-  [[ "$output" == *"codex|AAAA-PANEL|세션이 띄움|Draw the office art"* ]]   # wrapper + child count once
+  [[ "$output" == *"codex|AAAA-PANEL|pane|codex (같은 pane)"* ]] || false
+  [[ "$output" == *"codex|AAAA-PANEL|세션이 띄움|Draw the office art"* ]] || false   # wrapper + child count once
   [[ "$output" == *"codex|None|ChatGPT 앱|codex 실행"* ]]
 }
 
@@ -363,7 +363,7 @@ for m in ms:
 PY
   [ "$status" -eq 0 ]
   [ "${lines[0]}" = "pstack True 수습 11-23 0/1 1 | rev: 채용 (최종 수정, 근거 점수 2/2)" ]
-  [[ "${lines[1]}" == "judge True "* ]]
+  [[ "${lines[1]}" == "judge True "* ]] || false
   [ "${lines[2]}" = "volume False    1 | 제안 rev → 통과 (심판 근거 2·적합 1)" ]   # a former member stays, from the records
 }
 
@@ -397,14 +397,14 @@ for n in b.org_chart(measure=lambda n: f"M:{n}")["nodes"]:
           (n.get("hired_why") or "")[:30], "|", (n.get("retired_why") or "")[:30], "|", n["metrics"])
 PY
   [ "$status" -eq 0 ]
-  [[ "$output" == *"rsc | A. Tools | 역할 | 11-24 12-01 12-08 | 11-24 고용 — backers: a,b | quor |  | M:rsc"* ]]
-  [[ "$output" == *"desk | 데스크 | 데스크 (orch) | 11-24 12-01부터 7일마다(월)  | 고용(hire) 기록 없음"* ]]
-  [[ "$output" == *"lead:A | A. Tools | 영역 담당 |"* ]]                  # the area lead heads its area
-  [[ "$output" == *"pstack | 위원회 | 위원 |"* ]]                         # a committee member is one more agent
-  [[ "$output" == *"draft1 | 투입 전 초안 | 초안 |"* ]]
-  [[ "$output" == *"stray | 명부에 없는 정의 |"* ]]
-  [[ "$output" == *"old | 은퇴 | 합쳐짐 |"*"11-24 합쳐짐 — into rsc | by:user"* ]]
-  [[ "$output" == *"volume | 은퇴 | 예전 위원 |"*"마지막 회의 pilot-panel-2026-11-23"* ]]
+  [[ "$output" == *"rsc | A. Tools | 역할 | 11-24 12-01 12-08 | 11-24 고용 — backers: a,b | quor |  | M:rsc"* ]] || false
+  [[ "$output" == *"desk | 데스크 | 데스크 (orch) | 11-24 12-01부터 7일마다(월)  | 고용(hire) 기록 없음"* ]] || false
+  [[ "$output" == *"lead:A | A. Tools | 영역 담당 |"* ]] || false                  # the area lead heads its area
+  [[ "$output" == *"pstack | 위원회 | 위원 |"* ]] || false                         # a committee member is one more agent
+  [[ "$output" == *"draft1 | 투입 전 초안 | 초안 |"* ]] || false
+  [[ "$output" == *"stray | 명부에 없는 정의 |"* ]] || false
+  [[ "$output" == *"old | 은퇴 | 합쳐짐 |"*"11-24 합쳐짐 — into rsc | by:user"* ]] || false
+  [[ "$output" == *"volume | 은퇴 | 예전 위원 |"*"마지막 회의 pilot-panel-2026-11-23"* ]] || false
   [[ "$output" != *"M:volume"* && "$output" != *"M:old"* ]]               # retired: no metrics
 }
 
@@ -442,6 +442,6 @@ for m in b.committee_archive():
         print(m["what"], m["topic"], m["time_known"], b._stamp(m["at"])[6:] if m["time_known"] else "-", m["items"][0]["fate"])
 PY
   [ "$status" -eq 0 ]
-  [[ "$output" == *"투입 rsc True 11:12 투입 · 수습"* ]]        # time from the user's decision line
+  [[ "$output" == *"투입 rsc True 11:12 투입 · 수습"* ]] || false        # time from the user's decision line
   [[ "$output" == *"도구로 전환 old False - 도구로 전환 — becomes a script"* ]]   # no time on record: not invented
 }

@@ -55,7 +55,7 @@ EOF
 @test "send: an idle pane gets the text typed in, marked as the desk's" {
   run python3 "$BRIEF" send "$A" "please rebase on main"
   [ "$status" -eq 0 ]
-  [[ "$output" == "전달됨: "*"Task A" ]]
+  [[ "$output" == "전달됨: "*"Task A" ]] || false
   grep -qF "deliver [--surface] [$A] [--workspace] [W1] [--ours] [done-request:] [--ours] [desk-message:] [--ours] [close-request:] [--] [desk-message: please rebase on main]" "$STUB/calls"
   ! grep -q "agent.*message" "$STUB/calls"
 }
@@ -63,7 +63,7 @@ EOF
 @test "send: a pane cmux lists without an agent is still reachable by panel id" {
   run python3 "$BRIEF" send "$B" "decision: go with option b"
   [ "$status" -eq 0 ]
-  [[ "$output" == "전달됨: "*"Old session" ]]
+  [[ "$output" == "전달됨: "*"Old session" ]] || false
   grep -qF "deliver [--surface] [$B] [--workspace] [W2]" "$STUB/calls"
 }
 
@@ -71,7 +71,7 @@ EOF
   state working
   run python3 "$BRIEF" send "$A" "also check the tests"
   [ "$status" -eq 0 ]
-  [[ "$output" == "대기열: 세션이 일하는 중이라 그 pane 의 입력 대기열에"* ]]
+  [[ "$output" == "대기열: 세션이 일하는 중이라 그 pane 의 입력 대기열에"* ]] || false
   [ "$(grep -c "^deliver" "$STUB/calls")" -eq 1 ]
   grep -qF "deliver [--surface] [$A] [--workspace] [W1]" "$STUB/calls"
   grep -q "^deliver.*\[--queue\]" "$STUB/calls"
@@ -82,7 +82,7 @@ EOF
   export STUB_RC=4
   run python3 "$BRIEF" send "$A" "x"
   [ "$status" -eq 0 ]
-  [[ "$output" == "대기열: "* ]]
+  [[ "$output" == "대기열: "* ]] || false
   grep -q "^deliver.*\[--queue\]" "$STUB/calls"
   ! grep -q "agent.*message" "$STUB/calls"
 }
@@ -91,8 +91,8 @@ EOF
   export STUB_RC=3
   run python3 "$BRIEF" send "$A" "x"
   [ "$status" -eq 1 ]
-  [[ "$output" == "전달 못 함: 승인 대기 화면입니다"* ]]
-  ! grep -q "\[--queue\]" "$STUB/calls"
+  [[ "$output" == "전달 못 함: 승인 대기 화면입니다"* ]] || false
+  ! grep -q "\[--queue\]" "$STUB/calls" || false
   ! grep -q "agent.*message" "$STUB/calls"
 }
 
@@ -116,7 +116,7 @@ EOF
 @test "done: the done-request goes the same way and keeps its own marker" {
   run python3 "$BRIEF" done "$A"
   [ "$status" -eq 0 ]
-  [[ "$output" == "완료 검토 요청 보냄: Task A — 전달됨"* ]]
+  [[ "$output" == "완료 검토 요청 보냄: Task A — 전달됨"* ]] || false
   grep -qF "[--] [done-request: " "$STUB/calls"
 }
 
@@ -124,7 +124,7 @@ EOF
   for c in report note send done; do
     run python3 "$BRIEF" "$c" --help
     [ "$status" -eq 0 ]
-    [[ "$output" == *"brief report <글|->"* ]]
+    [[ "$output" == *"brief report <글|->"* ]] || false
   done
   [ ! -e "$STUB/calls" ] || ! grep -q "message\|^deliver" "$STUB/calls"
   [ ! -e "$HOME/.cache/cmux/brief-reports.jsonl" ]
@@ -140,7 +140,7 @@ EOF
 @test "send: the user's own draft in the box is kept and the send reported as not delivered" {
   STUB_RC=7 run python3 "$BRIEF" send "$A" "please rebase on main"
   [ "$status" -eq 1 ]
-  [[ "$output" == "전달 못 함: 입력 칸에 사용자가 쓰던 글이 있어 넣지 않았습니다: myowndraft"* ]]
+  [[ "$output" == "전달 못 함: 입력 칸에 사용자가 쓰던 글이 있어 넣지 않았습니다: myowndraft"* ]] || false
   ! grep -q "agent.*message" "$STUB/calls"
 }
 
@@ -150,7 +150,7 @@ EOF
     '{"type":"system","subtype":"turn_duration"}' '{"type":"system","subtype":"away_summary"}' > "$HOME/.claude/projects/p/sid-a.jsonl"
   run python3 "$BRIEF" send "$A" "also check the tests"
   [ "$status" -eq 0 ]
-  [[ "$output" == "전달됨: "* ]]
+  [[ "$output" == "전달됨: "* ]] || false
   ! grep -q "^deliver.*\[--queue\]" "$STUB/calls"
 }
 
@@ -159,6 +159,6 @@ EOF
   printf '%s\n' '{"type":"system","subtype":"turn_duration"}' '{"type":"user","message":{"content":"next"}}' > "$HOME/.claude/projects/p/sid-a.jsonl"
   run python3 "$BRIEF" send "$A" "also check the tests"
   [ "$status" -eq 0 ]
-  [[ "$output" == "대기열: "* ]]
+  [[ "$output" == "대기열: "* ]] || false
   grep -q "^deliver.*\[--queue\]" "$STUB/calls"
 }

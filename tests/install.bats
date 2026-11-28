@@ -27,7 +27,7 @@ first_hook() { basename "$(ls "$FW"/hooks/general/*.sh | head -1)"; }
 @test "fresh install deploys every L1 surface into an empty HOME" {
   run "$INSTALL"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"L1 install complete."* ]]
+  [[ "$output" == *"L1 install complete."* ]] || false
 
   for s in "$FW"/skills/*/; do
     s="${s%/}"; n="$(basename "$s")"
@@ -110,7 +110,7 @@ first_hook() { basename "$(ls "$FW"/hooks/general/*.sh | head -1)"; }
   echo "persona copy" > "$h"
   run "$INSTALL"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"written by another layer — kept"* ]]
+  [[ "$output" == *"written by another layer — kept"* ]] || false
   [ "$(cat "$h")" = "persona copy" ]
   run "$VERIFY"
   [ "$status" -eq 0 ]
@@ -152,7 +152,7 @@ first_hook() { basename "$(ls "$FW"/hooks/general/*.sh | head -1)"; }
   echo "user tool" > "$HOME/.local/bin/sib"
   run "$INSTALL"
   [ "$status" -eq 3 ]
-  [[ "$output" == *"bin sib"*"not a symlink"* ]]
+  [[ "$output" == *"bin sib"*"not a symlink"* ]] || false
   [ "$(cat "$HOME/.local/bin/sib")" = "user tool" ]
   # The refusal does not stop the other sections.
   [ -s "$HOME/.claude/.framework-checksums" ]
@@ -172,7 +172,7 @@ first_hook() { basename "$(ls "$FW"/hooks/general/*.sh | head -1)"; }
   [ "$(cat "$HOME/.claude/skills/$n/SKILL.md")" = persona ]
   run "$VERIFY"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"other layer: $HOME/.claude/skills/$n"* ]]
+  [[ "$output" == *"other layer: $HOME/.claude/skills/$n"* ]] || false
 
   run "$INSTALL" --force
   [ "$status" -eq 0 ]

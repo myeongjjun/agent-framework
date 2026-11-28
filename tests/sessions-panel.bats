@@ -16,13 +16,13 @@ entries() { node "$HARNESS" "$TPL" "$PLAN" "$(ws "$1" "$2")" 1100; }
   run entries working working
   [ "$status" -eq 0 ]
   row=$(echo "$output" | grep '"title":"one"')
-  [[ "$row" == *'"group":-1'* ]]
-  [[ "$row" == *'"num":"①"'* ]]
-  [[ "$row" == *'"todo":"first task"'* ]]
-  [[ "$row" == *'"busy":true'* ]]
+  [[ "$row" == *'"group":-1'* ]] || false
+  [[ "$row" == *'"num":"①"'* ]] || false
+  [[ "$row" == *'"todo":"first task"'* ]] || false
+  [[ "$row" == *'"busy":true'* ]] || false
   # the non-TODO working session is still under Running, without the TODO marker
   two=$(echo "$output" | grep '"title":"two"')
-  [[ "$two" == *'"group":1'* ]]
+  [[ "$two" == *'"group":1'* ]] || false
   [[ "$two" == *'"busy":false'* ]]
 }
 
@@ -30,7 +30,7 @@ entries() { node "$HARNESS" "$TPL" "$PLAN" "$(ws "$1" "$2")" 1100; }
   run entries idle idle
   [ "$status" -eq 0 ]
   row=$(echo "$output" | grep '"title":"one"')
-  [[ "$row" == *'"group":-1'* ]]
+  [[ "$row" == *'"group":-1'* ]] || false
   [[ "$row" == *'"busy":false'* ]]
 }
 

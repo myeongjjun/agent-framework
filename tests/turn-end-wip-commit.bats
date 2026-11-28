@@ -29,7 +29,7 @@ commits() { git -C "$REPO" rev-list --count HEAD; }
   run run_hook
   [ "$status" -eq 0 ]
   [ "$(commits)" -eq 2 ]
-  [[ "$(git -C "$REPO" log -1 --format=%s)" == "wip(demo): "*" — turn-end" ]]
+  [[ "$(git -C "$REPO" log -1 --format=%s)" == "wip(demo): "*" — turn-end" ]] || false
   [ -z "$(git -C "$REPO" status --porcelain)" ]
 }
 

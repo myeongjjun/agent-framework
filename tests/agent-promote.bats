@@ -115,9 +115,9 @@ make_wip_commit() {
   # --yes without --yes-risk → fail
   run bash "$SCRIPT" risky --yes
   [ "$status" -ne 0 ]
-  [[ "$output" == *"risk"* ]]
-  [[ "$output" == *".env"* ]]
-  [[ "$output" == *"big.bin"* ]]
+  [[ "$output" == *"risk"* ]] || false
+  [[ "$output" == *".env"* ]] || false
+  [[ "$output" == *"big.bin"* ]] || false
 
   # --yes-risk → succeed
   run bash "$SCRIPT" risky --yes --yes-risk
@@ -140,7 +140,7 @@ make_wip_commit() {
   cd "$base"
   run bash "$SCRIPT" multi --yes
   [ "$status" -ne 0 ]
-  [[ "$output" == *"multiple worker branches"* || "$output" == *"--branch"* ]]
+  [[ "$output" == *"multiple worker branches"* || "$output" == *"--branch"* ]] || false
 
   run bash "$SCRIPT" multi --branch "sib/multi-claude" --yes
   echo "$output"
@@ -186,8 +186,8 @@ make_wip_commit() {
   cd "$base"
   run bash "$SCRIPT" preview --dry-run
   [ "$status" -eq 0 ]
-  [[ "$output" == *"agent-promote plan"* ]]
-  [[ "$output" == *"dry-run"* ]]
+  [[ "$output" == *"agent-promote plan"* ]] || false
+  [[ "$output" == *"dry-run"* ]] || false
 
   [ "$(git -C "$base" rev-parse HEAD)" = "$sha_before" ]
   [ ! -f "${base}/file1.txt" ]

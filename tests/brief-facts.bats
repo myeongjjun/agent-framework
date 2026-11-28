@@ -86,10 +86,10 @@ EOF
   [ "$output" = "1 $A False {'uncommitted': 1, 'question': 'Should I commit dirty.txt?'}" ]
   grep -qi "agent message $DESK" "$STUB/calls"   # the desk got a patrol signal
   run python3 "$BRIEF" patrol --read
-  [[ "$output" == *'"ev":"closed"'* ]]
-  [[ "$output" == *'"check":{"uncommitted":1,"question":"Should I commit dirty.txt?"}'* ]]
+  [[ "$output" == *'"ev":"closed"'* ]] || false
+  [[ "$output" == *'"check":{"uncommitted":1,"question":"Should I commit dirty.txt?"}'* ]] || false
   run python3 "$BRIEF" closed
-  [[ "$output" == *"검토 없이 닫음 · 닫힐 때 대조: 미커밋 1, 미응답 질문"* ]]
+  [[ "$output" == *"검토 없이 닫음 · 닫힐 때 대조: 미커밋 1, 미응답 질문"* ]] || false
   run python3 "$BRIEF" board --json
   [[ "$output" == *"검토 없이 1"* ]]
 }
@@ -103,7 +103,7 @@ EOF
   python3 "$BRIEF" patrol
   [ "$(wc -l < "$HOME/.cache/cmux/brief-closed.jsonl" | tr -d ' ')" = "1" ]
   run python3 "$BRIEF" patrol --read
-  [[ "$output" == *'"verified":"git clean"'* ]]
+  [[ "$output" == *'"verified":"git clean"'* ]] || false
   [[ "$output" != *'"check"'* ]]
 }
 
@@ -115,16 +115,16 @@ EOF
     printf '{"panel":"P3","title":"Clean close","at":%s,"closed":true,"check":{"uncommitted":0,"unpushed":0}}\n' "$((now - 10))"
   } > "$HOME/.cache/cmux/brief-closed.jsonl"
   run python3 "$BRIEF" closed --unreported
-  [[ "$output" == *"Reviewed"* ]]
-  [[ "$output" == *"! "*"Left dirty"* ]]
-  [[ "$output" != *"! "*"Clean close"* ]]
+  [[ "$output" == *"Reviewed"* ]] || false
+  [[ "$output" == *"! "*"Left dirty"* ]] || false
+  [[ "$output" != *"! "*"Clean close"* ]] || false
   # A closure after the listing but before --ack stays unreported.
   printf '{"panel":"P5","title":"Closed meanwhile","at":%s,"closed":true,"verified":"ok"}\n' "$((now + 5))" \
     >> "$HOME/.cache/cmux/brief-closed.jsonl"
   python3 "$BRIEF" closed --ack
   run python3 "$BRIEF" closed --unreported
-  [[ "$output" == *"Closed meanwhile"* ]]
-  [[ "$output" != *"Reviewed"* ]]
+  [[ "$output" == *"Closed meanwhile"* ]] || false
+  [[ "$output" != *"Reviewed"* ]] || false
   python3 "$BRIEF" closed --ack
   run python3 "$BRIEF" closed --unreported
   [[ "$output" == *"보고 안 한 닫힌 세션 없음"* ]]
@@ -190,14 +190,14 @@ desk_doc() {
 EOF2
   run python3 "$BRIEF" board --json
   [ "$status" -eq 0 ]
-  [[ "$output" == *'"k": "사용자에게 넘김"'* ]]
-  [[ "$output" == *"오늘 6건 · 데스크가 할 수 있었던 것 4 (배치 2 · 닫기 2)"* ]]
+  [[ "$output" == *'"k": "사용자에게 넘김"'* ]] || false
+  [[ "$output" == *"오늘 6건 · 데스크가 할 수 있었던 것 4 (배치 2 · 닫기 2)"* ]] || false
   # The top block is rewritten: a decision that left the document still counts for the day.
   sed -i.bak '/S3 후속/d' "$BRIEF_DESK_DIR"/Desk/*.md && rm -f "$BRIEF_DESK_DIR"/Desk/*.md.bak
   run python3 "$BRIEF" board --log
-  [[ "$output" == *"오늘 6건"* ]]
+  [[ "$output" == *"오늘 6건"* ]] || false
   run python3 "$BRIEF" board --trend 3
-  [[ "$output" == *"넘긴결정"*"스스로가능"* ]]
+  [[ "$output" == *"넘긴결정"*"스스로가능"* ]] || false
   [[ "$(echo "$output" | tail -1)" =~ ^[0-9-]+\ +6\ +4 ]]
 }
 
@@ -209,7 +209,7 @@ EOF2
   day=$(python3 -c 'import time;print(time.strftime("%Y-%m-%d",time.localtime(time.time()-5*3600)))')
   python3 "$BRIEF" board --set asked=3 avoidable=0 --day "$day" > /dev/null
   run python3 "$BRIEF" board --log
-  [[ "$output" == *"오늘 3건 · 데스크가 할 수 있었던 것 0"* ]]
+  [[ "$output" == *"오늘 3건 · 데스크가 할 수 있었던 것 0"* ]] || false
   python3 -c 'import json,sys;h=json.loads(open(sys.argv[1]).readlines()[-1]);assert (h["asked"],h["avoidable"])==(3,0),h' \
     "$HOME/.local/share/cmux/board.jsonl"
 }
@@ -284,7 +284,7 @@ $(line user "$(iso_now)" '"desk-message: do x"' ',"origin":{"kind":"human"}')
 TR
   CMUX_AUTOMATION_EVENT_JSON="{\"surface_id\":\"$A\"}" run python3 "$BRIEF" patrol --input
   [ "$status" -eq 0 ]
-  ! grep -qi "agent message $DESK" "$STUB/calls"
+  ! grep -qi "agent message $DESK" "$STUB/calls" || false
   # The user answers in the pane: TODO 1 has an open decision, so the desk is woken now.
   transcript <<TR
 $(line user "$(iso_now)" '"yes push"' ',"origin":{"kind":"human"}')
@@ -293,8 +293,8 @@ TR
   [ "$status" -eq 0 ]
   grep -qi "agent message $DESK --from orch-patrol -- patrol 1" "$STUB/calls"
   run python3 "$BRIEF" patrol --read
-  [[ "$output" == *'"ev":"input"'* ]]
-  [[ "$output" == *'"decision":true'* ]]
+  [[ "$output" == *'"ev":"input"'* ]] || false
+  [[ "$output" == *'"decision":true'* ]] || false
   [[ "$output" == *'"todo":1'* ]]
 }
 
@@ -310,8 +310,8 @@ $(line user "$(iso_now)" '"carry on"' ',"origin":{"kind":"human"}')
 TR
   run python3 "$BRIEF" patrol --input "$A"
   [ "$status" -eq 0 ]
-  ! grep -qi "agent message $DESK" "$STUB/calls"
+  ! grep -qi "agent message $DESK" "$STUB/calls" || false
   run python3 "$BRIEF" patrol --read
-  [[ "$output" == *'"ev":"input"'* ]]
+  [[ "$output" == *'"ev":"input"'* ]] || false
   [[ "$output" != *decision* ]]
 }

@@ -40,7 +40,7 @@ inbox() {  # $1 recipient, $2 state, $3 read_at (null or a number)
 @test "report: sent to the desk found now, named by the session title, panel in the trailer" {
   run python3 "$BRIEF" report "done-report: ready"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"데스크에 보냄"* ]]
+  [[ "$output" == *"데스크에 보냄"* ]] || false
   grep -qF "[agent] [message] [$DESK] [--from] [Task A]" "$STUB/calls"
   grep -qF "— from: Task A (panel $A)" "$STUB/calls"
   grep -q '"msg": "m1"' "$HOME/.cache/cmux/brief-reports.jsonl"
@@ -51,7 +51,7 @@ inbox() {  # $1 recipient, $2 state, $3 read_at (null or a number)
   inbox "$DESK" read 1795060000
   run python3 "$BRIEF" patrol --read
   [ "$status" -eq 0 ]
-  [[ "$output" != *'"ev":"report"'* ]]
+  [[ "$output" != *'"ev":"report"'* ]] || false
   [ ! -s "$HOME/.cache/cmux/brief-reports.jsonl" ]
 }
 
@@ -59,7 +59,7 @@ inbox() {  # $1 recipient, $2 state, $3 read_at (null or a number)
   python3 "$BRIEF" report "done-report: ready"
   inbox "$DESK" queued null
   run python3 "$BRIEF" patrol --read
-  [[ "$output" != *'"ev":"report"'* ]]
+  [[ "$output" != *'"ev":"report"'* ]] || false
   [ -s "$HOME/.cache/cmux/brief-reports.jsonl" ]
 }
 
@@ -67,11 +67,11 @@ inbox() {  # $1 recipient, $2 state, $3 read_at (null or a number)
   unset BRIEF_DESK_PANEL
   run python3 "$BRIEF" report "done-report: not-ready"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"바로 못 보냄"* ]]
-  ! grep -q "\[agent\] \[message\]" "$STUB/calls"
+  [[ "$output" == *"바로 못 보냄"* ]] || false
+  ! grep -q "\[agent\] \[message\]" "$STUB/calls" || false
   export BRIEF_DESK_PANEL="$DESK"
   run python3 "$BRIEF" patrol --read
-  [[ "$output" == *'"ev":"report"'*'"report":"done-report: not-ready"'* ]]
+  [[ "$output" == *'"ev":"report"'*'"report":"done-report: not-ready"'* ]] || false
   [ ! -s "$HOME/.cache/cmux/brief-reports.jsonl" ]
 }
 
@@ -85,7 +85,7 @@ inbox() {  # $1 recipient, $2 state, $3 read_at (null or a number)
 @test "report: send refused — recorded for patrol" {
   STUB_SEND_FAIL=1 run python3 "$BRIEF" report "done-report: ready"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"바로 못 보냄"* ]]
+  [[ "$output" == *"바로 못 보냄"* ]] || false
   run python3 "$BRIEF" patrol --read
   [[ "$output" == *'"ev":"report"'* ]]
 }
@@ -99,7 +99,7 @@ inbox() {  # $1 recipient, $2 state, $3 read_at (null or a number)
   # The session's own pane: request_close prints the text instead of typing it into the pane.
   # Done-requests left in an input box for days used to point at a desk that had since closed.
   run python3 "$BRIEF" done here
-  [[ "$output" == *'brief report "<reply>"'* ]]
+  [[ "$output" == *'brief report "<reply>"'* ]] || false
   [[ "$output" != *"$DESK"* ]]
 }
 
@@ -116,7 +116,7 @@ EOF
   CMUX_PANEL_ID="$DESK" run python3 "$BRIEF" patrol --read
   [ "$status" -eq 0 ]
   [ "$(cat "$STUB/marked")" = '{"ids": ["t1", "t2"]}' ]
-  [[ "$output" == *'"ev":"retired","count":2'* ]]
+  [[ "$output" == *'"ev":"retired","count":2'* ]] || false
   rm "$STUB/marked"
   CMUX_PANEL_ID="$DESK" run python3 "$BRIEF" patrol --read
   [ ! -e "$STUB/marked" ]

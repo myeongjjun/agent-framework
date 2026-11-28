@@ -13,7 +13,7 @@ run_hook() {
 @test "codex exec is blocked and the message names sib spawn --codex" {
   run run_hook 'codex exec -s workspace-write -c model_reasoning_effort=high "draw the office art"'
   [ "$status" -eq 2 ]
-  [[ "$output" == *"BLOCKED"* ]]
+  [[ "$output" == *"BLOCKED"* ]] || false
   [[ "$output" == *"sib spawn codex-<slug> --codex"* ]]
 }
 

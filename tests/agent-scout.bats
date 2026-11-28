@@ -118,7 +118,7 @@ assert "- x" not in d["packs"]["decisions"]
   run "$AS" quorum --json
   [ "$status" -eq 0 ]
   grep -q "사내 말고" "$CALLS.friction.propose"
-  ! grep -q "사내 말고" "$CALLS.handoff.propose"
+  ! grep -q "사내 말고" "$CALLS.handoff.propose" || false
   grep -q "research scope: internal" "$CALLS.handoff.propose"
   echo "$output" | python3 -c '
 import json,sys
@@ -132,7 +132,7 @@ assert c["chart-review"]["result"]=="watch" and c["chart-review"]["support"]==1
 assert d["candidates"][0]["result"]=="pass" and d["candidates"][-1]["result"]=="watch"
 '
   # the vote round asks only scouts that did not propose the kind
-  ! grep -q "db-upgrade" "$CALLS.friction.vote"
+  ! grep -q "db-upgrade" "$CALLS.friction.vote" || false
   ls "$AGENT_SCOUT_HR"/quorum-2026-11-23.json "$AGENT_SCOUT_HR"/quorum-2026-11-23.md
   grep -q "^- volume | claude:opus | scout-volume | 접근: a | 상태: 수습" "$AGENT_SCOUT_ROSTER"
   grep -q "| friction | scan | proposed 2 · passed 2 · judge 0.88" "$AGENT_SCOUT_ROSTER"
@@ -156,7 +156,7 @@ assert all(g["result"]!="pass" for g in d["candidates"]), d["candidates"]
   mv "$AGENT_SCOUT_CMD" "$T/fake-scout.real"; mv "$T/wrap" "$AGENT_SCOUT_CMD"; chmod +x "$AGENT_SCOUT_CMD"
   run "$AS" quorum
   [ "$status" -eq 0 ]
-  [[ "$output" == *"member friction"*"ERROR"* ]]
+  [[ "$output" == *"member friction"*"ERROR"* ]] || false
   [[ "$output" != *"member handoff"* ]]
 }
 
@@ -169,7 +169,7 @@ assert all(g["result"]!="pass" for g in d["candidates"]), d["candidates"]
   grep -q "| ask_first | no |" "$d"
   run "$AS" check doc-scope-checker
   [ "$status" -eq 3 ]
-  [[ "$output" == *"TODO left"* ]]
+  [[ "$output" == *"TODO left"* ]] || false
   run "$AS" install doc-scope-checker
   [ "$status" -eq 3 ]
   python3 - "$d" <<'EOF'
@@ -184,8 +184,8 @@ EOF
   [ "$status" -eq 0 ]
   run "$AS" install doc-scope-checker                    # every install: the report first, then the user's OK
   [ "$status" -eq 3 ]
-  [[ "$output" == *"# 투입 보고: doc-scope-checker"* ]]
-  [[ "$output" == *"## 2. 평가 지표"* && "$output" == *"## 3. 선발·퇴출"* && "$output" == *"## 4. 근거"* ]]
+  [[ "$output" == *"# 투입 보고: doc-scope-checker"* ]] || false
+  [[ "$output" == *"## 2. 평가 지표"* && "$output" == *"## 3. 선발·퇴출"* && "$output" == *"## 4. 근거"* ]] || false
   [ ! -e "$AGENT_SCOUT_AGENTS/doc-scope-checker.md" ]
   run "$AS" install doc-scope-checker --user-approved
   [ "$status" -eq 0 ]
@@ -212,7 +212,7 @@ open(p,"w").write(s)
 EOF
   run "$AS" install widgetdb-plan-reviewer
   [ "$status" -eq 3 ]
-  [[ "$output" == *"ask-first area 'WidgetDB'"* ]]
+  [[ "$output" == *"ask-first area 'WidgetDB'"* ]] || false
   [ ! -e "$AGENT_SCOUT_AGENTS/widgetdb-plan-reviewer.md" ]
   grep -q "| layer | L3 |" "$d"
   run "$AS" install widgetdb-plan-reviewer --user-approved
@@ -225,7 +225,7 @@ EOF
 @test "judge: grades blind (no member names in its prompt); a judge that is a member is refused" {
   run "$AS" convene --json
   [ "$status" -eq 0 ]
-  ! grep -q LEAK "$CALLS"
+  ! grep -q LEAK "$CALLS" || false
   echo "$output" | python3 -c '
 import json,sys
 d=json.load(sys.stdin); g={x["id"]:x for x in d["judge"]["grades"]}
@@ -235,7 +235,7 @@ assert g["P1"]["member"]=="volume" and g["P3"]["member"]=="friction", g
   rm "$CALLS"
   run "$AS" convene --json
   [ "$status" -eq 0 ]
-  ! grep -q "judge judge" "$CALLS"
+  ! grep -q "judge judge" "$CALLS" || false
   [[ "$output" == *"is also a member"* ]]
 }
 
@@ -293,9 +293,9 @@ assert r["friction"]["corrected"]==1 and r["friction"]["hired"]==1 and r["handof
 @test "failed meeting: no member sat, so it is saved as failed-convene and neither due nor review counts it" {
   SCOUT_FAIL="volume friction handoff" run "$AS" convene
   [ "$status" -eq 1 ]
-  [[ "$output" == *"not counted"* ]]
+  [[ "$output" == *"not counted"* ]] || false
   [ -f "$AGENT_SCOUT_HR/failed-convene-2026-11-23.json" ] && [ ! -e "$AGENT_SCOUT_HR/quorum-2026-11-23.json" ]
-  ! grep -q "상태: 수습" "$AGENT_SCOUT_ROSTER"                     # nobody sat: no probation starts
+  ! grep -q "상태: 수습" "$AGENT_SCOUT_ROSTER" || false                     # nobody sat: no probation starts
   grep -q "| volume | scan | proposed 0 · passed 0 · error | ref:failed-convene-2026-11-23" "$AGENT_SCOUT_ROSTER"
   SCOUT_FAIL="volume friction handoff" run "$AS" convene         # a second try the same day keeps the first record
   [ -f "$AGENT_SCOUT_HR/failed-convene2-2026-11-23.json" ]
@@ -313,7 +313,7 @@ assert r["friction"]["corrected"]==1 and r["friction"]["hired"]==1 and r["handof
   SCOUT_FAIL="handoff" "$AS" convene >/dev/null
   run "$AS" due
   [ "$status" -eq 1 ]
-  ! grep -q "^- handoff |.*상태: 수습" "$AGENT_SCOUT_ROSTER"
+  ! grep -q "^- handoff |.*상태: 수습" "$AGENT_SCOUT_ROSTER" || false
   grep -q "^- volume |.*상태: 수습" "$AGENT_SCOUT_ROSTER"
   run "$AS" review --json --no-apply
   echo "$output" | python3 -c '
@@ -330,9 +330,9 @@ assert r["volume"]["runs"]==1
   sed -i.bak 's/^- judge: claude:fable/- judge: off/' "$AGENT_SCOUT_CONFIG"
   mkdir -p "$T/bin"; printf '#!/bin/sh\necho called >>"%s"\n' "$T/codex-called" >"$T/bin/codex"; chmod +x "$T/bin/codex"
   PATH="$T/bin:$PATH" run "$AS" convene
-  [[ "$output" == *"run on cmux panes via sib"* ]]
+  [[ "$output" == *"run on cmux panes via sib"* ]] || false
   [ ! -e "$T/codex-called" ]
-  ! grep -q '"codex", "exec"' "$AS"
+  ! grep -q '"codex", "exec"' "$AS" || false
   ! grep -q '"claude", "-p"' "$AS"
 }
 
@@ -350,7 +350,7 @@ s=s.replace("filled\n", "Read the request. " * 20 + "\n"); open(p,"w").write(s)
 EOF
   run "$AS" install pub --user-approved
   [ "$status" -eq 3 ]
-  [[ "$output" == *"L1 is public"* ]]
+  [[ "$output" == *"L1 is public"* ]] || false
   [ ! -e "$T/l1/pub.md" ]
   sed -i.bak 's/for acme/for anyone/' "$d"
   run "$AS" install pub --user-approved
@@ -394,13 +394,13 @@ PY
   fill "$d"
   run "$AS" install scope-helper
   [ "$status" -eq 3 ]
-  [[ "$output" == *"agent-scout evaluate scope-helper"* ]]
+  [[ "$output" == *"agent-scout evaluate scope-helper"* ]] || false
   run "$AS" evaluate scope-helper --json
   [ "$status" -eq 0 ]
-  ! grep -q LEAK "$CALLS"
+  ! grep -q LEAK "$CALLS" || false
   grep -q "Checks scope." "$CALLS.handoff.evaluate"            # every member reads the draft
   grep -q "사내 말고" "$CALLS.friction.evaluate"                 # its own pack, narrowed to the draft's kind
-  ! grep -q "오래 걸려" "$CALLS.friction.evaluate"
+  ! grep -q "오래 걸려" "$CALLS.friction.evaluate" || false
   echo "$output" | python3 -c '
 import json,sys
 d=json.load(sys.stdin); x=d["results"]["scope-helper"]
@@ -412,7 +412,7 @@ assert r["handoff"]["verdict"]=="reject" and r["handoff"]["counted"] is False an
   ls "$AGENT_SCOUT_HR"/eval-2026-11-23-1.md
   grep -q "| scope-helper | evaluate | approve · hire 2 · revise 0 · reject 0 of 2 counted | ref:eval-2026-11-23-1" "$AGENT_SCOUT_ROSTER"
   run "$AS" report scope-helper
-  [[ "$output" == *"위원회 평가 eval-2026-11-23-1: **approve**"* && "$output" == *"- handoff: reject"*"세지 않음"* ]]
+  [[ "$output" == *"위원회 평가 eval-2026-11-23-1: **approve**"* && "$output" == *"- handoff: reject"*"세지 않음"* ]] || false
   run "$AS" install scope-helper --user-approved
   [ "$status" -eq 0 ]
   grep -q "| scope-helper | hire | backers: volume,friction | eval-2026-11-23-1 approve |" "$AGENT_SCOUT_ROSTER"
@@ -430,10 +430,10 @@ assert r["volume"]["judge"]==1.0 and r["volume"]["verdict"]=="keep", r["volume"]
   fill "$AGENT_SCOUT_HR/agents/scope-helper.md"
   EVAL_FRICTION=revise run "$AS" evaluate scope-helper
   [ "$status" -eq 0 ]
-  [[ "$output" == *"[revise ] scope-helper"* ]]
+  [[ "$output" == *"[revise ] scope-helper"* ]] || false
   run "$AS" install scope-helper
   [ "$status" -eq 3 ]
-  [[ "$output" == *"verdict on scope-helper is \`revise\`"* ]]
+  [[ "$output" == *"verdict on scope-helper is \`revise\`"* ]] || false
   EVAL_FRICTION=hire run "$AS" evaluate scope-helper
   [ -f "$AGENT_SCOUT_HR/eval-2026-11-23-2.json" ]
   run "$AS" install scope-helper --user-approved
@@ -449,7 +449,7 @@ assert r["volume"]["judge"]==1.0 and r["volume"]["verdict"]=="keep", r["volume"]
     "$AGENT_SCOUT_CONFIG" >"$AGENT_SCOUT_CONFIG.tmp" && mv "$AGENT_SCOUT_CONFIG.tmp" "$AGENT_SCOUT_CONFIG"
   grep -qx "| craft | claude | scout-craft | haiku | d | briefs | on | evaluate |" "$AGENT_SCOUT_CONFIG"
   "$AS" convene >/dev/null
-  ! grep -q "^craft " "$CALLS"
+  ! grep -q "^craft " "$CALLS" || false
   "$AS" new scope-helper --by-user --title "Checks research scope" --kind research --area A --layer L2 --home "$T/l2" >/dev/null
   "$AS" evaluate scope-helper >/dev/null
   grep -q "^craft evaluate" "$CALLS"
@@ -463,8 +463,8 @@ assert r["volume"]["judge"]==1.0 and r["volume"]["verdict"]=="keep", r["volume"]
   printf '#!/bin/sh\nexit 1\n' >"$AGENT_SCOUT_CMD"
   run "$AS" evaluate scope-helper
   [ "$status" -eq 1 ]
-  [[ "$output" == *"no evaluation recorded"* ]]
-  ! ls "$AGENT_SCOUT_HR"/eval-*.json 2>/dev/null
+  [[ "$output" == *"no evaluation recorded"* ]] || false
+  ! ls "$AGENT_SCOUT_HR"/eval-*.json 2>/dev/null || false
   ! grep -q "| scope-helper | evaluate |" "$AGENT_SCOUT_ROSTER" 2>/dev/null
 }
 
@@ -492,7 +492,7 @@ assert all(p["role"]!="root-cause-first" for p in c["scope-checker"]["proposals"
 '
   run "$AS" show research                 # a kind with two ideas is ambiguous
   [ "$status" -eq 2 ]
-  [[ "$output" == *"2 ideas"* ]]
+  [[ "$output" == *"2 ideas"* ]] || false
   run "$AS" show root-cause-first
   [ "$status" -eq 0 ]
 }
@@ -510,7 +510,7 @@ assert all(p["role"]!="root-cause-first" for p in c["scope-checker"]["proposals"
   printf '\n## Layers\n- L1: %s\n' "$T/l1" >>"$AGENT_SCOUT_CONFIG"
   run "$AS" new widgetdb-claim-checker --by-user --title "Checks widgetdb claims" --kind db-upgrade --area A --layer L1
   [ "$status" -eq 3 ]
-  [[ "$output" == *"ask-first area 'WidgetDB'"*"never holds it"* ]]
+  [[ "$output" == *"ask-first area 'WidgetDB'"*"never holds it"* ]] || false
   [ ! -e "$AGENT_SCOUT_HR/agents/widgetdb-claim-checker.md" ]
   # a draft moved to L1 by hand is refused at install, even with the user's OK
   "$AS" new widgetdb-claim-checker --by-user --title "Checks widgetdb claims" --kind db-upgrade --area A --layer L2 --home "$T/l2" >/dev/null
@@ -519,7 +519,7 @@ assert all(p["role"]!="root-cause-first" for p in c["scope-checker"]["proposals"
   sed -i.bak "s#| layer | L2 |#| layer | L1 |#" "$d"
   run "$AS" install widgetdb-claim-checker --user-approved
   [ "$status" -eq 3 ]
-  [[ "$output" == *"L1 is public"* ]]
+  [[ "$output" == *"L1 is public"* ]] || false
   [ ! -e "$T/l1/widgetdb-claim-checker.md" ] && [ ! -e "$AGENT_SCOUT_AGENTS/widgetdb-claim-checker.md" ]
 }
 
@@ -577,8 +577,8 @@ assert n["asked"]==1 and n["baseline"]==round(7/21,2)
 assert d["result"].startswith("잠정 계약"), d["result"]
 '
   run "$AS" measure rsc --since 2026-11-24
-  [[ "$output" == *"uses       3"*"Agent/Task subagent_type=rsc"* ]]
-  [[ "$output" == *"- 12-01 | rsc | verdict | 창 11-24..12-01 · uses 3 · ok 1/1 · corrected 0 · repeat ? (기준 0.33/7일, uncalled ?) · asked 1 | 잠정"* ]]
+  [[ "$output" == *"uses       3"*"Agent/Task subagent_type=rsc"* ]] || false
+  [[ "$output" == *"- 12-01 | rsc | verdict | 창 11-24..12-01 · uses 3 · ok 1/1 · corrected 0 · repeat ? (기준 0.33/7일, uncalled ?) · asked 1 | 잠정"* ]] || false
   run "$AS" measure rsc --since 2026-11-24 --write      # provisional numbers are never written
   [ "$status" -eq 3 ]
   ! grep -q "| rsc | verdict |" "$AGENT_SCOUT_ROSTER"
@@ -590,7 +590,7 @@ assert d["result"].startswith("잠정 계약"), d["result"]
   run "$AS" measure rsc --since 2026-11-24 --judge --write
   [ "$status" -eq 0 ]
   grep -q "ok when the user keeps the scope" "$CALLS.judge.measure"    # the judge grades by the card's done_when
-  ! grep -q "C1 (ok|miss" "$CALLS.judge.measure"                          # a call the desk already logged is not re-graded
+  ! grep -q "C1 (ok|miss" "$CALLS.judge.measure" || false                          # a call the desk already logged is not re-graded
   grep -q "^- 12-01 | rsc | verdict | 창 11-24..12-01 · uses 3 · ok 1/3 · corrected 1 · repeat 1 (기준 0.33/7일, uncalled 1) · asked 1 | 재평가 opus (5.6) | by:user$" "$AGENT_SCOUT_ROSTER"
 }
 
@@ -605,7 +605,7 @@ d=json.load(sys.stdin); n=d["counts"]
 assert n["uses"]==0 and n["ok"]==0 and n["judged"]==0, n
 assert [r for _,_,r in d["unmatched_use_lines"]]==["ok"], d["unmatched_use_lines"]'
   run "$AS" measure rsc --since 2026-11-24
-  [[ "$output" == *"uses 0 · ok 0/0 ·"* ]]
+  [[ "$output" == *"uses 0 · ok 0/0 ·"* ]] || false
   [[ "$output" == *"세션을 찾지 못한 use 줄 1건은 uses 가 아니라 세지 않음"*"ref:scope-job ok"* || "$output" == *"세션을 찾지 못한 use 줄 1건은 uses 가 아니라 세지 않음"*"scope-job ok"* ]]
 }
 
@@ -693,7 +693,7 @@ codex_models() {
   printf '\n## Panes\n- root: %s/work\n' "$T" >>"$AGENT_SCOUT_CONFIG"
   FAIL_FIRST=2 PATH="$T/bin:$PATH" AGENT_SCOUT_TIMEOUT=30 run "$AS" convene
   [ "$status" -eq 0 ]
-  [[ "$output" == *"member volume"*"proposed 2"* ]]           # members answered on sib panes
+  [[ "$output" == *"member volume"*"proposed 2"* ]] || false           # members answered on sib panes
   [ "$(wc -l <"$T/made")" -eq 3 ]                              # two failed attempts left a workspace each, then the committee's
   [ "$(cat "$WS")" = "$(printf '  workspace:1  caller\n* workspace:2  other  [selected]')" ]
 }
@@ -704,9 +704,9 @@ codex_models() {
   printf '\n## Panes\n- root: %s/work\n' "$T" >>"$AGENT_SCOUT_CONFIG"
   UNTRUSTED=1 PATH="$T/bin:$PATH" run "$AS" convene
   [ "$status" -eq 6 ]
-  [[ "$output" == *"not pre-trusted"*"trusted-dirs"* ]]
+  [[ "$output" == *"not pre-trusted"*"trusted-dirs"* ]] || false
   grep -q "^trusted $T/work/2026-11-23-member-round-0" "$T/sib-args"   # asked about a member folder's shape
-  ! grep -q "^spawn" "$T/sib-args"
+  ! grep -q "^spawn" "$T/sib-args" || false
   [ -z "$(ls "$AGENT_SCOUT_HR" 2>/dev/null | grep -E 'quorum|failed')" ]   # no meeting record: none was held
   UNTRUSTED=1 PATH="$T/bin:$PATH" run "$AS" evaluate x
   [ "$status" -eq 6 ]
@@ -728,17 +728,17 @@ codex_models() {
   before=$(cd "$T" && find . -type f | sort | xargs cksum)
   PATH="$T/bin:$PATH" AGENT_SCOUT_PS="$T/ps" run "$AS" board
   [ "$status" -eq 0 ]
-  [[ "$output" == *"진행 중: 평가 회의"* ]]
-  [[ "$output" == *"심사 대상: research-helper"* ]]
-  [[ "$output" != *"not-a-meeting"* ]]                          # a shell line that mentions agent-scout is no meeting
-  [[ "$output" == *"위원 1/3 답함"* ]]
+  [[ "$output" == *"진행 중: 평가 회의"* ]] || false
+  [[ "$output" == *"심사 대상: research-helper"* ]] || false
+  [[ "$output" != *"not-a-meeting"* ]] || false                          # a shell line that mentions agent-scout is no meeting
+  [[ "$output" == *"위원 1/3 답함"* ]] || false
   echo "$output" | grep -E '^  volume .*답함 .*창 닫힘 .*research-helper hire'
   echo "$output" | grep -E '^  friction .*작업 중 .*창 열림'
   echo "$output" | grep -E '^  handoff .*대기'
   echo "$output" | grep -E '^  심판 .*위원 답을 기다리는 중'
-  [[ "$output" == *"[통과] research-helper"* && "$output" != *"gone"* ]]
-  [[ "$output" == *"[승인] research-helper · hire 2"* ]]
-  [[ "$output" == *"research-helper: 승인됨"*"--user-approved"* ]]
+  [[ "$output" == *"[통과] research-helper"* && "$output" != *"gone"* ]] || false
+  [[ "$output" == *"[승인] research-helper · hire 2"* ]] || false
+  [[ "$output" == *"research-helper: 승인됨"*"--user-approved"* ]] || false
   [ "$before" = "$(cd "$T" && find . -type f | sort | xargs cksum)" ]   # read only: nothing written
   AGENT_SCOUT_PS="$T/empty" run "$AS" board
   [[ "$output" == *"진행 중인 회의 없음"* ]]
@@ -779,23 +779,23 @@ EOF
   desk_fixture
   run "$AS" measure desk
   [ "$status" -eq 0 ]
-  [[ "$output" == *"일 남은 채 닫음  3"* && "$output" == *"고쳐 말함 99"* ]]     # board: shown, not counted
-  [[ "$output" == *"v1 정답 90% harm 2 괜히 물음 0 새 harm 0"* ]]
-  [[ "$output" == *"| desk | verdict | 창 11-17..11-23 · 일 남은 채 닫음 3 · 끝났는데 열어 둠 1 "*"| 수정 (일 남은 채 닫음 3 > 1) | by:user"* ]]
+  [[ "$output" == *"일 남은 채 닫음  3"* && "$output" == *"고쳐 말함 99"* ]] || false     # board: shown, not counted
+  [[ "$output" == *"v1 정답 90% harm 2 괜히 물음 0 새 harm 0"* ]] || false
+  [[ "$output" == *"| desk | verdict | 창 11-17..11-23 · 일 남은 채 닫음 3 · 끝났는데 열어 둠 1 "*"| 수정 (일 남은 채 닫음 3 > 1) | by:user"* ]] || false
   run "$AS" measure desk --write                    # nobody writes its own verdict: not without the user
   [ "$status" -eq 3 ]
-  ! grep -q "| desk | verdict" "$AGENT_SCOUT_ROSTER"
+  ! grep -q "| desk | verdict" "$AGENT_SCOUT_ROSTER" || false
   run "$AS" measure desk --write --by user
   [ "$status" -eq 0 ]
   grep -q "| desk | verdict | .*| 수정 .*| by:user$" "$AGENT_SCOUT_ROSTER"
   run "$AS" measure desk                            # revised last time and it came back: replacement candidate
-  [[ "$output" == *"| 교체 후보 (수정 뒤 재발: 일 남은 채 닫음 3) | by:user"* ]]
+  [[ "$output" == *"| 교체 후보 (수정 뒤 재발: 일 남은 채 닫음 3) | by:user"* ]] || false
   export LEFT=5
   run "$AS" measure desk --since 2026-11-22
-  [[ "$output" == *"| 교체 후보 (일 남은 채 닫음 5 ≥ 5) | by:user"* ]]
+  [[ "$output" == *"| 교체 후보 (일 남은 채 닫음 5 ≥ 5) | by:user"* ]] || false
   export LEFT=0
   run "$AS" measure desk --since 2026-11-22
-  [[ "$output" == *"| 유지 | by:user"* ]]
+  [[ "$output" == *"| 유지 | by:user"* ]] || false
   AGENT_SCOUT_TODAY=2026-12-01 run "$AS" measure desk   # no fresh desk-eval: said, not guessed
   [[ "$output" == *"유지 — 이 창의 desk-eval 없음"* && "$output" == *"창보다 오래됨"* ]]
 }
@@ -818,10 +818,10 @@ EOF
 EOF
   run "$AS" measure lead
   [ "$status" -eq 0 ]
-  [[ "$output" == *"11-20 09:00 ← by:desk 11-20 09:05"* && "$output" == *"11-21 10:00 ← reversed_by:the user chose a skill"* ]]
-  [[ "$output" == *"| lead:A | verdict | 창 11-17..11-23 · by:lead 3 · 뒤집힘 2 (67%) · reversed(영역) 2 · asked 1 (하루 0.1) | 1단계로 되돌림"*"| by:user"* ]]
+  [[ "$output" == *"11-20 09:00 ← by:desk 11-20 09:05"* && "$output" == *"11-21 10:00 ← reversed_by:the user chose a skill"* ]] || false
+  [[ "$output" == *"| lead:A | verdict | 창 11-17..11-23 · by:lead 3 · 뒤집힘 2 (67%) · reversed(영역) 2 · asked 1 (하루 0.1) | 1단계로 되돌림"*"| by:user"* ]] || false
   run "$AS" measure lead:A --since 2026-11-22
-  [[ "$output" == *"by:lead 1 · 뒤집힘 0 (0%)"*"| 다음 단계 조건 충족 | by:user"* ]]
+  [[ "$output" == *"by:lead 1 · 뒤집힘 0 (0%)"*"| 다음 단계 조건 충족 | by:user"* ]] || false
   run "$AS" measure lead --write
   [ "$status" -eq 3 ]
 }
@@ -832,7 +832,7 @@ EOF
   printf '## Log\n- 11-20 | committee | lifted | kind a was `hold` | by:user | ref:q\n- 11-21 | committee | lifted | kind b was `hold` | by:user | ref:q\n' >"$AGENT_SCOUT_ROSTER"
   run "$AS" measure judge
   [ "$status" -eq 0 ]
-  [[ "$output" == *"채점 정확도 지표 없음"* ]]
+  [[ "$output" == *"채점 정확도 지표 없음"* ]] || false
   [[ "$output" == *"| judge | verdict | 창 11-10..11-23 · claude:fable · hold 1 · lifted 2 · 채점 정확도 지표 없음 | 교체 검토 (lifted 2 ≥ 2) | by:user"* ]]
 }
 

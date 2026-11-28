@@ -24,21 +24,21 @@ run_hook() {
 @test "L1-owned hook copy points at agent-framework + install.sh" {
   run run_hook Edit "$HOME/.claude/hooks/l1.sh"
   [ "$status" -eq 0 ]
-  [[ "$output" == *'"decision": "block"'* ]]
+  [[ "$output" == *'"decision": "block"'* ]] || false
   [[ "$output" == *"agent-framework/"*"scripts/install.sh"* ]]
 }
 
 @test "unowned hook copy gets layer-neutral advice" {
   run run_hook Write "$HOME/.claude/hooks/l2.sh"
-  [[ "$output" == *'"decision": "block"'* ]]
-  [[ "$output" == *"another layer"* ]]
+  [[ "$output" == *'"decision": "block"'* ]] || false
+  [[ "$output" == *"another layer"* ]] || false
   [[ "$output" != *"install.sh"* ]]
 }
 
 @test "symlinked skill names its real source" {
   run run_hook Edit "$HOME/.claude/skills/foo/SKILL.md"
-  [[ "$output" == *'"decision": "block"'* ]]
-  [[ "$output" == *"$(cd -P "$SRC" && pwd)/skills/foo/SKILL.md"* ]]
+  [[ "$output" == *'"decision": "block"'* ]] || false
+  [[ "$output" == *"$(cd -P "$SRC" && pwd)/skills/foo/SKILL.md"* ]] || false
   [[ "$output" != *"agent-framework/"* ]]
 }
 

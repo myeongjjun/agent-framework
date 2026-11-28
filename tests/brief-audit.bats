@@ -64,11 +64,11 @@ EOF
   run python3 "$BRIEF" audit --json
   [ "$status" -eq 0 ]
   [ "$(echo "$output" | verdict)" = "left" ]
-  [[ "$output" == *"Shall I clean up"* ]]
+  [[ "$output" == *"Shall I clean up"* ]] || false
   run python3 "$BRIEF" board
-  [[ "$output" == *"! 닫기 검사: 데스크가 닫음 1 · 일이 남은 채 닫음 1"* ]]
+  [[ "$output" == *"! 닫기 검사: 데스크가 닫음 1 · 일이 남은 채 닫음 1"* ]] || false
   run python3 "$BRIEF" closed
-  [[ "$output" == *"검사: 일이 남은 채 닫음 · 데스크가 닫음"* ]]
+  [[ "$output" == *"검사: 일이 남은 채 닫음 · 데스크가 닫음"* ]] || false
   [[ "$output" == "! "* ]]
 }
 
@@ -117,7 +117,7 @@ EOF
   closed "no report"
   run python3 "$BRIEF" audit --json
   [ "$(echo "$output" | verdict)" = "left" ]
-  [[ "$output" == *"세션이 고친 파일 미커밋 1"* ]]   # other.txt is not the session's
+  [[ "$output" == *"세션이 고친 파일 미커밋 1"* ]] || false   # other.txt is not the session's
   printf '%s\n' "$(line assistant 2026-11-19T01:02:00Z '[{"type":"text","text":"done-report: ready | uncommitted: mine.txt"}]')" \
     >> "$HOME/.claude/projects/p/sid-a.jsonl"
   run python3 "$BRIEF" audit --json --fresh
@@ -142,7 +142,7 @@ $(line assistant 2026-11-19T01:00:00Z '[{"type":"text","text":"done-report: read
 EOF
   printf '  ❯ done-request: this session looks finished\n  ─────\n' > "$STUB/screen.txt"
   run python3 "$BRIEF" done "$A" --verified "report matches"
-  ! grep -q '"unsent"' "$HOME/.cache/cmux/brief-closed.jsonl"
+  ! grep -q '"unsent"' "$HOME/.cache/cmux/brief-closed.jsonl" || false
   run python3 "$BRIEF" audit --json
   [ "$(echo "$output" | verdict)" = "ok" ]
 }
@@ -155,8 +155,8 @@ EOF
   echo draft > "$STUB/input_state"   # cmux: the user typed it
   run python3 "$BRIEF" done "$A" --verified "report matches"
   [ "$status" -eq 1 ]
-  [[ "$output" == *"닫지 않음"*"evalset 의 --strict-mcp-config 도 같이 고쳐줘"*"--drop-unsent"* ]]
-  ! grep -q close-surface "$STUB/calls"
+  [[ "$output" == *"닫지 않음"*"evalset 의 --strict-mcp-config 도 같이 고쳐줘"*"--drop-unsent"* ]] || false
+  ! grep -q close-surface "$STUB/calls" || false
   [ ! -s "$HOME/.cache/cmux/brief-closed.jsonl" ]
   run python3 "$BRIEF" done "$A" --now
   [ "$status" -eq 1 ]
@@ -175,7 +175,7 @@ EOF
   [ "$status" -eq 0 ]
   grep -q close-surface "$STUB/calls"
   grep -q '"suggested": "문서 2개 커밋해줘"' "$HOME/.cache/cmux/brief-closed.jsonl"
-  ! grep -q '"unsent"' "$HOME/.cache/cmux/brief-closed.jsonl"
+  ! grep -q '"unsent"' "$HOME/.cache/cmux/brief-closed.jsonl" || false
   run python3 "$BRIEF" audit --json
   [ "$(echo "$output" | verdict)" = "ok" ]
   [[ "$output" == *"프롬프트 제안"* ]]
@@ -188,7 +188,7 @@ EOF
   printf '  ❯ 푸시해\n  ─────\n' > "$STUB/screen.txt"   # no input_state stub: rpc gives nothing
   run python3 "$BRIEF" done "$A" --verified "report matches"
   [ "$status" -eq 1 ]
-  [[ "$output" == *"닫지 않음"*"푸시해"* ]]
+  [[ "$output" == *"닫지 않음"*"푸시해"* ]] || false
   run python3 "$BRIEF" done "$A" --verified "stale" --drop-unsent
   grep -q '"input": "unknown"' "$HOME/.cache/cmux/brief-closed.jsonl"
   run python3 "$BRIEF" audit --json
@@ -203,7 +203,7 @@ EOF
   echo dialog > "$STUB/input_state"
   run python3 "$BRIEF" done "$A" --verified "report matches"
   [ "$status" -eq 0 ]
-  [[ "$output" != *"닫지 않음"* ]]
+  [[ "$output" != *"닫지 않음"* ]] || false
   grep -q '"input": "dialog"' "$HOME/.cache/cmux/brief-closed.jsonl"
   ! grep -q '"unsent"' "$HOME/.cache/cmux/brief-closed.jsonl"
 }
@@ -219,10 +219,10 @@ EOF
   echo unknown > "$STUB/input_state"
   run python3 "$BRIEF" done "$A" --verified "report matches"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"입력 칸을 읽을 수 없음(폭 2칸)"* ]]
-  [[ "$output" != *"'…'"* ]]
+  [[ "$output" == *"입력 칸을 읽을 수 없음(폭 2칸)"* ]] || false
+  [[ "$output" != *"'…'"* ]] || false
   grep -q close-surface "$STUB/calls"
-  ! grep -q '"unsent"' "$HOME/.cache/cmux/brief-closed.jsonl"
+  ! grep -q '"unsent"' "$HOME/.cache/cmux/brief-closed.jsonl" || false
   grep -q '"unreadable": "입력 칸을 읽을 수 없음(폭 2칸)"' "$HOME/.cache/cmux/brief-closed.jsonl"
   run python3 "$BRIEF" audit --json
   [ "$(echo "$output" | verdict)" = "ok" ]
@@ -237,8 +237,8 @@ EOF
   echo draft > "$STUB/input_state"
   run python3 "$BRIEF" done "$A" --verified "report matches"
   [ "$status" -eq 1 ]
-  [[ "$output" == *"닫지 않음"*"입력 칸을 읽을 수 없음"* ]]
-  [[ "$output" != *"'…'"* ]]
+  [[ "$output" == *"닫지 않음"*"입력 칸을 읽을 수 없음"* ]] || false
+  [[ "$output" != *"'…'"* ]] || false
   transcript <<EOF
 $(line assistant 2026-11-19T01:00:00Z '[{"type":"text","text":"done-report: ready | did: x"}]')
 $(line user 2026-11-19T01:05:00Z '"그리고 하나 더"')
@@ -246,7 +246,7 @@ EOF
   echo unknown > "$STUB/input_state"
   run python3 "$BRIEF" done "$A" --verified "report matches"
   [ "$status" -eq 1 ]
-  [[ "$output" == *"마지막 답 뒤에 사용자 입력이 있음"* ]]
+  [[ "$output" == *"마지막 답 뒤에 사용자 입력이 있음"* ]] || false
   ! grep -q close-surface "$STUB/calls"
 }
 
@@ -260,7 +260,7 @@ EOF
   printf '#!/usr/bin/env bash\necho "REFUSED: input box holds text that is not ours: …" >&2\nexit 7\n' > "$BRIEF_DELIVER"
   chmod +x "$BRIEF_DELIVER"
   run python3 "$BRIEF" done "$A"
-  [[ "$output" == *"입력 칸을 읽을 수 없음(폭 2칸)"* ]]
+  [[ "$output" == *"입력 칸을 읽을 수 없음(폭 2칸)"* ]] || false
   [[ "$output" != *"쓰던 글"* ]]
 }
 
@@ -317,7 +317,7 @@ EOF
   run python3 "$BRIEF" audit --json
   python3 -c "import json,sys; a=json.loads(sys.argv[1])[0]; d=[h[1]-h[0] for h in a['held']]; assert d[0] == 3*3600+17*60+20, d" "$output"
   run python3 "$BRIEF" audit
-  [[ "$output" == *"끝났는데 열어 둠: 3시간 17분"* ]]
+  [[ "$output" == *"끝났는데 열어 둠: 3시간 17분"* ]] || false
   run python3 "$BRIEF" board
   [[ "$output" == *"! 끝났는데 열어 둠: "*"닫힌 것 1"* ]]
 }
@@ -362,8 +362,8 @@ EOF
 $(line assistant 2026-11-19T01:00:00Z '[{"type":"text","text":"done-report: ready | did: x"}]')
 EOF
   run python3 "$BRIEF" audit
-  [[ "$output" == *"끝났는데 열어 둠 1 (지금 열림 1"* ]]
-  [[ "$output" == *"! 지금 열림  Task A"*"brief done $A"* ]]
+  [[ "$output" == *"끝났는데 열어 둠 1 (지금 열림 1"* ]] || false
+  [[ "$output" == *"! 지금 열림  Task A"*"brief done $A"* ]] || false
   run python3 "$BRIEF" board
   [[ "$output" == *"! 끝났는데 열어 둠: 1건 (닫힌 것 0 · 지금 열림 1: Task A"* ]]
 }
@@ -395,8 +395,8 @@ EOF
 import json,sys; a=json.load(sys.stdin)[0]
 assert a["by"]=="caller" and a["caller"]=="scout-craft-evaluate-1", a'
   run python3 "$BRIEF" audit
-  [[ "$output" == *"닫힘 1건 · 일이 남은 채 닫음 0 (데스크 0) · 보고 없이 닫음 0 (데스크 0)"*"호출자가 닫은 일꾼 1"* ]]
-  [[ "$output" != *"Task A"* ]]                       # not listed as a problem
+  [[ "$output" == *"닫힘 1건 · 일이 남은 채 닫음 0 (데스크 0) · 보고 없이 닫음 0 (데스크 0)"*"호출자가 닫은 일꾼 1"* ]] || false
+  [[ "$output" != *"Task A"* ]] || false                       # not listed as a problem
   run python3 "$BRIEF" audit --all
   [[ "$output" == *"호출자가 닫음(sib kill scout-craft-evaluate-1)"* ]]
 }
@@ -435,10 +435,10 @@ EOF
   printf '{"day":"%s","closed_desk":1,"wrong_close":7,"closed_noreport":0,"held_open":0,"audit_v":2}\n' "$yday" \
     > "$HOME/.local/share/cmux/board.jsonl"
   run python3 "$BRIEF" audit --day "$yday"
-  [[ "$output" == *"일이 남은 채 닫음 1 (데스크 1) · 보고 없이 닫음 0 (데스크 0)"*"호출자가 닫은 일꾼 1"* ]]
+  [[ "$output" == *"일이 남은 채 닫음 1 (데스크 1) · 보고 없이 닫음 0 (데스크 0)"*"호출자가 닫은 일꾼 1"* ]] || false
   run python3 "$BRIEF" board --trend 3
   echo "$output" | grep -E "^${yday:5}  +1 +1 +0 +0$"                    # the recount, not the stored 7
-  [[ "$output" == *"${yday:5} 적어 둔 값(규칙 v2) → 다시 셈: 남긴채닫음 7→1"* ]]
+  [[ "$output" == *"${yday:5} 적어 둔 값(규칙 v2) → 다시 셈: 남긴채닫음 7→1"* ]] || false
   printf '#!/usr/bin/env bash\nexec python3 %q "$@"\n' "$BRIEF" > "$HOME/bin/brief"; chmod +x "$HOME/bin/brief"
   AGENT_SCOUT_CONFIG="$BATS_TEST_DIRNAME/../cmux/seeds/agent-committee.md" AGENT_SCOUT_BRIEF="$HOME/bin/brief" AGENT_SCOUT_BOARD=/dev/null AGENT_SCOUT_DESK_EVAL="$HOME/none" \
     AGENT_SCOUT_ROSTER="$HOME/roster.md" run "$BATS_TEST_DIRNAME/../bin/agent-scout" measure desk --until "$yday" --json

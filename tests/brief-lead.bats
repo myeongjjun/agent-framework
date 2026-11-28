@@ -77,8 +77,8 @@ lead_lines() { grep -c '| by:lead |' "$BRIEF_AREAS" || true; }
 @test "decide: returns decision and reason, logs one by:lead line under the area's Decision log" {
   run "$LEAD" A "스킬 description 을 한국어로 바꿀까요?" --ref "스킬 정리 세션"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"결정: 기존 결정대로 영어 description 을 유지한다"* ]]
-  [[ "$output" == *"근거: by:user 기록이 있다"* ]]
+  [[ "$output" == *"결정: 기존 결정대로 영어 description 을 유지한다"* ]] || false
+  [[ "$output" == *"근거: by:user 기록이 있다"* ]] || false
   [ "$(lead_lines)" = 1 ]
   # The line sits right after the area's last log line, before ### Lessons, in the log format.
   run awk '/^### Decision log/{d=1;next} /^#/{d=0} d && /by:lead/' "$BRIEF_AREAS"
@@ -97,7 +97,7 @@ lead_lines() { grep -c '| by:lead |' "$BRIEF_AREAS" || true; }
 @test "area by name works, unknown area fails without calling the model" {
   run "$LEAD" "에이전트 도구" "질문" --json
   [ "$status" -eq 0 ]
-  [[ "$output" == *'"verdict": "decide"'* ]]
+  [[ "$output" == *'"verdict": "decide"'* ]] || false
   rm -f "$CALLED"
   run "$LEAD" Z "질문"
   [ "$status" -eq 1 ]
@@ -107,7 +107,7 @@ lead_lines() { grep -c '| by:lead |' "$BRIEF_AREAS" || true; }
 @test "permission table: user level refuses without calling the model or logging" {
   run "$LEAD" B "질문"
   [ "$status" -eq 2 ]
-  [[ "$output" == *"거절"* ]]
+  [[ "$output" == *"거절"* ]] || false
   [ ! -e "$CALLED" ]
   [ "$(lead_lines)" = 0 ]
 }
@@ -122,8 +122,8 @@ lead_lines() { grep -c '| by:lead |' "$BRIEF_AREAS" || true; }
 @test "permission table: advise returns a recommendation and logs nothing" {
   run "$LEAD" A "규칙 문서의 절 순서를 바꿀까요?" --kind rules
   [ "$status" -eq 0 ]
-  [[ "$output" == *"권고(사용자가 고름)"* ]]
-  [[ "$output" == *"권고: "* ]]
+  [[ "$output" == *"권고(사용자가 고름)"* ]] || false
+  [[ "$output" == *"권고: "* ]] || false
   [ "$(lead_lines)" = 0 ]
 }
 
@@ -132,8 +132,8 @@ lead_lines() { grep -c '| by:lead |' "$BRIEF_AREAS" || true; }
     rm -f "$CALLED"
     run "$LEAD" A "$q"
     [ "$status" -eq 3 ]
-    [[ "$output" == *"사용자에게 넘김"* ]]
-    [[ "$output" == *"ask-first:WidgetDB"* ]]
+    [[ "$output" == *"사용자에게 넘김"* ]] || false
+    [[ "$output" == *"ask-first:WidgetDB"* ]] || false
     [ ! -e "$CALLED" ]
   done
   [ "$(lead_lines)" = 0 ]
@@ -144,7 +144,7 @@ lead_lines() { grep -c '| by:lead |' "$BRIEF_AREAS" || true; }
     rm -f "$CALLED"
     run "$LEAD" A "$q"
     [ "$status" -eq 3 ]
-    [[ "$output" == *"outward("* ]]
+    [[ "$output" == *"outward("* ]] || false
     [ ! -e "$CALLED" ]
   done
   [ "$(lead_lines)" = 0 ]
@@ -155,7 +155,7 @@ lead_lines() { grep -c '| by:lead |' "$BRIEF_AREAS" || true; }
     rm -f "$CALLED"
     run "$LEAD" A "$q"
     [ "$status" -eq 3 ]
-    [[ "$output" == *"security("* ]]
+    [[ "$output" == *"security("* ]] || false
     [ ! -e "$CALLED" ]
   done
 }
@@ -182,8 +182,8 @@ Q_PUSH="에이전트 발굴 도구 세션이 묻습니다: L2 저장소 ~/person
     rm -f "$CALLED"
     run "$LEAD" A "$q" --kind place
     [ "$status" -eq 0 ]
-    [[ "$output" == *"· 결정"* ]]
-    [[ "$output" != *"경계:"* ]]
+    [[ "$output" == *"· 결정"* ]] || false
+    [[ "$output" != *"경계:"* ]] || false
     [ -e "$CALLED" ]
   done
   [ "$(lead_lines)" = 3 ]
@@ -193,7 +193,7 @@ Q_PUSH="에이전트 발굴 도구 세션이 묻습니다: L2 저장소 ~/person
   for q in "$Q_MCP" "$Q_CH" "$Q_PUSH"; do
     run "$LEAD" A "$q" --kind rules
     [ "$status" -eq 0 ]
-    [[ "$output" == *"권고(사용자가 고름)"* ]]
+    [[ "$output" == *"권고(사용자가 고름)"* ]] || false
   done
   [ "$(lead_lines)" = 0 ]
 }
@@ -201,8 +201,8 @@ Q_PUSH="에이전트 발굴 도구 세션이 묻습니다: L2 저장소 ~/person
 @test "a background-only mention is passed to the model as a mention, not as the asked action" {
   run "$LEAD" A "$Q_MCP" --dry-run
   [ "$status" -eq 0 ]
-  [[ "$output" == *"언급(할 일 아님, 모델이 판단): security(MCP)"* ]]
-  [[ "$output" == *"Boundary words in the background of the question (not in what is asked): MCP (security)"* ]]
+  [[ "$output" == *"언급(할 일 아님, 모델이 판단): security(MCP)"* ]] || false
+  [[ "$output" == *"Boundary words in the background of the question (not in what is asked): MCP (security)"* ]] || false
   run "$LEAD" A "$Q_PUSH" --dry-run
   [[ "$output" != *"언급"* ]]
 }
@@ -216,8 +216,8 @@ Q_PUSH="에이전트 발굴 도구 세션이 묻습니다: L2 저장소 ~/person
     rm -f "$CALLED"
     run "$LEAD" A "$q"
     [ "$status" -eq 3 ]
-    [[ "$output" == *"사용자에게 넘김"* ]]
-    [[ "$output" == *"경계: "* ]]
+    [[ "$output" == *"사용자에게 넘김"* ]] || false
+    [[ "$output" == *"경계: "* ]] || false
     [ ! -e "$CALLED" ]
   done
   [ "$(lead_lines)" = 0 ]
@@ -241,7 +241,7 @@ Q_PUSH="에이전트 발굴 도구 세션이 묻습니다: L2 저장소 ~/person
   fake '{"verdict":"decide","decision":"3번: WidgetDB 초안을 다듬어 설치한다","reason":"후보가 없다"}'
   run "$LEAD" A "$Q_CH"
   [ "$status" -eq 3 ]
-  [[ "$output" == *"결정문이 경계를 건드려 넘김"* ]]
+  [[ "$output" == *"결정문이 경계를 건드려 넘김"* ]] || false
   [ "$(lead_lines)" = 1 ]
 }
 
@@ -249,7 +249,7 @@ Q_PUSH="에이전트 발굴 도구 세션이 묻습니다: L2 저장소 ~/person
   fake '{"verdict":"escalate","decision":"새 목표라 사용자에게 묻는다","reason":"정해진 범위 밖"}'
   run "$LEAD" A "다음 분기 계획을 세울까요?"
   [ "$status" -eq 3 ]
-  [[ "$output" == *"권고: 새 목표라 사용자에게 묻는다"* ]]
+  [[ "$output" == *"권고: 새 목표라 사용자에게 묻는다"* ]] || false
   [ "$(lead_lines)" = 0 ]
 }
 
@@ -257,7 +257,7 @@ Q_PUSH="에이전트 발굴 도구 세션이 묻습니다: L2 저장소 ~/person
   fake '{"verdict":"decide","decision":"커밋하고 바로 push 한다","reason":"빠르다"}'
   run "$LEAD" A "이 변경을 어떻게 마무리할까요?"
   [ "$status" -eq 3 ]
-  [[ "$output" == *"결정문이 경계를 건드려 넘김"* ]]
+  [[ "$output" == *"결정문이 경계를 건드려 넘김"* ]] || false
   [ "$(lead_lines)" = 0 ]
 }
 
@@ -279,7 +279,7 @@ Q_PUSH="에이전트 발굴 도구 세션이 묻습니다: L2 저장소 ~/person
 @test "dry-run shows the prompt and never calls the model" {
   run "$LEAD" A "질문" --dry-run
   [ "$status" -eq 0 ]
-  [[ "$output" == *"--- area profile ---"* ]]
+  [[ "$output" == *"--- area profile ---"* ]] || false
   [ ! -e "$CALLED" ]
 }
 

@@ -56,7 +56,7 @@ setup() {
 @test "--workdir on a nonexistent path fails before creating state" {
   run "$SIB" spawn bad-wd --workdir "$BATS_TEST_TMPDIR/nope"
   [ "$status" -ne 0 ]
-  [[ "$output" == *"start dir does not exist"* ]]
+  [[ "$output" == *"start dir does not exist"* ]] || false
   [ ! -f "$STATE/bad-wd.env" ]
 }
 
@@ -84,7 +84,7 @@ setup() {
   [ "$status" -eq 0 ]
   grep -q "cmux new-split right --workspace workspace:5" "$CMUX_STUB_LOG"
   # must NOT split the caller's workspace
-  ! grep -q "cmux new-pane" "$CMUX_STUB_LOG"
+  ! grep -q "cmux new-pane" "$CMUX_STUB_LOG" || false
   grep -qx "workspace=workspace:5" "$STATE/ws-test.env"
 }
 
@@ -136,7 +136,7 @@ setup() {
   run "$SIB" kill nw-kill
   [ "$status" -eq 0 ]
   grep -q "cmux close-workspace --workspace workspace:42" "$CMUX_STUB_LOG"
-  ! grep -q "cmux close-surface" "$CMUX_STUB_LOG"
+  ! grep -q "cmux close-surface" "$CMUX_STUB_LOG" || false
   [ ! -f "$STATE/nw-kill.env" ]
 }
 
@@ -189,8 +189,8 @@ EOF
   [ "$status" -eq 0 ]
   CMUX_STUB_CLOSE_FAIL=1 run "$SIB" kill stuck-kill
   [ "$status" -ne 0 ]
-  [[ "$output" == *"still open"* ]]
-  [[ "$output" != *"killed"* ]]
+  [[ "$output" == *"still open"* ]] || false
+  [[ "$output" != *"killed"* ]] || false
   [ -f "$STATE/stuck-kill.env" ]
   # the forced retry was attempted
   grep -qE "cmux close-surface .*--force( |$)" "$CMUX_STUB_LOG"
@@ -201,12 +201,12 @@ EOF
   [ "$status" -eq 0 ]
   CMUX_STUB_CLOSE_LIVE=1 run "$SIB" kill live-pane
   [ "$status" -eq 0 ]
-  [[ "$output" == *"killed live-pane"* ]]
+  [[ "$output" == *"killed live-pane"* ]] || false
   CMUX_STUB_WS="workspace:42" run "$SIB" spawn live-ws --workdir "$WORKDIR" --new-workspace
   [ "$status" -eq 0 ]
   CMUX_STUB_CLOSE_LIVE=1 run "$SIB" kill live-ws
   [ "$status" -eq 0 ]
-  [[ "$output" == *"killed live-ws"* ]]
+  [[ "$output" == *"killed live-ws"* ]] || false
   ! grep -q -- "--force true" "$CMUX_STUB_LOG"
 }
 
@@ -250,9 +250,9 @@ do the thing" CMUX_STUB_SCREEN_AFTER_ENTERS=2
 ›'
   run "$SIB" spawn cx-model --codex --workdir "$WORKDIR" --no-report -- "do the thing"
   [ "$status" -eq 7 ]
-  [[ "$output" == *"Codex rejected the model"* ]]
-  [[ "$output" == *"model is not supported"* ]]
-  [[ "$output" != *"[booted]"* ]]
+  [[ "$output" == *"Codex rejected the model"* ]] || false
+  [[ "$output" == *"model is not supported"* ]] || false
+  [[ "$output" != *"[booted]"* ]] || false
   [ -f "$STATE/cx-model.env" ]                               # the pane stays recorded for sib kill
 }
 
@@ -281,7 +281,7 @@ do the thing" CMUX_STUB_SCREEN_AFTER_ENTERS=2 CMUX_STUB_SCREEN3="• Working (1s
   export CMUX_STUB_SCREEN="host  repo  main ❯ cd /x && exec claude"
   run "$SIB" spawn shell-glyph --workdir "$WORKDIR" --no-report -- "do the thing"
   [ "$status" -eq 5 ]
-  [[ "$output" == *"input box never appeared"* ]]
+  [[ "$output" == *"input box never appeared"* ]] || false
   # the prompt was never typed
   ! grep -q "cmux send .*do the thing" "$CMUX_STUB_LOG"
 }
@@ -291,7 +291,7 @@ do the thing" CMUX_STUB_SCREEN_AFTER_ENTERS=2 CMUX_STUB_SCREEN3="• Working (1s
 ──────────────────────"
   run "$SIB" spawn truncated --workdir "$WORKDIR" --no-report -- "do the thing and then a long tail that got cut off"
   [ "$status" -eq 5 ]
-  [[ "$output" == *"did not fully appear"* ]]
+  [[ "$output" == *"did not fully appear"* ]] || false
   # only the launch enter — no submit enter for a partial prompt
   enters=$(grep -c "cmux send-key .* enter" "$CMUX_STUB_LOG")
   [ "$enters" -eq 1 ]
@@ -310,7 +310,7 @@ line two"
 @test "a slug starting with '-' is rejected before any state is written" {
   run "$SIB" spawn -x
   [ "$status" -ne 0 ]
-  [[ "$output" == *"lowercase-kebab"* ]]
+  [[ "$output" == *"lowercase-kebab"* ]] || false
   [ ! -f "$STATE/-x.env" ]
 }
 
@@ -503,7 +503,7 @@ trusted() { jq -e --arg d "$1" '.projects[$d].hasTrustDialogAccepted == true' "$
   d="$(cd "$HOME/work/proj" && pwd -P)"
   run "$SIB" spawn tr-cx --codex --workdir "$HOME/work/proj"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"pre-trusted"* ]]
+  [[ "$output" == *"pre-trusted"* ]] || false
   grep -qxF "[projects.\"$d\"]" "$HOME/.codex/config.toml"
   grep -qx 'model = "m"' "$HOME/.codex/config.toml"
   python3 -c 'import sys,tomllib; c=tomllib.load(open(sys.argv[1],"rb")); assert c["projects"][sys.argv[2]]["trust_level"]=="trusted"' "$HOME/.codex/config.toml" "$d"
@@ -529,7 +529,7 @@ trusted() { jq -e --arg d "$1" '.projects[$d].hasTrustDialogAccepted == true' "$
   2. Open restricted"
   run "$SIB" spawn tr-cx-stuck --codex --workdir "$HOME/other" -- "do the thing"
   [ "$status" -eq 6 ]
-  [[ "$output" == *"Codex's trust-folder dialog"* ]]
+  [[ "$output" == *"Codex's trust-folder dialog"* ]] || false
   ! grep -q "cmux send .*do the thing" "$CMUX_STUB_LOG"
 }
 
@@ -551,7 +551,7 @@ trusted() { jq -e --arg d "$1" '.projects[$d].hasTrustDialogAccepted == true' "$
 ❯ 1. Yes, I trust this folder"
   run "$SIB" spawn tr-stuck --workdir "$HOME/other" -- "do the thing"
   [ "$status" -eq 6 ]
-  [[ "$output" == *"trust-folder dialog"* ]]
+  [[ "$output" == *"trust-folder dialog"* ]] || false
   ! grep -q "cmux send .*do the thing" "$CMUX_STUB_LOG"
 }
 
@@ -563,7 +563,7 @@ trusted() { jq -e --arg d "$1" '.projects[$d].hasTrustDialogAccepted == true' "$
   [ "$status" -eq 0 ]
   run "$SIB" list
   [ "$status" -eq 0 ]
-  [[ "$output" == *"with space (up)"* ]]
+  [[ "$output" == *"with space (up)"* ]] || false
   run "$SIB" kill sp
   [ "$status" -eq 0 ]
   [ ! -f "$STATE/sp.env" ]
@@ -572,7 +572,7 @@ trusted() { jq -e --arg d "$1" '.projects[$d].hasTrustDialogAccepted == true' "$
 @test "sib spawn --help prints usage and spawns nothing" {
   run "$SIB" spawn --help
   [ "$status" -eq 0 ]
-  [[ "$output" == *"sib spawn <slug>"* ]]
+  [[ "$output" == *"sib spawn <slug>"* ]] || false
   [ ! -s "$CMUX_STUB_LOG" ]
   [ -z "$(ls "$STATE")" ]
 }
@@ -596,7 +596,7 @@ trusted() { jq -e --arg d "$1" '.projects[$d].hasTrustDialogAccepted == true' "$
     CMUX_STUB_SCREEN2=$'─── ↑ 2 more ──────────────\n  folded away and the ta\n──────────────────────'
   run "$SIB" spawn fold-cut --workdir "$WORKDIR" --no-report -- "a long head that the agent folded away and the tail end of it"
   [ "$status" -eq 5 ]
-  [[ "$output" == *"tail missing"*"box folded"* ]]
+  [[ "$output" == *"tail missing"*"box folded"* ]] || false
   [ "$(grep -c "cmux send-key .* enter" "$CMUX_STUB_LOG")" -eq 1 ]
 }
 
@@ -621,8 +621,8 @@ trusted() { jq -e --arg d "$1" '.projects[$d].hasTrustDialogAccepted == true' "$
   export CMUX_STUB_SPLIT_FAIL="Error: not enough space to split"
   run "$SIB" spawn no-room --workspace workspace:5 --workdir "$WORKDIR"
   [ "$status" -eq 1 ]
-  [[ "$output" == *"not enough space to split"* ]]
-  [[ "$output" == *"cannot add a pane to workspace workspace:5"* ]]
+  [[ "$output" == *"not enough space to split"* ]] || false
+  [[ "$output" == *"cannot add a pane to workspace workspace:5"* ]] || false
   [ ! -f "$STATE/no-room.env" ]
   run "$SIB" spawn no-room-def --workdir "$WORKDIR"
   [ "$status" -eq 1 ]
@@ -667,7 +667,7 @@ trusted() { jq -e --arg d "$1" '.projects[$d].hasTrustDialogAccepted == true' "$
   printf 'slug=x\nagent=claude\nsurface=surface:5\nworkspace=workspace:1\nworktree=/x\n' > "$STATE/x.env"
   run "$sib_copy" send x "hello"
   [ "$status" -ne 0 ]
-  [[ "$output" == *"pane-deliver.sh not found"* ]]
+  [[ "$output" == *"pane-deliver.sh not found"* ]] || false
   ! grep -q "^cmux send " "$CMUX_STUB_LOG"
 }
 
@@ -682,8 +682,8 @@ trusted() { jq -e --arg d "$1" '.projects[$d].hasTrustDialogAccepted == true' "$
   export CMUX_STUB_FAIL_LIST_PANE_SURFACES="not_found: Pane or workspace not found" CMUX_STUB_WS="workspace:42"
   run "$SIB" spawn nw-nosurf --workdir "$WORKDIR" --new-workspace --no-report -- "task"
   [ "$status" -ne 0 ]
-  [[ "$output" == *"sib:"* ]]
-  [[ "$output" == *"not_found: Pane or workspace not found"* ]]
+  [[ "$output" == *"sib:"* ]] || false
+  [[ "$output" == *"not_found: Pane or workspace not found"* ]] || false
   grep -q "cmux close-workspace --workspace workspace:42" "$CMUX_STUB_LOG"
   [ ! -f "$STATE/nw-nosurf.env" ]
 }
@@ -692,7 +692,7 @@ trusted() { jq -e --arg d "$1" '.projects[$d].hasTrustDialogAccepted == true' "$
   export CMUX_STUB_FAIL_LIST_PANE_SURFACES="not_found: Pane or workspace not found" CMUX_STUB_FAIL_LIST_PANE_SURFACES_TIMES=2
   run "$SIB" spawn nw-retry --workdir "$WORKDIR" --new-workspace --no-report -- "task"
   [ "$status" -eq 0 ]
-  ! grep -q "close-workspace" "$CMUX_STUB_LOG"
+  ! grep -q "close-workspace" "$CMUX_STUB_LOG" || false
   [ -f "$STATE/nw-retry.env" ]
 }
 
@@ -707,7 +707,7 @@ trusted() { jq -e --arg d "$1" '.projects[$d].hasTrustDialogAccepted == true' "$
   export CMUX_STUB_OUT_NEW_SPLIT="OK" CMUX_STUB_OUT_NEW_PANE="OK"
   run "$SIB" spawn sp-noref --workspace workspace:5 --workdir "$WORKDIR"
   [ "$status" -ne 0 ]
-  [[ "$output" == *"cannot add a pane to workspace workspace:5"* ]]
+  [[ "$output" == *"cannot add a pane to workspace workspace:5"* ]] || false
   run "$SIB" spawn np-noref --workdir "$WORKDIR"
   [ "$status" -ne 0 ]
   [[ "$output" == *"cannot add a pane to workspace workspace:1"* ]]
@@ -725,8 +725,8 @@ trusted() { jq -e --arg d "$1" '.projects[$d].hasTrustDialogAccepted == true' "$
   export CMUX_STUB_FAIL_SEND="surface not ready" CMUX_STUB_SURFACE="surface:91"
   run "$SIB" spawn launch-fail --workspace workspace:5 --workdir "$WORKDIR"
   [ "$status" -ne 0 ]
-  [[ "$output" == *"surface not ready"* ]]
-  [[ "$output" == *"sib:"* ]]
+  [[ "$output" == *"surface not ready"* ]] || false
+  [[ "$output" == *"sib:"* ]] || false
   grep -q "cmux close-surface --surface surface:91" "$CMUX_STUB_LOG"
   [ ! -f "$STATE/launch-fail.env" ]
 }
@@ -735,7 +735,7 @@ trusted() { jq -e --arg d "$1" '.projects[$d].hasTrustDialogAccepted == true' "$
   export CMUX_STUB_FAIL_SEND="surface not ready" CMUX_STUB_WS="workspace:42"
   run "$SIB" spawn launch-fail-nw --workdir "$WORKDIR" --new-workspace
   [ "$status" -ne 0 ]
-  [[ "$output" == *"surface not ready"* ]]
+  [[ "$output" == *"surface not ready"* ]] || false
   grep -q "cmux close-workspace --workspace workspace:42" "$CMUX_STUB_LOG"
 }
 
@@ -778,10 +778,10 @@ keys_after_launch() { grep -E "^cmux (send|send-key) " "$CMUX_STUB_LOG" | grep -
   export CMUX_STUB_SCREEN="$CODEX_UPDATE_SCREEN"
   run "$SIB" spawn upd --codex --workdir "$WORKDIR" -- "do the thing"
   [ "$status" -eq 6 ]
-  [[ "$output" == *"Codex's update screen"* ]]
-  [[ "$output" == *"no key was sent"* ]]
+  [[ "$output" == *"Codex's update screen"* ]] || false
+  [[ "$output" == *"no key was sent"* ]] || false
   [ -z "$(keys_after_launch)" ]
-  ! grep -q "cmux close-" "$CMUX_STUB_LOG"
+  ! grep -q "cmux close-" "$CMUX_STUB_LOG" || false
   [ -f "$STATE/upd.env" ]
 }
 
@@ -789,7 +789,7 @@ keys_after_launch() { grep -E "^cmux (send|send-key) " "$CMUX_STUB_LOG" | grep -
   export CMUX_STUB_SCREEN="$CODEX_HOOKS_SCREEN"
   run "$SIB" spawn hooks --codex --workdir "$WORKDIR" -- "do the thing"
   [ "$status" -eq 6 ]
-  [[ "$output" == *"Codex's hooks-review screen"* ]]
+  [[ "$output" == *"Codex's hooks-review screen"* ]] || false
   [ -z "$(keys_after_launch)" ]
   [ -f "$STATE/hooks.env" ]
 }
@@ -798,8 +798,8 @@ keys_after_launch() { grep -E "^cmux (send|send-key) " "$CMUX_STUB_LOG" | grep -
   export CMUX_STUB_SCREEN="$CODEX_UPDATE_SCREEN"
   run "$SIB" spawn upd-empty --codex --workdir "$WORKDIR"
   [ "$status" -eq 6 ]
-  [[ "$output" != *"[booted]"* ]]
-  [[ "$output" == *"update screen"* ]]
+  [[ "$output" != *"[booted]"* ]] || false
+  [[ "$output" == *"update screen"* ]] || false
   [ -z "$(keys_after_launch)" ]
 }
 
@@ -810,8 +810,8 @@ keys_after_launch() { grep -E "^cmux (send|send-key) " "$CMUX_STUB_LOG" | grep -
     : > "$CMUX_STUB_LOG"
     CMUX_STUB_SCREEN="$scr" run "$SIB" send cx "hello there"
     [ "$status" -eq 3 ]
-    [[ "$output" == *"REFUSED"*"Codex's"*"screen"*"no key was sent"* ]]
-    ! grep -qE "^cmux (send|send-key) " "$CMUX_STUB_LOG"
+    [[ "$output" == *"REFUSED"*"Codex's"*"screen"*"no key was sent"* ]] || false
+    ! grep -qE "^cmux (send|send-key) " "$CMUX_STUB_LOG" || false
   done
 }
 

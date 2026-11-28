@@ -89,7 +89,7 @@ EOF
 }
 
 @test "no 'PM' name left for the area role" {
-  ! grep -n 'PM' "$ORCH" "$SEED" "$ROOT/cmux/brief-lead" "$ROOT/cmux/office/index.html"
+  ! grep -n 'PM' "$ORCH" "$SEED" "$ROOT/cmux/brief-lead" "$ROOT/cmux/office/index.html" || false
   [ ! -e "$ROOT/docs/area-pm-design.md" ]
   [ "$(grep -c 'PM' "$ROOT/docs/area-lead-design.md")" -le 2 ]  # only the naming note quotes the old name
 }

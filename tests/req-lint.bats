@@ -34,7 +34,7 @@ lint() {  # lint <stdin text> [args...]
 @test "code-style-requirement-sentences.R2 rejects a sentence without subject + keyword form" {
   run lint "MUST retry."
   [ "$status" -eq 1 ]
-  [[ "$output" == *"use the form"* ]]
+  [[ "$output" == *"use the form"* ]] || false
   run lint "agent MUST retry." --subject claw
   [ "$status" -eq 1 ]
 }
@@ -66,7 +66,7 @@ lint() {  # lint <stdin text> [args...]
 @test "code-style-requirement-sentences.R7 rejects more than 20 words, code span is one word" {
   run lint "claw MUST NOT send a message to a chat channel or a person, unless the user asks in the same session."
   [ "$status" -eq 1 ]
-  [[ "$output" == *"21 words"* ]]
+  [[ "$output" == *"21 words"* ]] || false
   run lint "claw MUST run \`a b c d e f g h i j k l m n o p q r s t u v\` now."
   [ "$status" -eq 0 ]
 }
@@ -75,7 +75,7 @@ lint() {  # lint <stdin text> [args...]
   printf '# T\n\nThis should be fine as a description.\n\n```\nclaw SHALL x.\n```\n\n- claw SHOULD retry.\n' > "$T/a.md"
   run python3 -I "$LINT" --md "$T/a.md"
   [ "$status" -eq 1 ]
-  [[ "$output" == *"a.md:9: SHOULD needs its exception"* ]]
+  [[ "$output" == *"a.md:9: SHOULD needs its exception"* ]] || false
   [[ "$output" != *"SHALL"* ]]
 }
 
@@ -109,7 +109,7 @@ trace_fixture() {  # trace_fixture <constraint body> [check file content]
   trace_fixture "# Constraint: X\n\n- **R1** The agent MUST retry. The agent MUST log.\n- **R1** The agent MUST stop.\n\n## Trace\n\n| ID | Check |\n|---|---|\n| R1 | manual |\n"
   run python3 -I "$LINT" --trace "$T"
   [ "$status" -eq 1 ]
-  [[ "$output" == *"R1 has 2 requirement sentences"* ]]
+  [[ "$output" == *"R1 has 2 requirement sentences"* ]] || false
   [[ "$output" == *"duplicate ID R1"* ]]
 }
 
@@ -117,7 +117,7 @@ trace_fixture() {  # trace_fixture <constraint body> [check file content]
   trace_fixture "# Constraint: X\n\n- **R1** The agent MUST retry.\n\n## Trace\n\n| ID | Check |\n|---|---|\n| R2 | manual |\n"
   run python3 -I "$LINT" --trace "$T"
   [ "$status" -eq 1 ]
-  [[ "$output" == *"R1 has no row"* ]]
+  [[ "$output" == *"R1 has no row"* ]] || false
   [[ "$output" == *"Trace row R2 names no requirement"* ]]
 }
 
@@ -125,7 +125,7 @@ trace_fixture() {  # trace_fixture <constraint body> [check file content]
   trace_fixture "# Constraint: X\n\n- **R1** The agent MUST retry.\n\n## Trace\n\n| ID | Check |\n|---|---|\n| R1 | \`tests/x.bats\` |\n" '@test "x-rule.R2 other" {'
   run python3 -I "$LINT" --trace "$T"
   [ "$status" -eq 1 ]
-  [[ "$output" == *"does not mention x-rule.R1"* ]]
+  [[ "$output" == *"does not mention x-rule.R1"* ]] || false
   printf '%s\n' '@test "x-rule.R1 retries" {' > "$T/tests/x.bats"
   run python3 -I "$LINT" --trace "$T"
   [ "$status" -eq 0 ]

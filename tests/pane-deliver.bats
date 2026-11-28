@@ -39,7 +39,7 @@ deliver() { run "$DELIVER" --surface surface:5 --workspace workspace:1 -- "$MSG"
   export CMUX_STUB_SCREEN=$'❯ [Pasted text #3]... and the tail end of it\n──────────────────────'
   deliver
   [ "$status" -eq 5 ]
-  [[ "$output" == *"did not fully appear"* ]]
+  [[ "$output" == *"did not fully appear"* ]] || false
   ! grep -q "send-key .* enter" "$CMUX_STUB_LOG"
 }
 
@@ -70,7 +70,7 @@ deliver() { run "$DELIVER" --surface surface:5 --workspace workspace:1 -- "$MSG"
   f="$(sed -n 's/^FILE: //p' <<<"$output")"
   [ "$(cat "$f")" = "$MSG" ]
   typed="$(cat "$CMUX_STUB_LOG.last")"
-  [[ "$typed" == "done-request: padding"*"read $f and act on it" ]]
+  [[ "$typed" == "done-request: padding"*"read $f and act on it" ]] || false
   (( ${#typed} < ${#MSG} ))
 }
 
@@ -88,7 +88,7 @@ deliver() { run "$DELIVER" --surface surface:5 --workspace workspace:1 -- "$MSG"
     CMUX_STUB_SCREEN_AFTER_ESCAPES=2 CMUX_STUB_SCREEN4="$IDLE"
   deliver
   [ "$status" -eq 5 ]
-  [[ "$output" == *"typed text cleared"* ]]
+  [[ "$output" == *"typed text cleared"* ]] || false
   [ "$(grep -c "send-key .* escape" "$CMUX_STUB_LOG")" -eq 2 ]
   ! grep -q "send-key .* enter" "$CMUX_STUB_LOG"
 }
@@ -107,7 +107,7 @@ deliver() { run "$DELIVER" --surface surface:5 --workspace workspace:1 -- "$MSG"
     CMUX_STUB_SCREEN_AFTER_ENTERS=1 CMUX_STUB_SCREEN3=$'✻ Cooking…\n──────────────────────\n❯ '
   run "$DELIVER" --surface surface:5 --workspace workspace:1 --ours done-request: --ours desk-message: -- "$MSG"
   [ "$status" -eq 0 ]
-  [[ "$output" == *CLEARED* && "$output" == *DELIVERED* ]]
+  [[ "$output" == *CLEARED* && "$output" == *DELIVERED* ]] || false
   [ "$(grep -c "send-key .* escape" "$CMUX_STUB_LOG")" -eq 2 ]
   [ "$(cat "$CMUX_STUB_LOG.last")" = "$MSG" ]
 }
@@ -116,7 +116,7 @@ deliver() { run "$DELIVER" --surface surface:5 --workspace workspace:1 -- "$MSG"
   export CMUX_STUB_SEND_HOLDS=1 CMUX_STUB_SCREEN=$'❯ my own half-typed thought\n──────────────────────'
   run "$DELIVER" --surface surface:5 --workspace workspace:1 --ours done-request: -- "$MSG"
   [ "$status" -eq 7 ]
-  [[ "$output" == *"not ours: myownhalf-typedthought"* ]]
+  [[ "$output" == *"not ours: myownhalf-typedthought"* ]] || false
   ! grep -q "send-key" "$CMUX_STUB_LOG"
 }
 
@@ -159,7 +159,7 @@ narrow_box() { printf '%s' "$1" | tr -d ' ' | fold -w 2 | sed 's/^/  /'; }
   export CMUX_STUB_SCREEN="$(narrow_box "${MSG: -40}")"$'\n────'
   deliver
   [ "$status" -eq 5 ]
-  [[ "$output" == *"tail seen (already on screen before the send)"*"pane 4 columns wide"* ]]
+  [[ "$output" == *"tail seen (already on screen before the send)"*"pane 4 columns wide"* ]] || false
   ! grep -q "send-key .* enter" "$CMUX_STUB_LOG"
 }
 
