@@ -131,8 +131,10 @@ assert [v["scout"] for v in c["db-upgrade"]["against"]]==["handoff"]
 assert c["chart-review"]["result"]=="watch" and c["chart-review"]["support"]==1
 assert d["candidates"][0]["result"]=="pass" and d["candidates"][-1]["result"]=="watch"
 '
-  # the vote round asks only scouts that did not propose the kind
-  ! grep -q "db-upgrade" "$CALLS.friction.vote" || false
+  # the vote round asks only scouts that did not propose the idea (the kind id itself is in every pack)
+  ! grep -q '^- idea `widgetdb-plan-reviewer`' "$CALLS.friction.vote" || false
+  grep -q '^- idea `widgetdb-plan-reviewer`' "$CALLS.volume.vote"
+  ! grep -q '^- idea `chart-pr-reviewer`' "$CALLS.volume.vote" || false
   ls "$AGENT_SCOUT_HR"/quorum-2026-11-23.json "$AGENT_SCOUT_HR"/quorum-2026-11-23.md
   grep -q "^- volume | claude:opus | scout-volume | 접근: a | 상태: 수습" "$AGENT_SCOUT_ROSTER"
   grep -q "| friction | scan | proposed 2 · passed 2 · judge 0.88" "$AGENT_SCOUT_ROSTER"
@@ -722,7 +724,7 @@ codex_models() {
   echo "9999 Mon Nov 23 10:00:00 2026     zsh -c echo agent-scout evaluate not-a-meeting" >>"$T/ps"
   printf '#!/bin/sh\necho "SLUG AGENT SURFACE WORKTREE"\necho "scout-friction-evaluate-4242 claude surface:1 /w (up)"\n' >"$T/bin/sib"
   chmod +x "$T/bin/sib"
-  echo '{"date":"2026-11-22","candidates":[{"n":1,"result":"pass","role":"research-helper","support":2,"backers":["volume","friction"]},{"n":2,"result":"drop","role":"gone","support":0,"backers":[]}]}' >"$T/hr/quorum-2026-11-22.json"
+  echo '{"date":"2026-11-22","scouts":[{"name":"volume"}],"candidates":[{"n":1,"result":"pass","role":"research-helper","support":2,"backers":["volume","friction"]},{"n":2,"result":"drop","role":"gone","support":0,"backers":[]}]}' >"$T/hr/quorum-2026-11-22.json"
   echo '{"id":"eval-2026-11-22-1","results":{"research-helper":{"result":"approve","counts":{"hire":2,"revise":0,"reject":0},"counted":2}}}' >"$T/hr/eval-2026-11-22-1.json"
   printf -- '---\nname: research-helper\n---\n' >"$T/hr/agents/research-helper.md"
   before=$(cd "$T" && find . -type f | sort | xargs cksum)

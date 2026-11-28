@@ -823,6 +823,16 @@ def mmdd(d):
     return d.strftime("%m-%d")
 
 
+def blind(members):
+    """a function that masks member names (`volume`, `scout-volume`) in a member's own text before a blind judge
+    reads it. A name inside an id or path (`proj:monthly-volume`, `a/volume/b`, `volume.md`) is left alone."""
+    names = sorted({n for m in members for n in (m["name"], m.get("agent") or "") if n}, key=len, reverse=True)
+    if not names:
+        return lambda t: "" if t is None else str(t)
+    rx = re.compile(r"(?<![\w./:-])(?:" + "|".join(map(re.escape, names)) + r")(?![\w/-]|\.\w)", re.I)
+    return lambda t: rx.sub("[member]", "" if t is None else str(t))
+
+
 def judge(rule, members, proposals, data):
     """a model that is not a member grades every proposal blind (member names hidden, order shuffled by id).
     Returns ([{id, member, kind, evidence, fit, why}], error)."""
@@ -832,13 +842,14 @@ def judge(rule, members, proposals, data):
     runner, _, model = spec.partition(":")
     if any(same_model(m["runner"], m["model"], runner, model) for m in members):
         return [], f"judge {spec} is also a member; grading skipped (pick a judge outside the committee)"
+    hide = blind(members)
     items, back = [], {}
     for name, cands in proposals.items():
         for c in cands:
             pid = f"P{len(items) + 1}"
             back[pid] = (name, slug(c.get("kind")), slug(c.get("role")) or slug(c.get("kind")))
-            items.append(f"- {pid}: kind `{slug(c.get('kind'))}` — {c.get('title')} [{c.get('form')}]\n"
-                         f"  why: {c.get('why')}\n  evidence: " + " / ".join((c.get("evidence") or [])[:5]))
+            items.append(f"- {pid}: kind `{slug(c.get('kind'))}` — {hide(c.get('title'))} [{c.get('form')}]\n"
+                         f"  why: {hide(c.get('why'))}\n  evidence: " + " / ".join(hide(e) for e in (c.get("evidence") or [])[:5]))
     if not items:
         return [], None
     prompt = ("You judge proposals for new agents. You do not know who proposed them. For each proposal give "
@@ -1368,9 +1379,10 @@ def egrade(rule, members, reviews, drafts, data):
     runner, _, model = spec.partition(":")
     if any(same_model(m["runner"], m["model"], runner, model) for m in members):
         return {}, f"judge {spec} is also a member; grading skipped (pick a judge outside the committee)"
+    hide = blind(members)
     items = [f"- {r['id']}: draft `{r['role']}` — verdict {r['verdict']} · need {r['need']} · fit {r['fit']} · "
-             f"safety {r['safety']}\n  why: {r['why']}\n  fixes: {' / '.join(r['fixes'][:6]) or '-'}\n"
-             f"  evidence: {' / '.join(r['evidence'][:5]) or '-'}" for r in reviews]
+             f"safety {r['safety']}\n  why: {hide(r['why'])}\n  fixes: {' / '.join(map(hide, r['fixes'][:6])) or '-'}\n"
+             f"  evidence: {' / '.join(map(hide, r['evidence'][:5])) or '-'}" for r in reviews]
     if not items:
         return {}, None
     prompt = ("You grade reviews of new agent drafts. You do not know who wrote them. For each review give `grounded` "
