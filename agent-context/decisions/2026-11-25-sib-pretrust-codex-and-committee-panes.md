@@ -1,8 +1,8 @@
 # ADR-009: sib pre-trust covers Codex siblings, and install lists the unattended pane roots
 
 - **Date**: 2026-11-25
-- **Status**: Proposed
-- **Deciders**: user (pending), with Claude
+- **Status**: Accepted (2026-11-28)
+- **Deciders**: user (accepted 2026-11-28), with Claude
 - **Amends**: [ADR-006](2026-11-13-sib-trust-allowlist.md)
 
 ## Context
@@ -45,7 +45,7 @@ that pane stopped at Codex's trust screen too.
    sib does not cover it, no pane opens, the reason goes to `untrusted` in
    the office-art `state.json`, and those roles wait until the next day.
 
-Code: commit `9815e96` and the office-art follow-up (local until accepted).
+Code: commits `9815e96` and `2a10e79`.
 
 ## Alternatives Considered
 
@@ -79,8 +79,8 @@ Code: commit `9815e96` and the office-art follow-up (local until accepted).
 
 ## Implementation Notes
 
-The user accepts or rejects this ADR. Until it is accepted, no machine's
-trust lists change: run `scripts/install.sh` only after acceptance.
+`scripts/install.sh` writes the two `trusted-dirs` entries on each
+machine; a machine installed before this ADR needs one re-run.
 
 ## References
 

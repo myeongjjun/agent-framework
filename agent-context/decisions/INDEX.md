@@ -1,6 +1,6 @@
 # Decisions Index
 
-> Last updated: 2026-11-25
+> Last updated: 2026-11-28
 
 ## By Status
 
@@ -16,12 +16,11 @@
 | [006](2026-11-13-sib-trust-allowlist.md) | 2026-11-13 | sib pre-trusts allowlisted start dirs for claude siblings |
 | [007](2026-11-20-brief-report-desk-address.md) | 2026-11-20 | Sessions reach the desk with `brief report`, not a panel id |
 | [008](2026-11-23-codex-runs-in-cmux-panes-only.md) | 2026-11-23 | Codex runs only in cmux panes — no headless `codex exec` |
+| [009](2026-11-25-sib-pretrust-codex-and-committee-panes.md) | 2026-11-25 | sib pre-trust covers Codex siblings, and install lists the unattended pane roots (amends 006) |
 
 ### Proposed
 
-| ADR | Date | Title |
-|-----|------|-------|
-| [009](2026-11-25-sib-pretrust-codex-and-committee-panes.md) | 2026-11-25 | sib pre-trust covers Codex siblings, and install lists the unattended pane roots (amends 006) |
+_None_
 
 ### Rejected
 

@@ -4,6 +4,7 @@
 - **Status**: Accepted
 - **Deciders**: user (approved option 1 of 2), with Claude
 - **Supersedes**: none
+- **Amended by**: [ADR-009](2026-11-25-sib-pretrust-codex-and-committee-panes.md)
 
 ## Context
 
